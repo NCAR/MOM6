@@ -1899,10 +1899,10 @@ subroutine MOM_temp_salt_initialize_from_Z(h, tv, G, GV, PF, just_read_params)
                  "temperatures (T) and salinities (S). If T and S are not \n" //&
                  "in the same file, TEMP_Z_INIT_FILE and SALT_Z_INIT_FILE \n" //&
                  "must be set.",default="temp_salt_z.nc", do_not_log=just_read)
-  call get_param(PF, mod, "TEMP_Z_INIT_FILE",tfilename, &
+  call get_param(PF, mdl, "TEMP_Z_INIT_FILE",tfilename, &
                  "The name of the z-space input file used to initialize \n"//&
                  "temperatures, only.", default=trim(filename), do_not_log=just_read)
-  call get_param(PF, mod, "SALT_Z_INIT_FILE",sfilename, &
+  call get_param(PF, mdl, "SALT_Z_INIT_FILE",sfilename, &
                  "The name of the z-space input file used to initialize \n"//&
                  "temperatures, only.", default=trim(filename), do_not_log=just_read)
   filename = trim(inputdir)//trim(filename)
