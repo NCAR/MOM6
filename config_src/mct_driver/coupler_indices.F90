@@ -9,17 +9,18 @@ module coupler_indices
 
   ! MOM types
   use MOM_grid,       only : ocean_grid_type
+  use MOM_surface_forcing, only: ice_ocean_boundary_type
   ! MOM functions
-  use MOM_domains,    only : pass_var
-  use MOM_variables,  only : surface
+  use MOM_domains,    only : pass_var, AGRID
+  use ocean_model_mod, only : ocean_public_type
 
   implicit none
 
   private
 
-  public alloc_sbuffer
   public coupler_indices_init
-  public time_avg_state
+  public fill_ice_ocean_bnd
+  public ocn_export
 
   type, public :: cpl_indices
 
@@ -87,9 +88,6 @@ module coupler_indices
     integer, dimension(:), allocatable :: x2o_frac_col      ! fraction of ocean cell, per column
     integer, dimension(:), allocatable :: x2o_fracr_col     ! fraction of ocean cell used in radiation computations, per column
     integer, dimension(:), allocatable :: x2o_qsw_fracr_col ! qsw * fracr, per column
-
-    real, dimension(:,:,:),allocatable :: time_avg_sbuffer  !< time averages of send buffer
-    real                               :: accum_time        !< time for accumulation
 
   end type cpl_indices
 
@@ -208,82 +206,50 @@ contains
 
   end subroutine coupler_indices_init
 
+  !> Maps outgoing ocean data to MCT buffer
+  subroutine ocn_export(ind, ocn_public, grid, o2x)
+    type(cpl_indices),       intent(inout) :: ind        !< Index
+    type(ocean_public_type), intent(in)    :: ocn_public !< Ocean surface state
+    type(ocean_grid_type),   intent(in)    :: grid       !< Ocean model grid
+    real(kind=8),            intent(inout) :: o2x(:,:)   !< MCT outgoing bugger
+    ! Local variables
+    real, dimension(grid%isd:grid%ied,grid%jsd:grid%jed) :: ssh !< Local copy of sea_lev with updated halo
+    integer :: i, j, n, ig, jg
+    real :: slp_L, slp_R, slp_C, slope, u_min, u_max
 
-  subroutine alloc_sbuffer(ind, grid, nsend)
+    ! Copy from ocn_public to o2x. ocn_public uses global indexing with no halos.
+    ! The mask comes from "grid" that uses the usual MOM domain that has halos
+    ! and does not use global indexing.
+    n = 0
+    do j=grid%jsc, grid%jec
+      jg = j + grid%jdg_offset
+      do i=grid%isc,grid%iec
+        n = n+1
+        ig = i + grid%idg_offset
+        o2x(ind%o2x_So_t, n) = ocn_public%t_surf(ig,jg) * grid%mask2dT(i,j)
+        o2x(ind%o2x_So_s, n) = ocn_public%s_surf(ig,jg) * grid%mask2dT(i,j)
+        o2x(ind%o2x_So_u, n) = ocn_public%u_surf(ig,jg) * grid%mask2dT(i,j)
+        o2x(ind%o2x_So_v, n) = ocn_public%v_surf(ig,jg) * grid%mask2dT(i,j)
+        ! Make a copy of ssh in order to do a halo update. We use the usual MOM domain
+        ! in order to update halos. i.e. does not use global indexing.
+        ssh(i,j) = ocn_public%sea_lev(ig,jg)
+      end do
+    end do
 
-    ! Parameters
-    type(cpl_indices), intent(inout)  :: ind
-    type(ocean_grid_type), intent(in) :: grid
-    integer, intent(in)               :: nsend
-
-    allocate(ind%time_avg_sbuffer(grid%isd:grid%ied,grid%jsd:grid%jed,nsend))
-
-  end subroutine alloc_sbuffer
-
-
-  subroutine time_avg_state(ind, grid, surf_state, dt, reset, last)
-
-    type(cpl_indices), intent(inout)      :: ind        !< module control structure
-    type(ocean_grid_type), intent(inout)  :: grid       !< ocean grid (inout in order to do halo update)
-    type(surface), intent(in)             :: surf_state !< ocean surface state
-    real, intent(in)                      :: dt         !< time interval to accumulate (seconds)
-    logical, optional, intent(in)         :: reset      !< if present and true, reset accumulations
-    logical, optional, intent(in)         :: last       !< if present and true, divide by accumulated time
-
-    ! local variables
-    integer :: i,j,nvar
-    real    :: rtime, slp_L, slp_R, slp_C, u_min, u_max, slope
-    real, dimension(grid%isd:grid%ied, grid%jsd:grid%jed) :: ssh
-
-    if (present(reset)) then
-      if (reset) then
-        ind%time_avg_sbuffer(:,:,:) = 0.
-        ind%accum_time = 0.
-      end if
-    end if
-
-    ! sst
-    nvar = ind%o2x_So_t
-    do j=grid%jsc, grid%jec ; do i=grid%isc,grid%iec
-      ind%time_avg_sbuffer(i,j,nvar) = ind%time_avg_sbuffer(i,j,nvar)+dt * surf_state%sst(i,j)
-    end do; end do
-
-    ! sss
-    nvar = ind%o2x_So_s
-    do j=grid%jsc, grid%jec ; do i=grid%isc,grid%iec
-      ind%time_avg_sbuffer(i,j,nvar) = ind%time_avg_sbuffer(i,j,nvar)+dt * surf_state%sss(i,j)
-    end do; end do
-
-
-    ! u
-    nvar = ind%o2x_So_u
-    do j=grid%jsc, grid%jec ; do i=grid%isc,grid%iec
-      ind%time_avg_sbuffer(i,j,nvar) = ind%time_avg_sbuffer(i,j,nvar)+dt * &
-                                          0.5*(surf_state%u(I,j)+surf_state%u(I-1,j))
-    end do; end do
-
-    ! v
-    nvar = ind%o2x_So_v
-    do j=grid%jsc, grid%jec ; do i=grid%isc,grid%iec
-      ind%time_avg_sbuffer(i,j,nvar) = ind%time_avg_sbuffer(i,j,nvar)+dt * &
-                                          0.5*(surf_state%v(i,J)+surf_state%v(i,J-1))
-    end do; end do
-
-    ! ssh
-    do j=grid%jsc, grid%jec ; do i=grid%isc,grid%iec
-      ssh(i,j) = surf_state%sea_lev(i,j)
-    end do; end do
+    ! Update halo of ssh so we can calculate gradients
     call pass_var(ssh, grid%domain)
 
     ! d/dx ssh
-    nvar = ind%o2x_So_dhdx
+    n = 0
     do j=grid%jsc, grid%jec ; do i=grid%isc,grid%iec
+      n = n+1
       ! This is a simple second-order difference
-    ! ind%time_avg_sbuffer(i,j,nvar) = ind%time_avg_sbuffer(i,j,nvar) + dt * &
-    !              0.5 * (ssh(i+1,j) + ssh(i-1,j)) * grid%IdxT(i,j) * grid%mask2dT(i,j)
+      ! o2x(ind%o2x_So_dhdx, n) = 0.5 * (ssh(i+1,j) + ssh(i-1,j)) * grid%IdxT(i,j) * grid%mask2dT(i,j)
       ! This is a PLM slope which might be less prone to the A-grid null mode
-      slp_L = ssh(i,j) - ssh(i-1,j)
-      slp_R = ssh(i+1,j) - ssh(i,j)
+      slp_L = (ssh(i,j) - ssh(i-1,j)) * grid%mask2dCu(I-1,j)
+      !if (grid%mask2dCu(I-1,j)==0.) slp_L = 0.
+      slp_R = (ssh(i+1,j) - ssh(i,j)) * grid%mask2dCu(I,j)
+      !if (grid%mask2dCu(I,j)==0.) slp_R = 0.
       slp_C = 0.5 * (slp_L + slp_R)
       if ( (slp_L * slp_R) > 0.0 ) then
         ! This limits the slope so that the edge values are bounded by the
@@ -296,18 +262,18 @@ contains
         ! larger extreme values.
         slope = 0.0
       end if
-      ind%time_avg_sbuffer(i,j,nvar) = ind%time_avg_sbuffer(i,j,nvar) + dt * slope * grid%IdxT(i,j) * grid%mask2dT(i,j)
+      o2x(ind%o2x_So_dhdx, n) = slope * grid%IdxT(i,j) * grid%mask2dT(i,j)
     end do; end do
 
     ! d/dy ssh
-    nvar = ind%o2x_So_dhdy
     do j=grid%jsc, grid%jec ; do i=grid%isc,grid%iec
       ! This is a simple second-order difference
-    ! ind%time_avg_sbuffer(i,j,nvar) = ind%time_avg_sbuffer(i,j,nvar) + dt * &
-    !              0.5 * (ssh(i,j+1) + ssh(i,j-1)) * grid%IdyT(i,j) * grid%mask2dT(i,j)
+    ! o2x(ind%o2x_So_dhdy, n) = 0.5 * (ssh(i,j+1) + ssh(i,j-1)) * grid%IdyT(i,j) * grid%mask2dT(i,j)
       ! This is a PLM slope which might be less prone to the A-grid null mode
       slp_L = ssh(i,j) - ssh(i,j-1)
       slp_R = ssh(i,j+1) - ssh(i,j)
+slp_L=0.
+slp_R=0.
       slp_C = 0.5 * (slp_L + slp_R)
       if ( (slp_L * slp_R) > 0.0 ) then
         ! This limits the slope so that the edge values are bounded by the
@@ -320,42 +286,88 @@ contains
         ! larger extreme values.
         slope = 0.0
       end if
-      ind%time_avg_sbuffer(i,j,nvar) = ind%time_avg_sbuffer(i,j,nvar) + dt * slope * grid%IdyT(i,j) * grid%mask2dT(i,j)
-    end do; end do
-
-    ! Divide by total accumulated time
-    ind%accum_time = ind%accum_time + dt
-    if (present(last)) then
-
-      !! \todo Do dhdx,dhdy need to be rotated before sending to the coupler?
-      !! \todo Do u,v need to be rotated before sending to the coupler?
-
-      rtime = 1./ind%accum_time
-      if (last) ind%time_avg_sbuffer(:,:,:) = ind%time_avg_sbuffer(:,:,:) * rtime
-    end if
-
-  end subroutine time_avg_state
-
-
-  subroutine ocn_export(ind, grid, o2x)
-
-    type(cpl_indices), intent(in)     :: ind
-    type(ocean_grid_type), intent(in) :: grid
-    real(kind=8), intent(inout)       :: o2x(:,:)
-
-    integer :: i, j, n
-
-    n = 0
-    do j=grid%jsc, grid%jec ; do i=grid%isc,grid%iec
-      n = n+1
-      o2x(ind%o2x_So_t, n) = ind%time_avg_sbuffer(i,j,ind%o2x_So_t)
-      o2x(ind%o2x_So_s, n) = ind%time_avg_sbuffer(i,j,ind%o2x_So_s)
-      o2x(ind%o2x_So_u, n) = ind%time_avg_sbuffer(i,j,ind%o2x_So_u)
-      o2x(ind%o2x_So_v, n) = ind%time_avg_sbuffer(i,j,ind%o2x_So_v)
-      o2x(ind%o2x_So_dhdx, n) = ind%time_avg_sbuffer(i,j,ind%o2x_So_dhdx)
-      o2x(ind%o2x_So_dhdy, n) = ind%time_avg_sbuffer(i,j,ind%o2x_So_dhdy)
+      o2x(ind%o2x_So_dhdy, n) = slope * grid%IdyT(i,j) * grid%mask2dT(i,j)
     end do; end do
 
   end subroutine ocn_export
+
+
+  subroutine fill_ice_ocean_bnd(ice_ocean_boundary, grid, x2o_o, ind)
+    type(ice_ocean_boundary_type), intent(inout)   :: ice_ocean_boundary !< A type for the ice ocean boundary
+    type(ocean_grid_type), intent(in)           :: grid
+    !type(mct_aVect), intent(in)                 :: x2o_o
+    real(kind=8), intent(in)                 :: x2o_o(:,:)
+    type(cpl_indices), intent(inout)            :: ind
+
+    ! local variables
+    integer           :: i, j, k, ig, jg
+
+    ! variable that are not in ice_ocean_boundary:
+    ! latent (x2o_Foxx_lat)
+    ! surface Stokes drift, x-comp. (x2o_Sw_ustokes)
+    ! surface Stokes drift, y-comp. (x2o_Sw_vstokes)
+    ! wave model langmuir multiplier (x2o_Sw_lamult)
+
+    ! biogeochemistry
+    ! Black Carbon hydrophobic release from sea ice component (x2o_Fioi_bcpho)
+    ! Black Carbon hydrophilic release from sea ice component (x2o_Fioi_bcphi)
+    ! dust release from sea ice component (x2o_Fioi_flxdst)
+    ! Black Carbon hydrophilic dry deposition (x2o_Faxa_bcphidry)
+    ! Black Carbon hydrophobic dry deposition (x2o_Faxa_bcphodry)
+    ! Black Carbon hydrophobic wet deposition (x2o_Faxa_bcphiwet)
+    ! Organic Carbon hydrophilic dry deposition (x2o_Faxa_ocphidry)
+    ! Organic Carbon hydrophobic dry deposition (x2o_Faxa_ocphodry)
+    ! Organic Carbon hydrophilic dry deposition (x2o_Faxa_ocphiwet)
+    ! Sizes 1 to 4 dust - wet deposition (x2o_Faxa_dstwet?)
+    ! Sizes 1 to 4 dust - dry deposition (x2o_Faxa_dstdry?)
+
+
+    ! need wind_stress_multiplier?
+
+    ! Copy from x2o to ice_ocean_boundary. ice_ocean_boundary uses global indexing with no halos.
+    write(*,*) 'max. k is:', (grid%jec-grid%jsc+1) * (grid%iec-grid%isc+1)
+    ! zonal wind stress (taux)
+    write(*,*) 'taux', SIZE(x2o_o(ind%x2o_Foxx_taux,:))
+    write(*,*) 'ice_ocean_boundary%u_flux', SIZE(ice_ocean_boundary%u_flux(:,:))
+    k = 0
+    do j = grid%jsc, grid%jec
+      jg = j + grid%jdg_offset
+      do i = grid%isc, grid%iec
+        k = k + 1 ! Increment position within gindex
+        ig = i + grid%idg_offset
+        ! zonal wind stress (taux)
+        ice_ocean_boundary%u_flux(ig,jg) = 0.0 ! x20_o(ind%x2o_Foxx_taux,k)
+        ! meridional wind stress (tauy)
+        ice_ocean_boundary%v_flux(ig,jg) = 0.0 ! x20_o(ind%x2o_Foxx_tauy,k)
+        ! sensible heat flux
+        ice_ocean_boundary%t_flux(ig,jg) = 0.0 ! x20_o(ind%x2o_Foxx_sen,k)
+        ! salt flux
+        ice_ocean_boundary%salt_flux(ig,jg) = 0.0 ! x20_o(ind%x2o_Fioi_salt,k)
+        ! heat flux from snow & ice melt
+        ice_ocean_boundary%calving_hflx(ig,jg) = 0.0 ! x20_o(ind%x2o_Fioi_melth,k)
+        ! snow melt flux
+        ice_ocean_boundary%fprec(ig,jg) = 0.0 ! x20_o(ind%x2o_Fioi_meltw,k)
+        ! river runoff flux
+        ice_ocean_boundary%runoff(ig,jg) = 0.0 ! x20_o(ind%x2o_Foxx_rofl,k)
+        ! ice runoff flux
+        ice_ocean_boundary%calving(ig,jg) = 0.0 ! x20_o(ind%x2o_Foxx_rofi,k)
+        ! liquid precipitation (rain)
+        ice_ocean_boundary%lprec(ig,jg) = 0.0 ! x20_o(ind%x2o_Faxa_rain,k)
+        ! froze precipitation (snow)
+        ice_ocean_boundary%fprec(ig,jg) = 0.0 ! x20_o(ind%x2o_Faxa_snow,k)
+        !!!!!!! LONGWAVE NEEDS TO BE FIXED !!!!!!!
+        ! longwave radiation (up)
+        ice_ocean_boundary%lw_flux(ig,jg) = 0.0 ! x20_o(k,ind%x2o_Foxx_lwup)
+        ! longwave radiation (down)
+        ice_ocean_boundary%lw_flux(ig,jg) = 0.0 ! x20_o(k,ind%x2o_Faxa_lwdn)
+        !!!!!!! SHORTWAVE NEEDS TO BE COMBINED !!!!!!!
+        ! net short-wave heat flux
+        ice_ocean_boundary%u_flux(ig,jg) = 0.0 ! x20_o(k,ind%x2o_Foxx_swnet)
+      enddo
+    enddo
+
+    ice_ocean_boundary%wind_stagger = AGRID
+
+  end subroutine fill_ice_ocean_bnd
 
 end module coupler_indices
