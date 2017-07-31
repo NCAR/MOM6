@@ -1028,15 +1028,15 @@ subroutine trim_for_ice(PF, G, GV, ALE_CSp, tv, h, just_read_params)
 
   do j=G%jsc,G%jec ; do i=G%isc,G%iec
     call cut_off_column_top(GV%ke, tv, GV%Rho0, GV%g_Earth, G%bathyT(i,j), min_thickness, &
-               tv%T(i,j,:), T_t(i,j,:), T_b(i,j,:), tv%S(i,j,:), S_t(i,j,:), S_b(i,j,:), &
-               p_surf(i,j), h(i,j,:), remap_CS)
+               GV%H_to_m, tv%T(i,j,:), T_t(i,j,:), T_b(i,j,:), tv%S(i,j,:), S_t(i,j,:), &
+               S_b(i,j,:), p_surf(i,j), h(i,j,:), remap_CS)
   enddo ; enddo
 
 end subroutine trim_for_ice
 
 !> Adjust the layer thicknesses by cutting away the top at the depth where the hydrostatic
 !! pressure matches p_surf
-subroutine cut_off_column_top(nk, tv, Rho0, G_earth, depth, min_thickness, &
+subroutine cut_off_column_top(nk, tv, Rho0, G_earth, depth, min_thickness, h_to_m, &
                               T, T_t, T_b, S, S_t, S_b, p_surf, h, remap_CS)
   integer,               intent(in)    :: nk !< Number of layers
   type(thermo_var_ptrs), intent(in)    :: tv !< Thermodynamics structure
@@ -1044,6 +1044,8 @@ subroutine cut_off_column_top(nk, tv, Rho0, G_earth, depth, min_thickness, &
   real,                  intent(in)    :: G_earth !< Gravitational acceleration (m/s2)
   real,                  intent(in)    :: depth !< Depth of ocean column (m)
   real,                  intent(in)    :: min_thickness !< Smallest thickness allowed (m)
+  real,                  intent(in)    :: h_to_m !< A constant that translates distances in
+                                                 !! the units of thickness to m.
   real, dimension(nk),   intent(inout) :: T !< Layer mean temperature
   real, dimension(nk),   intent(in)    :: T_t !< Temperature at top of layer
   real, dimension(nk),   intent(in)    :: T_b !< Temperature at bottom of layer
@@ -1051,7 +1053,7 @@ subroutine cut_off_column_top(nk, tv, Rho0, G_earth, depth, min_thickness, &
   real, dimension(nk),   intent(in)    :: S_t !< Salinity at top of layer
   real, dimension(nk),   intent(in)    :: S_b !< Salinity at bottom of layer
   real,                  intent(in)    :: p_surf !< Imposed pressure on ocean at surface (Pa)
-  real, dimension(nk),   intent(inout) :: h !< Layer thickness (H units, m or Pa)
+  real, dimension(nk),   intent(inout) :: h !< Layer thickness (H units, m or kg m-2)
   type(remapping_CS),    pointer       :: remap_CS ! Remapping structure for remapping T and S, if associated
   ! Local variables
   real, dimension(nk+1) :: e ! Top and bottom edge values for reconstructions
@@ -1062,7 +1064,7 @@ subroutine cut_off_column_top(nk, tv, Rho0, G_earth, depth, min_thickness, &
   ! Calculate original interface positions
   e(nk+1) = -depth
   do k=nk,1,-1
-    e(K) = e(K+1) + h(k)
+    e(K) = e(K+1) + h(k)*h_to_m
     h0(k) = h(nk+1-k) ! Keep a copy to use in remapping
   enddo
 
@@ -1899,10 +1901,10 @@ subroutine MOM_temp_salt_initialize_from_Z(h, tv, G, GV, PF, just_read_params)
                  "temperatures (T) and salinities (S). If T and S are not \n" //&
                  "in the same file, TEMP_Z_INIT_FILE and SALT_Z_INIT_FILE \n" //&
                  "must be set.",default="temp_salt_z.nc", do_not_log=just_read)
-  call get_param(PF, mod, "TEMP_Z_INIT_FILE",tfilename, &
+  call get_param(PF, mdl, "TEMP_Z_INIT_FILE",tfilename, &
                  "The name of the z-space input file used to initialize \n"//&
                  "temperatures, only.", default=trim(filename), do_not_log=just_read)
-  call get_param(PF, mod, "SALT_Z_INIT_FILE",sfilename, &
+  call get_param(PF, mdl, "SALT_Z_INIT_FILE",sfilename, &
                  "The name of the z-space input file used to initialize \n"//&
                  "temperatures, only.", default=trim(filename), do_not_log=just_read)
   filename = trim(inputdir)//trim(filename)
@@ -2267,7 +2269,7 @@ subroutine MOM_state_init_tests(G, GV, tv)
   write(0,*) ''
   write(0,*) h
   call cut_off_column_top(nk, tv, GV%Rho0, GV%g_Earth, -e(nk+1), GV%Angstrom, &
-               T, T_t, T_b, S, S_t, S_b, 0.5*P_tot, h, remap_CS)
+                         GV%H_to_m, T, T_t, T_b, S, S_t, S_b, 0.5*P_tot, h, remap_CS)
   write(0,*) h
 
 end subroutine MOM_state_init_tests
