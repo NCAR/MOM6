@@ -30,6 +30,8 @@ install:
  - (cd MOM6-examples/ && git checkout . && git pull)
  # Update submodules mkmf and FMS
  - (cd MOM6-examples/src/ && git submodule init mkmf FMS && git submodule update mkmf FMS)
+ # update cvmix
+ - (cd MOM6-examples/src/MOM6/src/parameterizations/CVmix && git remote add mnlevy https://github.com/mnlevy1981/CVMix-src.git && git fetch mnlevy && git checkout mnlevy/feature/BryanLewis_low
 
 # Build FMS
 before_script:
