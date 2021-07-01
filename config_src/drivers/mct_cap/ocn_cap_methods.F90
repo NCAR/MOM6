@@ -21,7 +21,7 @@ module ocn_cap_methods
 contains
 !=======================================================================
 
-!> Maps incomping ocean data to MOM6 data structures
+!> Maps incoming ocean data to MOM6 data structures
 subroutine ocn_import(x2o, ind, grid, ice_ocean_boundary, ocean_public, logunit, Eclock, c1, c2, c3, c4)
   real(kind=8)                  , intent(in)    :: x2o(:,:)           !< incoming data
   type(cpl_indices_type)        , intent(in)    :: ind                !< Structure with MCT attribute vects and indices
@@ -105,6 +105,35 @@ subroutine ocn_import(x2o, ind, grid, ice_ocean_boundary, ocean_public, logunit,
         ice_ocean_boundary%sw_flux_nir_dir(i,j) = x2o(ind%x2o_Faxa_swndr,k) * GRID%mask2dT(i,j)
         ice_ocean_boundary%sw_flux_nir_dif(i,j) = x2o(ind%x2o_Faxa_swndf,k) * GRID%mask2dT(i,j)
       endif
+
+      ! MARBL-specific forcing fields
+      ! Dust and iron fluxes (Do I need the GRID%mask2dT terms? I have them in convert_IOB_to_fluxes())
+      ! TODO: these are in units kg/m^2/s, want g/cm^2/s => multiply by 0.1 somewhere
+      !       currently the conversion is done in MARBL_tracers:MARBL_tracers_column_physics when copying
+      !       into surface_flux_forcings but maybe we should convert somewhere else because we want to
+      ! register these IOB fields as diagnostics (in g/cm^2/s for now)
+      ice_ocean_boundary%MARBL_IOB%atm_fine_dust_flux(i,j) = (x2o(ind%x2o_Faxa_dstwet1,k) + &
+                                                              x2o(ind%x2o_Faxa_dstdry1,k)) * &
+                                                             GRID%mask2dT(i,j)
+      ice_ocean_boundary%MARBL_IOB%atm_coarse_dust_flux(i,j) = (x2o(ind%x2o_Faxa_dstwet2,k) + &
+                                                                x2o(ind%x2o_Faxa_dstwet3,k) + &
+                                                                x2o(ind%x2o_Faxa_dstwet4,k) + &
+                                                                x2o(ind%x2o_Faxa_dstdry2,k) + &
+                                                                x2o(ind%x2o_Faxa_dstdry3,k) + &
+                                                                x2o(ind%x2o_Faxa_dstdry4,k)) * &
+                                                               GRID%mask2dT(i,j)
+      ice_ocean_boundary%MARBL_IOB%seaice_dust_flux(i,j) = x2o(ind%x2o_Fioi_flxdst,k) * GRID%mask2dT(i,j)
+      ice_ocean_boundary%MARBL_IOB%atm_bc_flux(i,j) = (x2o(ind%x2o_Faxa_bcphidry,k) + x2o(ind%x2o_Faxa_bcphodry,k) + &
+                                                       x2o(ind%x2o_Faxa_bcphiwet,k)) * GRID%mask2dT(i,j)
+      ice_ocean_boundary%MARBL_IOB%seaice_bc_flux(i,j) = (x2o(ind%x2o_Fioi_bcpho,k) + x2o(ind%x2o_Fioi_bcphi,k)) * &
+                                                         GRID%mask2dT(i,j)
+
+      ! ice fraction
+      ice_ocean_boundary%MARBL_IOB%ice_fraction(i,j) = x2o(ind%x2o_Si_ifrac,k) * GRID%mask2dT(i,j)
+
+      ! 10m wind
+      ice_ocean_boundary%MARBL_IOB%u10_sqr(i,j) = x2o(ind%x2o_So_duu10n,k) * GRID%mask2dT(i,j)
+
     enddo
   enddo
 

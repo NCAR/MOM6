@@ -44,6 +44,8 @@ use MOM_domains,          only: AGRID, BGRID_NE, CGRID_NE, pass_vector
 use mpp_domains_mod,      only: mpp_get_compute_domain
 use MOM_io,               only: stdout
 
+use marbl_forcing_type_mod, only: marbl_iob_allocate
+
 ! Previously inlined - now in separate modules
 use MOM_ocean_model_mct,     only: ocean_public_type, ocean_state_type
 use MOM_ocean_model_mct,     only: ocean_model_init , update_ocean_model, ocean_model_end
@@ -812,8 +814,6 @@ end subroutine ocean_model_init_sfc
 !! mi, mass of ice (kg/m2)
 !!
 !! Variables in the coupler that are **NOT** used in MOM6 (i.e., no corresponding field in fluxes):
-!! x2o_Si_ifrac, fractional ice wrt ocean
-!! x2o_So_duu10n, 10m wind speed squared (m^2/s^2)
 !! x2o_Sa_co2prog, bottom atm level prognostic CO2
 !! x2o_Sa_co2diag, bottom atm level diagnostic CO2
 !!
@@ -906,6 +906,8 @@ subroutine IOB_allocate(IOB, isc, iec, jsc, jec)
   IOB%calving_hflx     = 0.0
   IOB%mi               = 0.0
   IOB%p                = 0.0
+
+  call marbl_iob_allocate(isc, iec, jsc, jec, IOB%MARBL_IOB)
 
 end subroutine IOB_allocate
 

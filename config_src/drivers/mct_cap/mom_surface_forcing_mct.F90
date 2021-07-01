@@ -38,6 +38,8 @@ use mpp_mod,              only : mpp_chksum
 use time_interp_external_mod, only : init_external_field, time_interp_external
 use time_interp_external_mod, only : time_interp_external_init
 use MOM_io,               only: stdout
+use marbl_forcing_type_mod, only : marbl_forcing_CS, marbl_forcing_init, marbl_forcing_type_init
+use marbl_forcing_type_mod, only : marbl_ice_ocean_boundary_type, convert_marbl_IOB_to_forcings
 
 implicit none ; private
 
@@ -142,6 +144,8 @@ type, public :: surface_forcing_CS ; private
   type(forcing_diags), public :: handles !< diagnostics handles
   type(MOM_restart_CS), pointer :: restart_CSp => NULL() !< restart pointer
   type(user_revise_forcing_CS), pointer :: urf_CS => NULL() !< user revise pointer
+
+  type(marbl_forcing_CS), pointer :: marbl_forcing_CSp => NULL() !< parameters for getting MARBL forcing
 end type surface_forcing_CS
 
 !> Structure corresponding to forcing, but with the elements, units, and conventions
@@ -185,6 +189,9 @@ type, public :: ice_ocean_boundary_type
                                                               !! flux-exchange code, based on what the sea-ice
                                                               !! model is providing.  Otherwise, the value from
                                                               !! the surface_forcing_CS is used.
+
+  type(marbl_ice_ocean_boundary_type), pointer :: MARBL_IOB => NULL() !< Structure containing IOB fields
+                                                                      !! (only needed by MARBL)
 end type ice_ocean_boundary_type
 
 integer :: id_clock_forcing
@@ -312,6 +319,8 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
     enddo; enddo
 
     if (restore_temp) call safe_alloc_ptr(fluxes%heat_added,isd,ied,jsd,jed)
+
+    call marbl_forcing_type_init(isd,ied,jsd,jed,fluxes%MARBL_forcing)
 
   endif   ! endif for allocation and initialization
 
@@ -523,6 +532,9 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
                      fluxes%sw_nir_dir(i,j) + fluxes%sw_nir_dif(i,j)
 
   enddo; enddo
+
+  ! Copy MARBL-specific IOB fields into fluxes%MARBL_forcing
+  call convert_marbl_IOB_to_forcings(IOB%MARBL_IOB, Time, G, US, i0, j0, fluxes%MARBL_forcing, CS%marbl_forcing_CSp)
 
   ! applied surface pressure from atmosphere and cryosphere
   if (associated(IOB%p)) then
@@ -1294,6 +1306,9 @@ subroutine surface_forcing_init(Time, G, US, param_file, diag, CS, restore_salt,
   if (CS%allow_flux_adjustments) then
     call data_override_init(Ocean_domain_in=G%Domain%mpp_domain)
   endif
+
+  ! Set up MARBL forcing control structure
+  call marbl_forcing_init(G, param_file, CS%diag, Time, CS%inputdir, CS%marbl_forcing_CSp)
 
   if (present(restore_salt)) then ; if (restore_salt) then
     salt_file = trim(CS%inputdir) // trim(CS%salt_restore_file)

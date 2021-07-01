@@ -21,6 +21,8 @@ use MOM_unit_scaling,  only : unit_scale_type
 use MOM_variables,     only : surface, thermo_var_ptrs
 use MOM_verticalGrid,  only : verticalGrid_type
 
+use marbl_forcing_type_mod, only : marbl_forcing_type
+
 implicit none ; private
 
 #include <MOM_memory.h>
@@ -164,6 +166,8 @@ type, public :: forcing
                                  !! exactly 0 away from shelves or on land.
   real, pointer, dimension(:,:) :: iceshelf_melt => NULL() !< Ice shelf melt rate (positive)
                                  !! or freezing (negative) [R Z T-1 ~> kg m-2 s-1]
+
+  type(marbl_forcing_type), pointer :: MARBL_forcing => NULL() !< forcing fields needed if MARBL is active
 
   ! Scalars set by surface forcing modules
   real :: vPrecGlobalAdj = 0.     !< adjustment to restoring vprec to zero out global net [kg m-2 s-1]
