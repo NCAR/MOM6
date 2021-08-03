@@ -173,11 +173,8 @@ contains
     S             ! The filled salinity [ppt], with the values in
                   ! in massless layers filled vertically by diffusion.
   integer                                ::  i,j,k
-  real :: Tl(5)              ! copy and T in local stencil [degC]
-  real :: mn_T               ! mean of T in local stencil [degC]
-  real :: mn_T2              ! mean of T**2 in local stencil [degC]
   real :: hl(5)              ! Copy of local stencil of H [H ~> m]
-  real :: r_sm_H             ! Reciprocal of sum of H in local stencil [H-1 ~> m-1]
+  real :: dTdi2, dTdj2       ! Differences in T variance [degC2]
 
   ! This block does a thickness weighted variance calculation and helps control for
   ! extreme gradients along layers which are vanished against topography. It is
@@ -189,24 +186,23 @@ contains
   do k=1,G%ke
      do j=G%jsc,G%jec
         do i=G%isc,G%iec
-           hl(1) = h(i,j,k) * G%mask2dT(i,j)
-           hl(2) = h(i-1,j,k) * G%mask2dCu(I-1,j)
-           hl(3) = h(i+1,j,k) * G%mask2dCu(I,j)
-           hl(4) = h(i,j-1,k) * G%mask2dCv(i,J-1)
-           hl(5) = h(i,j+1,k) * G%mask2dCv(i,J)
-           r_sm_H = 1. / ( ( hl(1) + ( ( hl(2) + hl(3) ) + ( hl(4) + hl(5) ) ) ) + GV%H_subroundoff )
-           ! Mean of T
-           Tl(1) = T(i,j,k) ; Tl(2) = T(i-1,j,k) ; Tl(3) = T(i+1,j,k)
-           Tl(4) = T(i,j-1,k) ; Tl(5) = T(i,j+1,k)
-           mn_T = ( hl(1)*Tl(1) + ( ( hl(2)*Tl(2) + hl(3)*Tl(3) ) + ( hl(4)*Tl(4) + hl(5)*Tl(5) ) ) ) * r_sm_H
-           ! Adjust T vectors to have zero mean
-           Tl(:) = Tl(:) - mn_T ; mn_T = 0.
-           ! Variance of T
-           mn_T2 = ( hl(1)*Tl(1)*Tl(1) + ( ( hl(2)*Tl(2)*Tl(2) + hl(3)*Tl(3)*Tl(3) ) &
-                                         + ( hl(4)*Tl(4)*Tl(4) + hl(5)*Tl(5)*Tl(5) ) ) ) * r_sm_H
-           ! Variance should be positive but round-off can violate this. Calculating
-           ! variance directly would fix this but requires more operations.
-           tv%varT(i,j,k) = stoch_eos_CS%stanley_coeff * max(0., mn_T2)
+          hl(1) = h(i,j,k) * G%mask2dT(i,j)
+          hl(2) = h(i-1,j,k) * G%mask2dCu(I-1,j)
+          hl(3) = h(i+1,j,k) * G%mask2dCu(I,j)
+          hl(4) = h(i,j-1,k) * G%mask2dCv(i,J-1)
+          hl(5) = h(i,j+1,k) * G%mask2dCv(i,J)
+
+          ! SGS variance in i-direction [degC2]
+          dTdi2 = ( ( G%mask2dCu(I  ,j) * G%IdxCu(I  ,j) * ( T(i+1,j,k) - T(i,j,k) ) &
+                + G%mask2dCu(I-1,j) * G%IdxCu(I-1,j) * ( T(i,j,k) - T(i-1,j,k) ) &
+                ) * G%dxT(i,j) * 0.5 )**2
+          ! SGS variance in j-direction [degC2]
+          dTdj2 = ( ( G%mask2dCv(i,J  ) * G%IdyCv(i,J  ) * ( T(i,j+1,k) - T(i,j,k) ) &
+                + G%mask2dCv(i,J-1) * G%IdyCv(i,J-1) * ( T(i,j,k) - T(i,j-1,k) ) &
+                ) * G%dyT(i,j) * 0.5 )**2
+          tv%varT(i,j,k) = stoch_eos_CS%stanley_coeff * 0.5 * ( dTdi2 + dTdj2 )
+          ! Turn off scheme near land
+          tv%varT(i,j,k) = tv%varT(i,j,k) * (minval(hl) / (maxval(hl) + GV%H_subroundoff))
         enddo
      enddo
   enddo
