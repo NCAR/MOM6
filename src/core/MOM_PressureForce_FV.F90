@@ -753,7 +753,7 @@ subroutine PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, p_atm
   endif
 
   if (CS%use_stanley_pgf) then
-    do j=js-1,je+1 ; do i=is-1,ie+1 ; 
+    do j=js,je ; do i=is,ie ; 
       p_stanley_scalar=0.0
       do k=1, nz 
       p_stanley_scalar = p_stanley_scalar + 0.5 * h(i,j,k) * GV%H_to_Pa !Pressure at mid-point of layer
