@@ -60,8 +60,7 @@ type, public :: mixedlayer_restrat_CS ; private
   type(diag_ctrl), pointer :: diag !< A structure that is used to regulate the
                                    !! timing of diagnostic output.
   logical :: use_stanley_ml        !< If true, use the Stanley parameterization of SGS T variance
-                                   !! if false, MLE will calculate a MLD based on a density difference
-                                   !! based on the parameter MLE_DENSITY_DIFF.
+
   real, dimension(:,:), pointer :: &
          MLD_filtered => NULL(), &   !< Time-filtered MLD [H ~> m or kg m-2]
          MLD_filtered_slow => NULL() !< Slower time-filtered MLD [H ~> m or kg m-2]
