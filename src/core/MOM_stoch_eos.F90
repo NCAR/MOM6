@@ -200,7 +200,7 @@ contains
           dTdj2 = ( ( G%mask2dCv(i,J  ) * G%IdyCv(i,J  ) * ( T(i,j+1,k) - T(i,j,k) ) &
                 + G%mask2dCv(i,J-1) * G%IdyCv(i,J-1) * ( T(i,j,k) - T(i,j-1,k) ) &
                 ) * G%dyT(i,j) * 0.5 )**2
-          tv%varT(i,j,k) = stoch_eos_CS%stanley_coeff * 0.5 * ( dTdi2 + dTdj2 )
+          tv%varT(i,j,k) = stoch_eos_CS%stanley_coeff * ( dTdi2 + dTdj2 )
           ! Turn off scheme near land
           tv%varT(i,j,k) = tv%varT(i,j,k) * (minval(hl) / (maxval(hl) + GV%H_subroundoff))
         enddo
