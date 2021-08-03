@@ -12,6 +12,7 @@ use MOM_diag_mediator,   only : register_diag_field,post_data,diag_ctrl,safe_all
 use MOM_variables,       only : thermo_var_ptrs
 use MOM_verticalGrid,    only : verticalGrid_type
 use MOM_restart,         only : register_restart_field
+use MOM_isopycnal_slopes,only : vert_fill_TS
 !use random_numbers_mod, only : getRandomNumbers,initializeRandomNumberStream,randomNumberStream
 
 implicit none
@@ -40,6 +41,7 @@ type, public :: MOM_stoch_eos_CS
   real :: stanley_coeff !< Coefficient correlating the temperature gradient 
                         !and SGS T variance; if <0, turn off scheme in all codes
   real :: stanley_a !a in exp(aX) in stochastic coefficient 
+  real :: kappa_smooth    !< A diffusivity for smoothing T/S in vanished layers [Z2 T-1 ~> m2 s-1]
   integer :: id_stoch_eos  = -1, id_stoch_phi  = -1, id_tvar_sgs = -1
 end type MOM_stoch_eos_CS
 
@@ -58,16 +60,20 @@ contains
   seed=0
   ! contants
   !pi=2*acos(0.0)
-  call get_param(param_file, "MOM", "STOCH_EOS", stoch_eos_CS%use_stoch_eos, &
+  call get_param(param_file, "MOM_stoch_eos", "STOCH_EOS", stoch_eos_CS%use_stoch_eos, &
                  "If true, stochastic perturbations are applied "//&
                  "to the EOS in the PGF.", default=.false.)
-  call get_param(param_file, "MOM", "STANLEY_COEFF", stoch_eos_CS%stanley_coeff, &
+  call get_param(param_file, "MOM_stoch_eos", "STANLEY_COEFF", stoch_eos_CS%stanley_coeff, &
                  "Coefficient correlating the temperature gradient "//&
                  "and SGS T variance.", default=-1.0)
-  call get_param(param_file, "MOM", "STANLEY_A", stoch_eos_CS%stanley_a, &
+  call get_param(param_file, "MOM_stoch_eos", "STANLEY_A", stoch_eos_CS%stanley_a, &
                  "Coefficient a which scales chi in stochastic perturbation of the "//&
                  "SGS T variance.", default=1.0)
-				 
+  call get_param(param_file, "MOM_stoch_eos", "KD_SMOOTH", stoch_eos_CS%kappa_smooth, &
+                 "A diapycnal diffusivity that is used to interpolate "//&
+                 "more sensible values of T & S into thin layers.", &
+                 units="m2 s-1", default=1.0e-6)
+
   !don't run anything if STANLEY_COEFF < 0
   if (stoch_eos_CS%stanley_coeff >= 0.0) then
   
@@ -77,7 +83,7 @@ contains
     ALLOC_(stoch_eos_CS%phi(G%isd:G%ied,G%jsd:G%jed)) ; stoch_eos_CS%phi(:,:) = 0.0
     ALLOC_(l2_inv(G%isd:G%ied,G%jsd:G%jed)) 
     ALLOC_(rgauss(G%isd:G%ied,G%jsd:G%jed)) 
-    call get_param(param_file, "MOM", "SEED_STOCH_EOS", seed, &
+    call get_param(param_file, "MOM_stoch_eos", "SEED_STOCH_EOS", seed, &
                  "Specfied seed for random number sequence ", default=0)
     call random_2d_constructor(rn_CS, G%HI, Time, seed)
     call random_2d_norm(rn_CS, G%HI, rgauss)
@@ -98,13 +104,13 @@ contains
 
     !register diagnostics
     stoch_eos_CS%id_tvar_sgs = register_diag_field('ocean_model', 'tvar_sgs', diag%axesTL, Time, &
-      'Parameterized SGS Temperature Variance ', 'None')	
-	if (stoch_eos_CS%use_stoch_eos) then
+      'Parameterized SGS Temperature Variance ', 'None')
+    if (stoch_eos_CS%use_stoch_eos) then
       stoch_eos_CS%id_stoch_eos = register_diag_field('ocean_model', 'stoch_eos', diag%axesT1, Time, &
         'random pattern for EOS', 'None')
       stoch_eos_CS%id_stoch_phi = register_diag_field('ocean_model', 'stoch_phi', diag%axesT1, Time, &
         'phi for EOS', 'None')
-	endif
+    endif
   endif
   
   end subroutine MOM_stoch_eos_init
@@ -153,13 +159,19 @@ contains
   end subroutine MOM_stoch_eos_run
 
 
-  subroutine MOM_calc_varT(G,Gv,h,tv,stoch_eos_CS)
+  subroutine MOM_calc_varT(G,GV,h,tv,stoch_eos_CS,dt)
   type(ocean_grid_type), intent(in)    :: G
   type(verticalGrid_type),                   intent(in)  :: GV  !< Vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)),  intent(in)  :: h   !< Layer thickness [H ~> m]
   type(thermo_var_ptrs), intent(inout) :: tv   !< Thermodynamics structure
   type(MOM_stoch_eos_CS), intent(inout) :: stoch_eos_CS
+  real, intent(in)  :: dt    !< Time increment [T ~> s]
 ! locals
+  real, dimension(SZI_(G), SZJ_(G), SZK_(GV)) :: &
+    T, &          ! The temperature (or density) [degC], with the values in
+                  ! in massless layers filled vertically by diffusion.
+    S             ! The filled salinity [ppt], with the values in
+                  ! in massless layers filled vertically by diffusion.
   integer                                ::  i,j,k
   real :: Tl(5)              ! copy and T in local stencil [degC]
   real :: mn_T               ! mean of T in local stencil [degC]
@@ -171,6 +183,9 @@ contains
   ! extreme gradients along layers which are vanished against topography. It is
   ! still a poor approximation in the interior when coordinates are strongly tilted.
   if (.not. associated(tv%varT)) call safe_alloc_ptr(tv%varT, G%isd, G%ied, G%jsd, G%jed, GV%ke)
+  
+  call vert_fill_TS(h, tv%T, tv%S, stoch_eos_CS%kappa_smooth*dt, T, S, G, GV, halo_here=1, larger_h_denom=.true.)
+
   do k=1,G%ke
      do j=G%jsc,G%jec
         do i=G%isc,G%iec
@@ -181,8 +196,8 @@ contains
            hl(5) = h(i,j+1,k) * G%mask2dCv(i,J)
            r_sm_H = 1. / ( ( hl(1) + ( ( hl(2) + hl(3) ) + ( hl(4) + hl(5) ) ) ) + GV%H_subroundoff )
            ! Mean of T
-           Tl(1) = tv%T(i,j,k) ; Tl(2) = tv%T(i-1,j,k) ; Tl(3) = tv%T(i+1,j,k)
-           Tl(4) = tv%T(i,j-1,k) ; Tl(5) = tv%T(i,j+1,k)
+           Tl(1) = T(i,j,k) ; Tl(2) = T(i-1,j,k) ; Tl(3) = T(i+1,j,k)
+           Tl(4) = T(i,j-1,k) ; Tl(5) = T(i,j+1,k)
            mn_T = ( hl(1)*Tl(1) + ( ( hl(2)*Tl(2) + hl(3)*Tl(3) ) + ( hl(4)*Tl(4) + hl(5)*Tl(5) ) ) ) * r_sm_H
            ! Adjust T vectors to have zero mean
            Tl(:) = Tl(:) - mn_T ; mn_T = 0.
