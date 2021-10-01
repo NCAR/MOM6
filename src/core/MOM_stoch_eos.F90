@@ -28,19 +28,17 @@ real, parameter,private :: tfac=0.27
 real, parameter,private :: amplitude=0.624499 !0.39 is variance
 integer        ,private :: seed
 type(PRNG)  ::  rn_CS
-!integer(8) :: npts
-!real :: pi
 logical first_time
-  
-type, public :: MOM_stoch_eos_CS 
+
+type, public :: MOM_stoch_eos_CS
   real,public  ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: pattern
                     !< Random pattern for stochastic EOS
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: phi
-                    !< temporal correlation stochastic EOS (deugging)
+                  !< temporal correlation stochastic EOS (deugging)
   logical :: use_stoch_eos  !< If true, use the stochastic equation of state (Stanley et al. 2020)
-  real :: stanley_coeff !< Coefficient correlating the temperature gradient 
+  real :: stanley_coeff !< Coefficient correlating the temperature gradient
                         !and SGS T variance; if <0, turn off scheme in all codes
-  real :: stanley_a !a in exp(aX) in stochastic coefficient 
+  real :: stanley_a !a in exp(aX) in stochastic coefficient
   real :: kappa_smooth    !< A diffusivity for smoothing T/S in vanished layers [Z2 T-1 ~> m2 s-1]
   integer :: id_stoch_eos  = -1, id_stoch_phi  = -1, id_tvar_sgs = -1
 end type MOM_stoch_eos_CS
@@ -76,13 +74,13 @@ contains
 
   !don't run anything if STANLEY_COEFF < 0
   if (stoch_eos_CS%stanley_coeff >= 0.0) then
-  
+
     ALLOC_(stoch_eos_CS%pattern(G%isd:G%ied,G%jsd:G%jed)) ; stoch_eos_CS%pattern(:,:) = 0.0
     vd = var_desc("stoch_eos_pattern","nondim","Random pattern for stoch EOS",'h','1')
     call register_restart_field(stoch_eos_CS%pattern, vd, .false., restart_CS)
     ALLOC_(stoch_eos_CS%phi(G%isd:G%ied,G%jsd:G%jed)) ; stoch_eos_CS%phi(:,:) = 0.0
-    ALLOC_(l2_inv(G%isd:G%ied,G%jsd:G%jed)) 
-    ALLOC_(rgauss(G%isd:G%ied,G%jsd:G%jed)) 
+    ALLOC_(l2_inv(G%isd:G%ied,G%jsd:G%jed))
+    ALLOC_(rgauss(G%isd:G%ied,G%jsd:G%jed))
     call get_param(param_file, "MOM_stoch_eos", "SEED_STOCH_EOS", seed, &
                  "Specfied seed for random number sequence ", default=0)
     call random_2d_constructor(rn_CS, G%HI, Time, seed)
@@ -93,7 +91,7 @@ contains
        do i=G%isc,G%iec
           l2_inv(i,j)=1.0/(G%dxT(i,j)**2+G%dyT(i,j)**2)
        enddo
-    enddo 
+    enddo
     if (is_new_run(restart_CS)) then
        do j=G%jsc,G%jec
           do i=G%isc,G%iec
@@ -112,7 +110,7 @@ contains
         'phi for EOS', 'None')
     endif
   endif
-  
+
   end subroutine MOM_stoch_eos_init
 
   subroutine MOM_stoch_eos_run(G,u,v,delt,Time,stoch_eos_CS,diag)
@@ -121,7 +119,7 @@ contains
                                  intent(in)  :: u      !< The zonal velocity [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJB_(G),SZK_(G)), &
                                  intent(in)  :: v      !< The meridional velocity [L T-1 ~> m s-1].
-  real,                  intent(in)    :: delt 
+  real,                  intent(in)    :: delt
   type(time_type),       intent(in)    :: Time
   type(MOM_stoch_eos_CS), intent(inout) :: stoch_eos_CS
   type(diag_ctrl),       target, intent(inout) :: diag       !< to control diagnostics
@@ -142,20 +140,7 @@ contains
         stoch_eos_CS%phi(i,j)=phi
      enddo
   enddo
-  
-  !print*,'stoch_run ubar',minval(u),maxval(u),minval(v),maxval(v)
-  !print*,'stoch_run rp',minval(random_pattern),maxval(random_pattern),minval(rgauss),maxval(rgauss)
-  !print*,'stoch_run phi',minval(phi_out),maxval(phi_out),minval(rgauss),maxval(rgauss)
-  !print*,'indicies',G%isd,G%ied,G%idg_offset,G%jsd,G%jed,G%jdg_offset
-  !print*,'rgauss bounds',lbound(rgauss,1),lbound(rgauss,2),ubound(rgauss,1),ubound(rgauss,2)
-  !print*,'rp bounds',lbound(random_pattern,1),lbound(random_pattern,2),ubound(random_pattern,1),ubound(random_pattern,2)
-  !print*,'subset',minval(rgauss(G%idg_offset:G%idg_offset+G%isd,G%jdg_offset:G%jdg_offset+G%jsd)),&
-  !                maxval(rgauss(G%idg_offset:G%idg_offset+G%isd,G%jdg_offset:G%jdg_offset+G%jsd))
-  !print*,'PJP should be posting',stoch_eos_CS%id_stoch_eos,stoch_eos_CS%id_stoch_phi
-  !print*,'PJP min/max',minval(stoch_eos_CS%phi),maxval(stoch_eos_CS%phi),minval(stoch_eos_CS%pattern),maxval(stoch_eos_CS%pattern)
-  !if (stoch_eos_CS%id_stoch_eos > 0) call post_data(stoch_eos_CS%id_stoch_eos, stoch_eos_CS%pattern, diag)!, mask=G%mask2dT)
-  !if (stoch_eos_CS%id_stoch_phi > 0) call post_data(stoch_eos_CS%id_stoch_phi, stoch_eos_CS%phi, diag)!, mask=G%mask2dT)
-  
+
   end subroutine MOM_stoch_eos_run
 
 
@@ -180,7 +165,7 @@ contains
   ! extreme gradients along layers which are vanished against topography. It is
   ! still a poor approximation in the interior when coordinates are strongly tilted.
   if (.not. associated(tv%varT)) call safe_alloc_ptr(tv%varT, G%isd, G%ied, G%jsd, G%jed, GV%ke)
-  
+
   call vert_fill_TS(h, tv%T, tv%S, stoch_eos_CS%kappa_smooth*dt, T, S, G, GV, halo_here=1, larger_h_denom=.true.)
 
   do k=1,G%ke

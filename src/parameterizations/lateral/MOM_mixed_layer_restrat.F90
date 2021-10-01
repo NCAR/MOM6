@@ -198,7 +198,7 @@ subroutine mixedlayer_restrat_general(h, uhtr, vhtr, tv, forces, dt, MLD_in, Var
 
   is  = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = GV%ke
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
-  
+
   covTS(:)=0.0 !!Functionality not implemented yet; in future, should be passed in tv
   varS(:)=0.0
 
@@ -215,7 +215,7 @@ subroutine mixedlayer_restrat_general(h, uhtr, vhtr, tv, forces, dt, MLD_in, Var
       dK(:) = 0.5 * h(:,j,1) ! Depth of center of surface layer
       if (CS%use_stanley_ml) then
         call calculate_density(tv%T(:,j,1), tv%S(:,j,1), pRef_MLD, tv%varT(:,j,1), covTS, varS, &
-          rhoSurf, tv%eqn_of_state, EOSdom)   
+          rhoSurf, tv%eqn_of_state, EOSdom)
       else
         call calculate_density(tv%T(:,j,1), tv%S(:,j,1), pRef_MLD, rhoSurf, tv%eqn_of_state, EOSdom)
       endif
@@ -228,7 +228,7 @@ subroutine mixedlayer_restrat_general(h, uhtr, vhtr, tv, forces, dt, MLD_in, Var
         deltaRhoAtKm1(:) = deltaRhoAtK(:) ! Store value from previous iteration of K
         if (CS%use_stanley_ml) then
           call calculate_density(tv%T(:,j,k), tv%S(:,j,k), pRef_MLD, tv%varT(:,j,k), covTS, varS, &
-            deltaRhoAtK, tv%eqn_of_state, EOSdom) 
+            deltaRhoAtK, tv%eqn_of_state, EOSdom)
         else
           call calculate_density(tv%T(:,j,k), tv%S(:,j,k), pRef_MLD, deltaRhoAtK, tv%eqn_of_state, EOSdom)
         endif
@@ -339,7 +339,7 @@ subroutine mixedlayer_restrat_general(h, uhtr, vhtr, tv, forces, dt, MLD_in, Var
         if (CS%use_stanley_ml) then
           call calculate_density(tv%T(:,j,k), tv%S(:,j,k), p0, tv%varT(:,j,k), covTS, varS, &
             rho_ml(:), tv%eqn_of_state, EOSdom)
-        else   
+        else
           call calculate_density(tv%T(:,j,k), tv%S(:,j,k), p0, rho_ml(:), tv%eqn_of_state, EOSdom)
         endif
         line_is_empty = .true.
@@ -638,10 +638,10 @@ subroutine mixedlayer_restrat_BML(h, uhtr, vhtr, tv, forces, dt, G, GV, US, CS)
   if (.not. associated(CS)) call MOM_error(FATAL, "MOM_mixedlayer_restrat: "// &
          "Module must be initialized before it is used.")
   if ((nkml<2) .or. (CS%ml_restrat_coef<=0.0)) return
-  
+
   if (CS%use_stanley_ml) call MOM_error(FATAL, &
        "MOM_mixedlayer_restrat: The Stanley parameterization is not"//&
-       "available with the BML.")  
+       "available with the BML.")
 
   uDml(:)    = 0.0 ; vDml(:) = 0.0
   I4dt       = 0.25 / dt

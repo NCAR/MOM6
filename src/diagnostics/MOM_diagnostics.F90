@@ -471,7 +471,7 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
       enddo ; enddo ; enddo
       if (CS%id_Tpot > 0) call post_data(CS%id_Tpot, work_3d, CS%diag)
       if (CS%id_tob > 0) call post_data(CS%id_tob, work_3d(:,:,nz), CS%diag, mask=G%mask2dT)
-      if (CS%id_tosq > 0) then    
+      if (CS%id_tosq > 0) then
          do k=1,nz ; do j=js,je ; do i=is,ie
            work_3d(i,j,k) = work_3d(i,j,k)*work_3d(i,j,k)
          enddo ; enddo ; enddo
@@ -481,7 +481,7 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
   else
     ! Internal T&S variables are potential temperature & practical salinity
     if (CS%id_tob > 0) call post_data(CS%id_tob, tv%T(:,:,nz), CS%diag, mask=G%mask2dT)
-    if (CS%id_tosq > 0) then    
+    if (CS%id_tosq > 0) then
       do k=1,nz ; do j=js,je ; do i=is,ie
         work_3d(i,j,k) = tv%T(i,j,k)*tv%T(i,j,k)
       enddo ; enddo ; enddo
@@ -499,8 +499,8 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
         work_3d(i,j,k) = gsw_sp_from_sr(tv%S(i,j,k))
       enddo ; enddo ; enddo
       if (CS%id_Sprac > 0) call post_data(CS%id_Sprac, work_3d, CS%diag)
-      if (CS%id_sob > 0) call post_data(CS%id_sob, work_3d(:,:,nz), CS%diag, mask=G%mask2dT)    
-      if (CS%id_sosq > 0) then    
+      if (CS%id_sob > 0) call post_data(CS%id_sob, work_3d(:,:,nz), CS%diag, mask=G%mask2dT)
+      if (CS%id_sosq > 0) then
         do k=1,nz ; do j=js,je ; do i=is,ie
            work_3d(i,j,k) = work_3d(i,j,k)*work_3d(i,j,k)
         enddo ; enddo ; enddo
@@ -510,7 +510,7 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
   else
     ! Internal T&S variables are potential temperature & practical salinity
     if (CS%id_sob > 0) call post_data(CS%id_sob, tv%S(:,:,nz), CS%diag, mask=G%mask2dT)
-    if (CS%id_sosq > 0) then    
+    if (CS%id_sosq > 0) then
       do k=1,nz ; do j=js,je ; do i=is,ie
         work_3d(i,j,k) = tv%S(i,j,k)*tv%S(i,j,k)
       enddo ; enddo ; enddo
