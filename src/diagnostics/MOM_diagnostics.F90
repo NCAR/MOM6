@@ -15,6 +15,7 @@ use MOM_diag_mediator,     only : diag_ctrl, time_type, safe_alloc_ptr
 use MOM_diag_mediator,     only : diag_get_volume_cell_measure_dm_id
 use MOM_diag_mediator,     only : diag_grid_storage
 use MOM_diag_mediator,     only : diag_save_grids, diag_restore_grids, diag_copy_storage_to_diag
+use MOM_diag_mediator,     only : diag_update_remap_grids, diag_store_h_extensive
 use MOM_domains,           only : create_group_pass, do_group_pass, group_pass_type
 use MOM_domains,           only : To_North, To_East
 use MOM_EOS,               only : calculate_density, calculate_density_derivs, EOS_domain
@@ -258,6 +259,7 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
   real :: absurdly_small_freq2 ! Frequency squared used to avoid division by 0 [T-2 ~> s-2]
 
   integer :: k_list
+  integer :: h_extensive_prev_ind
 
   real, dimension(SZK_(GV)) :: temp_layer_ave, salt_layer_ave
   real :: thetaoga, soga, masso, tosga, sosga
@@ -278,6 +280,8 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
     call diag_save_grids(CS%diag)
     call diag_copy_storage_to_diag(CS%diag, diag_pre_sync)
 
+    h_extensive_prev_ind = 2
+
     if (CS%id_h_pre_sync > 0) &
         call post_data(CS%id_h_pre_sync, diag_pre_sync%h_state, CS%diag, alt_h = diag_pre_sync%h_state)
 
@@ -285,7 +289,8 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
 
     if (CS%id_dv_dt>0) call post_data(CS%id_dv_dt, CS%dv_dt, CS%diag, alt_h = diag_pre_sync%h_state)
 
-    if (CS%id_dh_dt>0) call post_data(CS%id_dh_dt, CS%dh_dt, CS%diag, alt_h = diag_pre_sync%h_state)
+    if (CS%id_dh_dt>0) call post_data(CS%id_dh_dt, dt, CS%dh_dt, h, diag_pre_sync%h_state, h, &
+                                      h_extensive_prev_ind, CS%diag)
 
     !! Diagnostics for terms multiplied by fractional thicknesses
 
@@ -1514,10 +1519,14 @@ subroutine post_transport_diagnostics(G, GV, US, uhtr, vhtr, h, IDs, diag_pre_dy
   real :: H_to_RZ_dt   ! A conversion factor from accumulated transports to fluxes
                           ! [R Z H-1 T-1 ~> kg m-3 s-1 or s-1].
   integer :: i, j, k, is, ie, js, je, nz
+  integer :: h_extensive_prev_ind
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
   Idt = 1. / dt_trans
   H_to_RZ_dt = GV%H_to_RZ * Idt
+
+  h_extensive_prev_ind = 1
+  call diag_update_remap_grids(diag, update_intensive = .false., update_extensive = .true.)
 
   call diag_save_grids(diag)
   call diag_copy_storage_to_diag(diag, diag_pre_dyn)
@@ -1561,12 +1570,15 @@ subroutine post_transport_diagnostics(G, GV, US, uhtr, vhtr, h, IDs, diag_pre_dy
     do k=1,nz ; do j=js,je ; do i=is,ie
       h_tend(i,j,k) = (h(i,j,k) - diag_pre_dyn%h_state(i,j,k))*Idt
     enddo ; enddo ; enddo
-    call post_data(IDs%id_dynamics_h_tendency, h_tend, diag, alt_h=diag_pre_dyn%h_state)
+    call post_data(IDs%id_dynamics_h_tendency, dt_trans, h_tend, h, diag_pre_dyn%h_state, h, &
+                   h_extensive_prev_ind, diag)
   endif
 
   call post_tracer_transport_diagnostics(G, GV, Reg, diag_pre_dyn%h_state, diag)
 
   call diag_restore_grids(diag)
+
+  call diag_store_h_extensive(diag, h_extensive_prev_ind)
 
 end subroutine post_transport_diagnostics
 

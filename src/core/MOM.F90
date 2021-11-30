@@ -23,6 +23,7 @@ use MOM_diag_mediator,        only : set_masks_for_axes
 use MOM_diag_mediator,        only : diag_grid_storage, diag_grid_storage_init
 use MOM_diag_mediator,        only : diag_save_grids, diag_restore_grids
 use MOM_diag_mediator,        only : diag_copy_storage_to_diag, diag_copy_diag_to_storage
+use MOM_diag_mediator,        only : diag_store_h_extensive
 use MOM_domains,              only : MOM_domains_init
 use MOM_domains,              only : sum_across_PEs, pass_var, pass_vector
 use MOM_domains,              only : clone_MOM_domain, deallocate_MOM_domain
@@ -694,10 +695,6 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
 
     if (showCallTree) call callTree_enter("DT cycles (step_MOM) n=",n)
 
-    ! Update the vertically extensive diagnostic grids so that they are
-    ! referenced to the beginning timestep
-    call diag_update_remap_grids(CS%diag, update_intensive = .false., update_extensive = .true. )
-
     !===========================================================================
     ! This is the first place where the diabatic processes and remapping could occur.
     if (CS%diabatic_first .and. (CS%t_dyn_rel_adv==0.0) .and. do_thermo) then ! do thermodynamics.
@@ -870,6 +867,10 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
       call cpu_clock_begin(id_clock_other) ; call cpu_clock_begin(id_clock_diagnostics)
       ! Diagnostics that require the complete state to be up-to-date can be calculated.
 
+      ! Update the vertically extensive diagnostic grids so that they are
+      ! referenced to the beginning timestep
+      call diag_update_remap_grids(CS%diag, update_intensive = .false., update_extensive = .true.)
+
       call enable_averages(CS%t_dyn_rel_diag, Time_local, CS%diag)
       call calculate_diagnostic_fields(u, v, h, CS%uh, CS%vh, CS%tv, CS%ADp,  &
                           CS%CDp, p_surf, CS%t_dyn_rel_diag, CS%diag_pre_sync,&
@@ -879,6 +880,8 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
       if (showCallTree) call callTree_waypoint("finished calculate_diagnostic_fields (step_MOM)")
       call disable_averaging(CS%diag)
       CS%t_dyn_rel_diag = 0.0
+
+      call diag_store_h_extensive(CS%diag, h_extensive_prev_ind=2)
 
       call cpu_clock_end(id_clock_diagnostics) ; call cpu_clock_end(id_clock_other)
     endif
@@ -2601,7 +2604,9 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
   ! Whenever thickness/T/S changes let the diag manager know, target grids
   ! for vertical remapping may need to be regenerated.
   ! FIXME: are h, T, S updated at the same time? Review these for T, S updates.
-  call diag_update_remap_grids(diag)
+  call diag_update_remap_grids(diag, update_extensive=.true.)
+  call diag_store_h_extensive(diag, h_extensive_prev_ind=1)
+  call diag_store_h_extensive(diag, h_extensive_prev_ind=2)
 
   ! Setup the diagnostic grid storage types
   call diag_grid_storage_init(CS%diag_pre_sync, G, GV, diag)

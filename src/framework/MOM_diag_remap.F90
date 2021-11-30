@@ -111,6 +111,10 @@ type :: diag_remap_ctrl
   type(regridding_CS) :: regrid_cs !< Regridding control structure that defines the coordinates for this axes
   integer :: nz = 0 !< Number of vertical levels used for remapping
   real, dimension(:,:,:), allocatable :: h !< Remap grid thicknesses [H ~> m or kg m-2]
+  real, dimension(:,:,:,:), allocatable :: h_extensive_prev !< Remap grid thicknesses from previous
+                                           !! timelevels for extensive variables [H ~> m or kg m-2]
+    !! first index=1 => thickness from before a process is applied
+    !! first index=2 => thickness from beginning of thermodynamic timestep
   real, dimension(:,:,:), allocatable :: h_extensive !< Remap grid thicknesses for extensive
                                            !! variables [H ~> m or kg m-2]
   integer :: interface_axes_id = 0 !< Vertical axes id for remapping at interfaces
@@ -488,7 +492,8 @@ end subroutine diag_remap_calc_hmask
 
 !> Vertically re-grid an already vertically-integrated diagnostic field to alternative vertical grid.
 subroutine vertically_reintegrate_diag_field(remap_cs, G, h, h_target, staggered_in_x, staggered_in_y, &
-                                             mask, field, reintegrated_field)
+                                             mask, field, reintegrated_field, &
+                                             increment, increment_scale)
   type(diag_remap_ctrl),  intent(in) :: remap_cs !< Diagnostic coodinate control structure
   type(ocean_grid_type),  intent(in) :: G        !< Ocean grid structure
   real, dimension(:,:,:), intent(in) :: h        !< The thicknesses of the source grid [H ~> m or kg m-2]
@@ -498,7 +503,13 @@ subroutine vertically_reintegrate_diag_field(remap_cs, G, h, h_target, staggered
   real, dimension(:,:,:), pointer    :: mask     !< A mask for the field [nondim]
   real, dimension(:,:,:), intent(in) :: field    !<  The diagnostic field to be remapped [A]
   real, dimension(:,:,:), intent(inout) :: reintegrated_field !< Field argument remapped to alternative coordinate [A]
+  logical, optional,      intent(in) :: increment !< if present and .true., add, instead of assigning,
+                                                  !< computed result to reintegrated_field
+  real, optional,         intent(in) :: increment_scale !< scaling to apply to computed result
+                                                        !< when increment=.true.
   ! Local variables
+  real, dimension(remap_cs%nz) :: reintegrated_temp ! temp location for computed result,
+                                                    ! used if increment=.true.
   real, dimension(remap_cs%nz) :: h_dest ! Destination thicknesses [H ~> m or kg m-2]
   real, dimension(size(h,3)) :: h_src    ! A column of source thicknesses [H ~> m or kg m-2]
   integer :: nz_src, nz_dest
@@ -506,6 +517,8 @@ subroutine vertically_reintegrate_diag_field(remap_cs, G, h, h_target, staggered
   integer :: i1, j1                 !< 1-based index
   integer :: i_lo, i_hi, j_lo, j_hi !< (uv->h) interpolation indices
   integer :: shift                  !< Symmetric offset for 1-based indexing
+  logical :: increment_local
+  real :: increment_scale_local
 
   call assert(remap_cs%initialized, 'vertically_reintegrate_diag_field: remap_cs not initialized.')
   call assert(size(field, 3) == size(h, 3), &
@@ -513,7 +526,16 @@ subroutine vertically_reintegrate_diag_field(remap_cs, G, h, h_target, staggered
 
   nz_src = size(field,3)
   nz_dest = remap_cs%nz
-  reintegrated_field(:,:,:) = 0.
+
+  increment_local = .false.
+  if (present(increment)) increment_local = increment
+
+  if (.not. increment_local) then
+    reintegrated_field(:,:,:) = 0.
+  else
+    increment_scale_local = 1.0
+    if (present(increment_scale)) increment_scale_local = increment_scale
+  endif
 
   ! Symmetric grid offset under 1-based indexing; see header for details.
   shift = 0 ; if (G%symmetric) shift = 1
@@ -529,8 +551,15 @@ subroutine vertically_reintegrate_diag_field(remap_cs, G, h, h_target, staggered
         endif
         h_src(:) = 0.5 * (h(i_lo,j,:) + h(i_hi,j,:))
         h_dest(:) = 0.5 * (h_target(i_lo,j,:) + h_target(i_hi,j,:))
-        call reintegrate_column(nz_src, h_src, field(I1,j,:), &
-                                nz_dest, h_dest, 0., reintegrated_field(I1,j,:))
+        if (.not. increment_local) then
+          call reintegrate_column(nz_src, h_src, field(I1,j,:), &
+                                  nz_dest, h_dest, 0., reintegrated_field(I1,j,:))
+        else
+          call reintegrate_column(nz_src, h_src, field(I1,j,:), &
+                                  nz_dest, h_dest, 0., reintegrated_temp(:))
+          reintegrated_field(I1,j,:) = reintegrated_field(I1,j,:) &
+            + increment_scale_local * reintegrated_temp(:)
+        endif
       enddo
     enddo
   elseif (staggered_in_y .and. .not. staggered_in_x) then
@@ -544,8 +573,15 @@ subroutine vertically_reintegrate_diag_field(remap_cs, G, h, h_target, staggered
         endif
         h_src(:) = 0.5 * (h(i,j_lo,:) + h(i,j_hi,:))
         h_dest(:) = 0.5 * (h_target(i,j_lo,:) + h_target(i,j_hi,:))
-        call reintegrate_column(nz_src, h_src, field(i,J1,:), &
-                                nz_dest, h_dest, 0., reintegrated_field(i,J1,:))
+        if (.not. increment_local) then
+          call reintegrate_column(nz_src, h_src, field(i,J1,:), &
+                                  nz_dest, h_dest, 0., reintegrated_field(i,J1,:))
+        else
+          call reintegrate_column(nz_src, h_src, field(i,J1,:), &
+                                  nz_dest, h_dest, 0., reintegrated_temp(:))
+          reintegrated_field(i,J1,:) = reintegrated_field(i,J1,:) &
+            + increment_scale_local * reintegrated_temp(:)
+        endif
       enddo
     enddo
   elseif ((.not. staggered_in_x) .and. (.not. staggered_in_y)) then
@@ -557,8 +593,15 @@ subroutine vertically_reintegrate_diag_field(remap_cs, G, h, h_target, staggered
         endif
         h_src(:) = h(i,j,:)
         h_dest(:) = h_target(i,j,:)
-        call reintegrate_column(nz_src, h_src, field(i,j,:), &
-                                nz_dest, h_dest, 0., reintegrated_field(i,j,:))
+        if (.not. increment_local) then
+          call reintegrate_column(nz_src, h_src, field(i,j,:), &
+                                  nz_dest, h_dest, 0., reintegrated_field(i,j,:))
+        else
+          call reintegrate_column(nz_src, h_src, field(i,j,:), &
+                                  nz_dest, h_dest, 0., reintegrated_temp(:))
+          reintegrated_field(i,j,:) = reintegrated_field(i,j,:) &
+            + increment_scale_local * reintegrated_temp(:)
+        endif
       enddo
     enddo
   else

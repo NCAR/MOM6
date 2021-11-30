@@ -56,11 +56,12 @@ public diag_set_state_ptrs, diag_update_remap_grids
 public diag_grid_storage_init, diag_grid_storage_end
 public diag_copy_diag_to_storage, diag_copy_storage_to_diag
 public diag_save_grids, diag_restore_grids
+public diag_store_h_extensive
 public found_in_diagtable
 
 !> Make a diagnostic available for averaging or output.
 interface post_data
-  module procedure post_data_3d, post_data_2d, post_data_1d_k, post_data_0d
+  module procedure post_data_3d, post_data_3d_tend, post_data_2d, post_data_1d_k, post_data_0d
 end interface post_data
 
 !> Down sample a field
@@ -496,6 +497,7 @@ subroutine set_axes_info(G, GV, US, param_file, diag_cs, set_vertical)
 
     ! Allocate these arrays since the size of the diagnostic array is now known
     allocate(diag_cs%diag_remap_cs(i)%h(G%isd:G%ied,G%jsd:G%jed, diag_cs%diag_remap_cs(i)%nz))
+    allocate(diag_cs%diag_remap_cs(i)%h_extensive_prev(2, G%isd:G%ied,G%jsd:G%jed, diag_cs%diag_remap_cs(i)%nz))
     allocate(diag_cs%diag_remap_cs(i)%h_extensive(G%isd:G%ied,G%jsd:G%jed, diag_cs%diag_remap_cs(i)%nz))
 
     ! This vertical coordinate has been configured so can be used.
@@ -1628,6 +1630,112 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
   if (id_clock_diag_mediator>0) call cpu_clock_end(id_clock_diag_mediator)
 
 end subroutine post_data_3d
+
+!> Make a real 3-d array tendency diagnostic available for averaging or output.
+subroutine post_data_3d_tend(diag_field_id, dt, field_tend, field_new, &
+                             h_prev, h_new, h_extensive_prev_ind, diag_cs, is_static, mask)
+
+  integer,           intent(in) :: diag_field_id !< The id for an output variable returned by a
+                                                 !! previous call to register_diag_field.
+  real,              intent(in) :: dt                !< duration of time interval that field_tend is over
+  real,              intent(in) :: field_tend(:,:,:) !< tendency of field on model vertical grid
+  real,              intent(in) :: field_new(:,:,:)  !< updated field after field_tend is applied
+  real,              intent(in) :: h_prev(:,:,:)     !< model layer thicknesses before tendency was applied
+  real,              intent(in) :: h_new(:,:,:)      !< model layer thicknesses after tendency was applied
+  integer,           intent(in) :: h_extensive_prev_ind !< value to use for 1st index of h_extensive_prev
+  type(diag_ctrl), target, intent(in) :: diag_CS     !< Structure used to regulate diagnostic output
+  logical, optional, intent(in) :: is_static         !< If true, this is a static field that is always offered.
+  real,    optional, intent(in) :: mask(:,:,:)       !< If present, use this real array as the data mask.
+
+  ! Local variables
+  type(diag_type), pointer :: diag => null()
+  integer :: nz, i, j, k
+  real, dimension(:,:,:), allocatable :: remapped_field_tend
+  logical :: staggered_in_x, staggered_in_y
+  real :: Idt
+
+  ! Tendencies on diagnostic grids are defined as
+  ! d field / dt = Idt * (L_new(field_new) - L_prev(field_prev)),
+  ! where L_new and L_prev are operators that remap from the model grid to diagnostic grids,
+  ! based on model thicknesses h_new and h_prev respectively. This tendency is computed as
+  ! d field / dt = Idt * (L_new(field_new) - L_prev(field_prev))
+  !   = Idt * (L_new(field_new) + L_prev(field_new - field_prev) - L_prev(field_new))
+  !   = L_prev(Idt * (field_new - field_prev)) + Idt * (L_new(field_new) - L_prev(field_new))
+  !   = L_prev(field_tend) + Idt * (L_new(field_new) - L_prev(field_new))
+  ! These algebraic manipulations assume that the remapping operators are linear.
+
+  if (id_clock_diag_mediator>0) call cpu_clock_begin(id_clock_diag_mediator)
+
+  Idt = 1.0 / dt
+
+  ! Iterate over list of diag 'variants', e.g. CMOR aliases, different vertical
+  ! grids, and post each.
+  call assert(diag_field_id < diag_cs%next_free_diag_id, &
+              'post_data_3d_tend: Unregistered diagnostic id')
+  diag => diag_cs%diags(diag_field_id)
+  do while (associated(diag))
+    call assert(associated(diag%axes), 'post_data_3d_tend: axes is not associated')
+
+    staggered_in_x = diag%axes%is_u_point .or. diag%axes%is_q_point
+    staggered_in_y = diag%axes%is_v_point .or. diag%axes%is_q_point
+
+    if (diag%v_extensive .and. .not.diag%axes%is_native) then
+      ! The field is vertically integrated and needs to be re-gridded
+      if (present(mask)) then
+        call MOM_error(FATAL,"post_data_3d_tend: no mask for regridded field.")
+      endif
+
+      if (id_clock_diag_remap>0) call cpu_clock_begin(id_clock_diag_remap)
+      allocate(remapped_field_tend(size(field_tend,1), size(field_tend,2), diag%axes%nz))
+      call vertically_reintegrate_diag_field(                                           &
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), diag_cs%G, h_prev, &
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h_extensive_prev(h_extensive_prev_ind,:,:,:), &
+        staggered_in_x, staggered_in_y, diag%axes%mask3d, field_tend,             &
+        remapped_field_tend)
+      call vertically_reintegrate_diag_field(                                          &
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), diag_cs%G, h_new, &
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h_extensive,       &
+        staggered_in_x, staggered_in_y, diag%axes%mask3d, field_new,                   &
+        remapped_field_tend, increment=.true., increment_scale=Idt)
+      call vertically_reintegrate_diag_field(                                           &
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), diag_cs%G, h_prev, &
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h_extensive_prev(h_extensive_prev_ind,:,:,:), &
+        staggered_in_x, staggered_in_y, diag%axes%mask3d, field_new,                    &
+        remapped_field_tend, increment=.true., increment_scale=-Idt)
+      if (id_clock_diag_remap>0) call cpu_clock_end(id_clock_diag_remap)
+      if (associated(diag%axes%mask3d)) then
+        ! Since 3d masks do not vary in the vertical, just use as much as is
+        ! needed.
+        call post_data_3d_low(diag, remapped_field_tend, diag_cs, is_static, &
+                              mask=diag%axes%mask3d)
+      else
+        call post_data_3d_low(diag, remapped_field_tend, diag_cs, is_static)
+      endif
+      if (id_clock_diag_remap>0) call cpu_clock_begin(id_clock_diag_remap)
+      deallocate(remapped_field_tend)
+      if (id_clock_diag_remap>0) call cpu_clock_end(id_clock_diag_remap)
+    elseif (diag%axes%needs_remapping) then
+      ! Remap this field to another vertical coordinate.
+      if (present(mask)) then
+        call MOM_error(FATAL,"post_data_3d_tend: no mask for regridded field.")
+      endif
+
+      call MOM_error(FATAL,"post_data_3d_tend: not implemented for needs_remapping.")
+    elseif (diag%axes%needs_interpolating) then
+      ! Interpolate this field to another vertical coordinate.
+      if (present(mask)) then
+        call MOM_error(FATAL,"post_data_3d_tend: no mask for regridded field.")
+      endif
+
+      call MOM_error(FATAL,"post_data_3d_tend: not implemented for needs_interpolating.")
+    else
+      call post_data_3d_low(diag, field_tend, diag_cs, is_static, mask)
+    endif
+    diag => diag%next
+  enddo
+  if (id_clock_diag_mediator>0) call cpu_clock_end(id_clock_diag_mediator)
+
+end subroutine post_data_3d_tend
 
 !> Make a real 3-d array diagnostic available for averaging or output
 !! using a diag_type instead of an integer id.
@@ -3325,6 +3433,21 @@ subroutine diag_update_remap_grids(diag_cs, alt_h, alt_T, alt_S, update_intensiv
   if (id_clock_diag_grid_updates>0) call cpu_clock_end(id_clock_diag_grid_updates)
 
 end subroutine diag_update_remap_grids
+
+!> Store extensive thicknesses on diagnostic grids
+subroutine diag_store_h_extensive(diag_cs, h_extensive_prev_ind)
+  type(diag_ctrl),  intent(inout) :: diag_cs                !< Diagnostics control structure
+  integer,             intent(in) :: h_extensive_prev_ind   !< value to use for 1st index of h_extensive_prev
+
+  ! Local variables
+  integer :: i
+
+  do i=1, diag_cs%num_diag_coords
+    diag_cs%diag_remap_cs(i)%h_extensive_prev(h_extensive_prev_ind,:,:,:) = &
+      diag_cs%diag_remap_cs(i)%h_extensive(:,:,:)
+  enddo
+
+end subroutine diag_store_h_extensive
 
 !> Sets up the 2d and 3d masks for native diagnostics
 subroutine diag_masks_set(G, nz, diag_cs)

@@ -224,7 +224,10 @@ subroutine apply_topography_edits_from_file(D, G, param_file, US)
                  units="m", default=-9999.0, scale=m_to_Z)
   if (mask_depth == -9999.*m_to_Z) mask_depth = min_depth
 
-  if (len_trim(topo_edits_file)==0) return
+  if (len_trim(topo_edits_file)==0) then
+    call callTree_leave(trim(mdl)//'()')
+    return
+  endif
 
   topo_edits_file = trim(inputdir)//trim(topo_edits_file)
   if (is_root_PE()) then

@@ -20,6 +20,7 @@ use MOM_diag_mediator,       only : diag_ctrl, query_averaging_enabled, enable_a
 use MOM_diag_mediator,       only : diag_grid_storage, diag_grid_storage_init, diag_grid_storage_end
 use MOM_diag_mediator,       only : diag_copy_diag_to_storage, diag_copy_storage_to_diag
 use MOM_diag_mediator,       only : diag_save_grids, diag_restore_grids
+use MOM_diag_mediator,       only : diag_store_h_extensive
 use MOM_diapyc_energy_req,   only : diapyc_energy_req_init, diapyc_energy_req_end
 use MOM_diapyc_energy_req,   only : diapyc_energy_req_calc, diapyc_energy_req_test, diapyc_energy_req_CS
 use MOM_CVMix_conv,          only : CVMix_conv_init, CVMix_conv_cs
@@ -2680,18 +2681,23 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
   real :: Idt  ! The inverse of the timestep [T-1 ~> s-1]
   real :: ppt2mks = 0.001  ! Conversion factor from g/kg to kg/kg.
   integer :: i, j, k, is, ie, js, je, nz
+  integer :: h_extensive_prev_ind
 
   is  = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   Idt = 0.0 ; if (dt > 0.0) Idt = 1. / dt
   work_3d(:,:,:) = 0.0
   work_2d(:,:)   = 0.0
 
+  h_extensive_prev_ind = 1
+  call diag_update_remap_grids(CS%diag, update_intensive = .false., update_extensive = .true.)
+
   ! Thickness tendency
   if (CS%id_boundary_forcing_h_tendency > 0) then
     do k=1,nz ; do j=js,je ; do i=is,ie
       work_3d(i,j,k) = (h(i,j,k) - h_old(i,j,k))*Idt
     enddo ; enddo ; enddo
-    call post_data(CS%id_boundary_forcing_h_tendency, work_3d, CS%diag, alt_h=h_old)
+    call post_data(CS%id_boundary_forcing_h_tendency, dt, work_3d, h, h_old, h, &
+                   h_extensive_prev_ind, CS%diag)
   endif
 
   ! temperature tendency
@@ -2743,6 +2749,8 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
       call post_data(CS%id_boundary_forcing_salt_tend_2d, work_2d, CS%diag)
     endif
   endif
+
+  call diag_store_h_extensive(CS%diag, h_extensive_prev_ind)
 
 end subroutine diagnose_boundary_forcing_tendency
 

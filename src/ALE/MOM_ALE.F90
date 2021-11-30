@@ -13,6 +13,7 @@ module MOM_ALE
 use MOM_debugging,        only : check_column_integrals
 use MOM_diag_mediator,    only : register_diag_field, post_data, diag_ctrl
 use MOM_diag_mediator,    only : time_type, diag_update_remap_grids
+use MOM_diag_mediator,    only : diag_store_h_extensive
 use MOM_diag_vkernels,    only : interpolate_column, reintegrate_column
 use MOM_domains,          only : create_group_pass, do_group_pass, group_pass_type
 use MOM_EOS,              only : calculate_density
@@ -769,6 +770,7 @@ subroutine remap_all_state_vars(CS_remapping, CS_ALE, G, GV, h_old, h_new, Reg, 
   real :: h_neglect, h_neglect_edge
   logical                                     :: show_call_tree
   type(tracer_type), pointer                  :: Tr => NULL()
+  integer :: h_extensive_prev_ind
 
   show_call_tree = .false.
   if (present(debug)) show_call_tree = debug
@@ -920,10 +922,16 @@ subroutine remap_all_state_vars(CS_remapping, CS_ALE, G, GV, h_old, h_new, Reg, 
 
   if (CS_ALE%id_vert_remap_h > 0) call post_data(CS_ALE%id_vert_remap_h, h_old, CS_ALE%diag)
   if ((CS_ALE%id_vert_remap_h_tendency > 0) .and. present(dt)) then
+    h_extensive_prev_ind = 1
+    call diag_update_remap_grids(CS_ALE%diag, update_intensive = .false., update_extensive = .true.)
+
     do k = 1, nz ; do j = G%jsc,G%jec ; do i = G%isc,G%iec
       work_cont(i,j,k) = (h_new(i,j,k) - h_old(i,j,k))*Idt
     enddo ; enddo ; enddo
-    call post_data(CS_ALE%id_vert_remap_h_tendency, work_cont, CS_ALE%diag)
+    call post_data(CS_ALE%id_vert_remap_h_tendency, dt, work_cont, h_new, h_old, h_new, &
+                   h_extensive_prev_ind, CS_ALE%diag)
+
+    call diag_store_h_extensive(CS_ALE%diag, h_extensive_prev_ind)
   endif
   if (show_call_tree) call callTree_waypoint("v remapped (remap_all_state_vars)")
   if (show_call_tree) call callTree_leave("remap_all_state_vars()")
