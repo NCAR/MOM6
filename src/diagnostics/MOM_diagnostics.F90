@@ -8,7 +8,7 @@ module MOM_diagnostics
 use MOM_coms,              only : reproducing_sum
 use MOM_coupler_types,     only : coupler_type_send_data
 use MOM_density_integrals, only : int_density_dz
-use MOM_diag_mediator,     only : post_data, get_diag_time_end
+use MOM_diag_mediator,     only : post_data, post_data_tend, get_diag_time_end
 use MOM_diag_mediator,     only : register_diag_field, register_scalar_field
 use MOM_diag_mediator,     only : register_static_field, diag_register_area_ids
 use MOM_diag_mediator,     only : diag_ctrl, time_type, safe_alloc_ptr
@@ -289,8 +289,9 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
 
     if (CS%id_dv_dt>0) call post_data(CS%id_dv_dt, CS%dv_dt, CS%diag, alt_h = diag_pre_sync%h_state)
 
-    if (CS%id_dh_dt>0) call post_data(CS%id_dh_dt, dt, CS%dh_dt, h, diag_pre_sync%h_state, h, &
-                                      h_extensive_prev_ind, CS%diag)
+    if (CS%id_dh_dt>0) call post_data_tend(CS%id_dh_dt, dt, h, diag_pre_sync%h_state, h, &
+                                           h_extensive_prev_ind, CS%diag, field_tend=CS%dh_dt, &
+                                           field_prev=diag_pre_sync%h_state)
 
     !! Diagnostics for terms multiplied by fractional thicknesses
 
@@ -1513,8 +1514,6 @@ subroutine post_transport_diagnostics(G, GV, US, uhtr, vhtr, h, IDs, diag_pre_dy
   real, dimension(SZI_(G), SZJB_(G)) :: vmo2d ! Diagnostics of integrated mass transport [R Z L2 T-1 ~> kg s-1]
   real, dimension(SZIB_(G), SZJ_(G),SZK_(GV)) :: umo ! Diagnostics of layer mass transport [R Z L2 T-1 ~> kg s-1]
   real, dimension(SZI_(G), SZJB_(G),SZK_(GV)) :: vmo ! Diagnostics of layer mass transport [R Z L2 T-1 ~> kg s-1]
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV))   :: h_tend ! Change in layer thickness due to dynamics
-                          ! [H s-1 ~> m s-1 or kg m-2 s-1].
   real :: Idt             ! The inverse of the time interval [T-1 ~> s-1]
   real :: H_to_RZ_dt   ! A conversion factor from accumulated transports to fluxes
                           ! [R Z H-1 T-1 ~> kg m-3 s-1 or s-1].
@@ -1566,12 +1565,8 @@ subroutine post_transport_diagnostics(G, GV, US, uhtr, vhtr, h, IDs, diag_pre_dy
                                             alt_h=diag_pre_dyn%h_state)
   ! Post the change in thicknesses
   if (IDs%id_dynamics_h_tendency > 0) then
-    h_tend(:,:,:) = 0.
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      h_tend(i,j,k) = (h(i,j,k) - diag_pre_dyn%h_state(i,j,k))*Idt
-    enddo ; enddo ; enddo
-    call post_data(IDs%id_dynamics_h_tendency, dt_trans, h_tend, h, diag_pre_dyn%h_state, h, &
-                   h_extensive_prev_ind, diag)
+    call post_data_tend(IDs%id_dynamics_h_tendency, dt_trans, h, diag_pre_dyn%h_state, h, &
+                        h_extensive_prev_ind, diag, field_prev=diag_pre_dyn%h_state)
   endif
 
   call post_tracer_transport_diagnostics(G, GV, Reg, diag_pre_dyn%h_state, diag)

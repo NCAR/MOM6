@@ -20,7 +20,7 @@ use MOM_diag_mediator,       only : diag_ctrl, query_averaging_enabled, enable_a
 use MOM_diag_mediator,       only : diag_grid_storage, diag_grid_storage_init, diag_grid_storage_end
 use MOM_diag_mediator,       only : diag_copy_diag_to_storage, diag_copy_storage_to_diag
 use MOM_diag_mediator,       only : diag_save_grids, diag_restore_grids
-use MOM_diag_mediator,       only : diag_store_h_extensive
+use MOM_diag_mediator,       only : diag_store_h_extensive, post_data_tend
 use MOM_diapyc_energy_req,   only : diapyc_energy_req_init, diapyc_energy_req_end
 use MOM_diapyc_energy_req,   only : diapyc_energy_req_calc, diapyc_energy_req_test, diapyc_energy_req_CS
 use MOM_CVMix_conv,          only : CVMix_conv_init, CVMix_conv_cs
@@ -2693,11 +2693,8 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
 
   ! Thickness tendency
   if (CS%id_boundary_forcing_h_tendency > 0) then
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      work_3d(i,j,k) = (h(i,j,k) - h_old(i,j,k))*Idt
-    enddo ; enddo ; enddo
-    call post_data(CS%id_boundary_forcing_h_tendency, dt, work_3d, h, h_old, h, &
-                   h_extensive_prev_ind, CS%diag)
+    call post_data_tend(CS%id_boundary_forcing_h_tendency, dt, h, h_old, h, &
+                        h_extensive_prev_ind, CS%diag, field_prev=h_old)
   endif
 
   ! temperature tendency

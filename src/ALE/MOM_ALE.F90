@@ -13,7 +13,7 @@ module MOM_ALE
 use MOM_debugging,        only : check_column_integrals
 use MOM_diag_mediator,    only : register_diag_field, post_data, diag_ctrl
 use MOM_diag_mediator,    only : time_type, diag_update_remap_grids
-use MOM_diag_mediator,    only : diag_store_h_extensive
+use MOM_diag_mediator,    only : diag_store_h_extensive, post_data_tend
 use MOM_diag_vkernels,    only : interpolate_column, reintegrate_column
 use MOM_domains,          only : create_group_pass, do_group_pass, group_pass_type
 use MOM_EOS,              only : calculate_density
@@ -925,11 +925,8 @@ subroutine remap_all_state_vars(CS_remapping, CS_ALE, G, GV, h_old, h_new, Reg, 
     h_extensive_prev_ind = 1
     call diag_update_remap_grids(CS_ALE%diag, update_intensive = .false., update_extensive = .true.)
 
-    do k = 1, nz ; do j = G%jsc,G%jec ; do i = G%isc,G%iec
-      work_cont(i,j,k) = (h_new(i,j,k) - h_old(i,j,k))*Idt
-    enddo ; enddo ; enddo
-    call post_data(CS_ALE%id_vert_remap_h_tendency, dt, work_cont, h_new, h_old, h_new, &
-                   h_extensive_prev_ind, CS_ALE%diag)
+    call post_data_tend(CS_ALE%id_vert_remap_h_tendency, dt, h_new, h_old, h_new, &
+                        h_extensive_prev_ind, CS_ALE%diag, field_prev=h_old)
 
     call diag_store_h_extensive(CS_ALE%diag, h_extensive_prev_ind)
   endif
