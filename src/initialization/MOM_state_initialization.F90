@@ -2590,6 +2590,7 @@ subroutine MOM_temp_salt_initialize_from_Z(h, tv, depth_tot, G, GV, US, PF, just
       ! This is the old way of initializing to z* coordinates only
       allocate( hTarget(nz) )
       hTarget = getCoordinateResolution( regridCS )
+      !hTarget = getCoordinateResolution( regridCS, undo_scaling = .true.)
       do j = js, je ; do i = is, ie
         h(i,j,:) = 0.
         if (G%mask2dT(i,j)>0.) then
