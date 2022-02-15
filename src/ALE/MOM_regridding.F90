@@ -505,8 +505,6 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
   ! ensure CS%ref_pressure is rescaled properly
   CS%ref_pressure = (US%kg_m3_to_R * US%m_s_to_L_T**2) * CS%ref_pressure
 
-
-
   if (allocated(rho_target)) then
     call set_target_densities(CS, US%kg_m3_to_R*rho_target)
     deallocate(rho_target)
