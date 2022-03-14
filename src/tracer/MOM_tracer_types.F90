@@ -101,6 +101,7 @@ type, public :: tracer_type
   integer :: diag_form = 1  !< An integer indicating which template is to be used to label diagnostics.
   !>@{ Diagnostic IDs
   integer :: id_tr = -1, id_tr_post_horzn = -1
+  integer :: id_trxh = -1, id_trxh_2d = -1
   integer :: id_adx = -1, id_ady = -1, id_dfx = -1, id_dfy = -1
   integer :: id_lbd_bulk_dfx = -1, id_lbd_bulk_dfy = -1, id_lbd_dfx = -1, id_lbd_dfy = -1
   integer :: id_lbd_dfx_2d = -1  , id_lbd_dfy_2d = -1

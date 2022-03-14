@@ -271,7 +271,9 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
   character(len=48)  :: flux_units ! The units for fluxes, either
                                  ! [units] m3 s-1 or [units] kg s-1.
   character(len=48)  :: conv_units ! The units for flux convergences, either
-                                 ! [units] m2 s-1 or [units] kg s-1.
+                                 ! [units] m s-1 or [units] kg m-2 s-1.
+  character(len=48)  :: content_units ! The units for layer content, either
+                                 ! [units] m or [units] kg m-2.
   character(len=48)  :: unit2    ! The dimensions of the tracer squared
   character(len=72)  :: cmorname ! The CMOR name of this tracer.
   character(len=120) :: cmor_longname ! The CMOR long name of that variable.
@@ -310,6 +312,22 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
     elseif (GV%Boussinesq) then ; conv_units = trim(units)//" m s-1"
     else ; conv_units = trim(units)//" kg m-2 s-1" ; endif
 
+    ! content_units = conv_units + " s"
+    ! If conv_units ends with " s-1", remove that substring to construct content_units.
+    ! Otherwise, just append " s", not attempting other simplifications.
+    i = index(conv_units, " s-1")
+    if ((i > 0) .and. (i + len(" s-1") == len_trim(conv_units) + 1)) then
+      ! If there are only spaces before "s-1", the result is dimensionless, i.e. units= "1".
+      ! Otherwise, take substring before " s-1".
+      if (len_trim(conv_units(1:i)) == 0) then
+        content_units = "1"
+      else
+        content_units = conv_units(1:i-1)
+      endif
+    else
+      content_units = trim(conv_units) // " s"
+    endif
+
     if (len_trim(cmorname) == 0) then
       Tr%id_tr = register_diag_field("ocean_model", trim(name), diag%axesTL, &
           Time, trim(longname), trim(units))
@@ -323,6 +341,12 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
         trim(name)//"_post_horzn", diag%axesTL, Time, &
         trim(longname)//" after horizontal transport (advection/diffusion) has occurred", &
         trim(units))
+    Tr%id_trxh = register_diag_field('ocean_model', trim(shortnm)//'_content', &
+        diag%axesTL, Time, "Layer integrated "//lowercase(longname), &
+        content_units, conversion=Tr%conv_scale, v_extensive=.true.)
+    Tr%id_trxh_2d = register_diag_field('ocean_model', trim(shortnm)//'_content_2d', &
+        diag%axesT1, Time, "Vertical sum of layer integrated "//lowercase(longname), &
+        content_units, conversion=Tr%conv_scale)
     if (Tr%diag_form == 1) then
       Tr%id_adx = register_diag_field("ocean_model", trim(shortnm)//"_adx", &
           diag%axesCuL, Time, trim(flux_longname)//" advective zonal flux" , &
@@ -672,8 +696,20 @@ subroutine post_tracer_diagnostics_at_sync(Reg, h, diag_prev, diag, G, GV, dt)
   do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
     Tr => Reg%Tr(m)
     if (Tr%id_tr > 0) call post_data(Tr%id_tr, Tr%t, diag)
+    if ((Tr%id_trxh > 0) .or. (Tr%id_trxh_2d > 0)) then
+      do k=1,nz ; do j=js,je ; do i=is,ie
+        work3d(i,j,k) = Tr%t(i,j,k)*h(i,j,k)
+      enddo ; enddo ; enddo
+      if (Tr%id_trxh > 0) call post_data(Tr%id_trxh, work3d, diag)
+      if (Tr%id_trxh_2d > 0) then
+        work2d(:,:) = 0.0
+        do k=1,nz ; do j=js,je ; do i=is,ie
+          work2d(i,j) = work2d(i,j) + work3d(i,j,k)
+        enddo ; enddo ; enddo
+        call post_data(Tr%id_trxh_2d, work2d, diag)
+      endif
+    endif
     if (Tr%id_tendency > 0) then
-      work3d(:,:,:) = 0.0
       do k=1,nz ; do j=js,je ; do i=is,ie
         work3d(i,j,k)    = (Tr%t(i,j,k) - Tr%t_prev(i,j,k))*Idt
         tr%t_prev(i,j,k) =  Tr%t(i,j,k)
