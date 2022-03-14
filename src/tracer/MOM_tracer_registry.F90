@@ -280,7 +280,6 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
   character(len=120) :: var_lname      ! A temporary longname for a diagnostic.
   character(len=120) :: cmor_var_lname ! The temporary CMOR long name for a diagnostic
   character(len=72)  :: cmor_varname ! The temporary CMOR name for a diagnostic
-  real :: conversion ! Temporary term while we address a bug
   type(tracer_type), pointer :: Tr=>NULL()
   integer :: i, j, k, is, ie, js, je, nz, m, m2, nTr_in
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
@@ -604,20 +603,10 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
           diag%axesTL, Time, &
           trim(longname)//' tendency due to non-local transport of '//trim(lowercase(flux_longname))//&
           ', as calculated by [CVMix] KPP', trim(units)//' s-1', conversion=US%s_to_T)
-      if (Tr%conv_scale == 0.001*GV%H_to_kg_m2) then
-        conversion = GV%H_to_kg_m2
-      else
-        conversion = Tr%conv_scale
-      end if
-      ! We actually want conversion=Tr%conv_scale for all tracers, but introducing the local variable
-      ! 'conversion' and setting it to GV%H_to_kg_m2 instead of 0.001*GV%H_to_kg_m2 for salt tracers
-      ! keeps changes introduced by this refactoring limited to round-off level; as it turns out,
-      ! there is a bug in the code and the NLT budget term for salinity is off by a factor of 10^3
-      ! so introducing the 0.001 here will fix that bug.
       Tr%id_NLT_budget = register_diag_field('ocean_model', Tr%NLT_budget_name, &
           diag%axesTL, Time, &
           trim(flux_longname)//' content change due to non-local transport, as calculated by [CVMix] KPP', &
-          conv_units, conversion=conversion*US%s_to_T, v_extensive=.true.)
+          conv_units, conversion=Tr%conv_scale*US%s_to_T, v_extensive=.true.)
     endif
 
   endif ; enddo
