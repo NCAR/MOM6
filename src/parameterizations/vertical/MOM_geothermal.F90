@@ -320,7 +320,7 @@ subroutine geothermal_entraining(h, tv, dt, ea, eb, G, GV, US, CS, halo)
 
         ! Calculate heat tendency due to addition and transfer of internal heat
         if (CS%id_internal_heat_heat_tendency > 0) then
-          work_3d(i,j,k) = ((GV%H_to_RZ*tv%C_p) * Idt) * (h(i,j,k) * tv%T(i,j,k) - h_old(i,j,k) * T_old(i,j,k))
+          work_3d(i,j,k) = Idt * (h(i,j,k) * tv%T(i,j,k) - h_old(i,j,k) * T_old(i,j,k))
         endif
 
       endif ; enddo
@@ -475,8 +475,10 @@ subroutine geothermal_in_place(h, tv, dt, G, GV, US, CS, halo)
   if (CS%id_internal_heat_heat_tendency > 0) then
     do k=1,nz ; do j=js,je ; do i=is,ie
       ! Dangerously reuse dTdt_diag for a related variable with different units, going from
-      ! units of [degC T-1 ~> degC s-1] to units of [Q R Z T-1 ~> W m-2]
-      dTdt_diag(i,j,k) = (GV%H_to_RZ*tv%C_p) * (h(i,j,k) * dTdt_diag(i,j,k))
+      ! units of [degC T-1 ~> degC s-1] to units of [H degC T-1 -> (m or kg m-2) degC T-1],
+      ! which is converted to [Q R Z T-1 ~> W m-2] with the conversion argument
+      ! to register_diag_field.
+      dTdt_diag(i,j,k) = h(i,j,k) * dTdt_diag(i,j,k)
     enddo ; enddo ; enddo
     call post_data(CS%id_internal_heat_heat_tendency, dTdt_diag, CS%diag, alt_h=h)
   endif
@@ -489,7 +491,7 @@ subroutine geothermal_in_place(h, tv, dt, G, GV, US, CS, halo)
 end subroutine geothermal_in_place
 
 !> Initialize parameters and allocate memory associated with the geothermal heating module.
-subroutine geothermal_init(Time, G, GV, US, param_file, diag, CS, useALEalgorithm)
+subroutine geothermal_init(Time, G, GV, US, param_file, diag, CS, tv, useALEalgorithm)
   type(time_type), target, intent(in)    :: Time !< Current model time.
   type(ocean_grid_type),   intent(inout) :: G    !< The ocean's grid structure.
   type(verticalGrid_type), intent(in)    :: GV   !< The ocean's vertical grid structure.
@@ -498,6 +500,7 @@ subroutine geothermal_init(Time, G, GV, US, param_file, diag, CS, useALEalgorith
                                                  !! parameters.
   type(diag_ctrl), target, intent(inout) :: diag !< Structure used to regulate diagnostic output.
   type(geothermal_CS),     intent(inout) :: CS   !< Geothermal heating control struct
+  type(thermo_var_ptrs),   intent(in)    :: tv   !< points to thermodynamic fields
   logical,       optional, intent(in)    :: useALEalgorithm  !< logical for whether to use ALE remapping
 
 ! This include declares and sets the variable "version".
@@ -576,7 +579,7 @@ subroutine geothermal_init(Time, G, GV, US, param_file, diag, CS, useALEalgorith
   CS%id_internal_heat_heat_tendency=register_diag_field('ocean_model', &
         'internal_heat_heat_tendency', diag%axesTL, Time,              &
         'Heat tendency (in 3D) due to internal (geothermal) sources',  &
-        'W m-2', conversion=US%QRZ_T_to_W_m2, v_extensive=.true.)
+        'W m-2', conversion=GV%H_to_RZ*tv%C_p*US%QRZ_T_to_W_m2, v_extensive=.true.)
   CS%id_internal_heat_temp_tendency=register_diag_field('ocean_model', &
         'internal_heat_temp_tendency', diag%axesTL, Time,              &
         'Temperature tendency (in 3D) due to internal (geothermal) sources', &

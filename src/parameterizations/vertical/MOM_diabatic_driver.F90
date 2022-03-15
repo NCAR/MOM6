@@ -2652,7 +2652,6 @@ subroutine diagnose_diabatic_diff_tendency(tv, h, temp_old, saln_old, dt, G, GV,
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: work_3d
   real, dimension(SZI_(G),SZJ_(G))          :: work_2d
   real :: Idt  ! The inverse of the timestep [T-1 ~> s-1]
-  real :: ppt2mks = 0.001  ! Conversion factor from g/kg to kg/kg.
   integer :: i, j, k, is, ie, js, je, nz
   logical :: do_saln_tend   ! Calculate salinity-based tendency diagnosics
 
@@ -2673,7 +2672,7 @@ subroutine diagnose_diabatic_diff_tendency(tv, h, temp_old, saln_old, dt, G, GV,
   ! heat tendency
   if (CS%id_diabatic_diff_heat_tend > 0 .or. CS%id_diabatic_diff_heat_tend_2d > 0) then
     do k=1,nz ; do j=js,je ; do i=is,ie
-      work_3d(i,j,k) = h(i,j,k)*GV%H_to_RZ * tv%C_p * work_3d(i,j,k)
+      work_3d(i,j,k) = h(i,j,k)*work_3d(i,j,k)
     enddo ; enddo ; enddo
     if (CS%id_diabatic_diff_heat_tend > 0) then
       call post_data(CS%id_diabatic_diff_heat_tend, work_3d, CS%diag, alt_h=h)
@@ -2703,7 +2702,7 @@ subroutine diagnose_diabatic_diff_tendency(tv, h, temp_old, saln_old, dt, G, GV,
     ! salt tendency
     if (CS%id_diabatic_diff_salt_tend > 0 .or. CS%id_diabatic_diff_salt_tend_2d > 0) then
       do k=1,nz ; do j=js,je ; do i=is,ie
-        work_3d(i,j,k) = h(i,j,k)*GV%H_to_RZ * ppt2mks * work_3d(i,j,k)
+        work_3d(i,j,k) = h(i,j,k)*work_3d(i,j,k)
       enddo ; enddo ; enddo
       if (CS%id_diabatic_diff_salt_tend > 0) then
         call post_data(CS%id_diabatic_diff_salt_tend, work_3d, CS%diag, alt_h=h)
@@ -2746,7 +2745,6 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: work_3d
   real, dimension(SZI_(G),SZJ_(G))          :: work_2d
   real :: Idt  ! The inverse of the timestep [T-1 ~> s-1]
-  real :: ppt2mks = 0.001  ! Conversion factor from g/kg to kg/kg.
   integer :: i, j, k, is, ie, js, je, nz
 
   is  = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
@@ -2773,7 +2771,7 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
   ! heat tendency
   if (CS%id_boundary_forcing_heat_tend > 0 .or. CS%id_boundary_forcing_heat_tend_2d > 0) then
     do k=1,nz ; do j=js,je ; do i=is,ie
-      work_3d(i,j,k) = GV%H_to_RZ * tv%C_p * Idt * (h(i,j,k) * tv%T(i,j,k) - h_old(i,j,k) * temp_old(i,j,k))
+      work_3d(i,j,k) = Idt * (h(i,j,k) * tv%T(i,j,k) - h_old(i,j,k) * temp_old(i,j,k))
     enddo ; enddo ; enddo
     if (CS%id_boundary_forcing_heat_tend > 0) then
       call post_data(CS%id_boundary_forcing_heat_tend, work_3d, CS%diag, alt_h=h_old)
@@ -2798,7 +2796,7 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
   ! salt tendency
   if (CS%id_boundary_forcing_salt_tend > 0 .or. CS%id_boundary_forcing_salt_tend_2d > 0) then
     do k=1,nz ; do j=js,je ; do i=is,ie
-      work_3d(i,j,k) = GV%H_to_RZ * ppt2mks * Idt * (h(i,j,k) * tv%S(i,j,k) - h_old(i,j,k) * saln_old(i,j,k))
+      work_3d(i,j,k) = Idt * (h(i,j,k) * tv%S(i,j,k) - h_old(i,j,k) * saln_old(i,j,k))
     enddo ; enddo ; enddo
     if (CS%id_boundary_forcing_salt_tend > 0) then
       call post_data(CS%id_boundary_forcing_salt_tend, work_3d, CS%diag, alt_h=h_old)
@@ -2848,7 +2846,7 @@ subroutine diagnose_frazil_tendency(tv, h, temp_old, dt, G, GV, US, CS)
   ! heat tendency
   if (CS%id_frazil_heat_tend > 0 .or. CS%id_frazil_heat_tend_2d > 0) then
     do k=1,nz ; do j=js,je ; do i=is,ie
-      work_3d(i,j,k) = GV%H_to_RZ * tv%C_p * h(i,j,k) * Idt * (tv%T(i,j,k)-temp_old(i,j,k))
+      work_3d(i,j,k) = h(i,j,k) * Idt * (tv%T(i,j,k)-temp_old(i,j,k))
     enddo ; enddo ; enddo
     if (CS%id_frazil_heat_tend > 0) call post_data(CS%id_frazil_heat_tend, work_3d, CS%diag)
 
@@ -2927,7 +2925,7 @@ end subroutine adiabatic_driver_init
 !> This routine initializes the diabatic driver module.
 subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, diag, &
                                 ADp, CDp, CS, tracer_flow_CSp, sponge_CSp, &
-                                ALE_sponge_CSp, oda_incupd_CSp)
+                                ALE_sponge_CSp, oda_incupd_CSp, tv)
   type(time_type), target                :: Time             !< model time
   type(ocean_grid_type),   intent(inout) :: G                !< model grid structure
   type(verticalGrid_type), intent(in)    :: GV               !< model vertical grid structure
@@ -2944,8 +2942,10 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
   type(sponge_CS),         pointer       :: sponge_CSp       !< pointer to the sponge module control structure
   type(ALE_sponge_CS),     pointer       :: ALE_sponge_CSp   !< pointer to the ALE sponge module control structure
   type(oda_incupd_CS),     pointer       :: oda_incupd_CSp   !< pointer to the oda incupd module control structure
+  type(thermo_var_ptrs),   intent(in)    :: tv               !< points to thermodynamic fields
 
   ! Local variables
+  real, parameter :: ppt2mks = 0.001  ! Conversion factor from g/kg to kg/kg.
   real    :: Kd  ! A diffusivity used in the default for other tracer diffusivities, in MKS units [m2 s-1]
   integer :: num_mode
   logical :: use_temperature
@@ -3305,7 +3305,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_diabatic_diff_heat_tend = register_diag_field('ocean_model',                             &
         'diabatic_heat_tendency', diag%axesTL, Time,                                               &
         'Diabatic diffusion heat tendency',                                                        &
-        'W m-2', conversion=US%QRZ_T_to_W_m2, cmor_field_name='opottempdiff',            &
+        'W m-2', conversion=GV%H_to_RZ*tv%C_p*US%QRZ_T_to_W_m2, cmor_field_name='opottempdiff',    &
         cmor_standard_name='tendency_of_sea_water_potential_temperature_expressed_as_heat_content_'// &
                            'due_to_parameterized_dianeutral_mixing',                               &
         cmor_long_name='Tendency of sea water potential temperature expressed as heat content '//  &
@@ -3318,7 +3318,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_diabatic_diff_salt_tend = register_diag_field('ocean_model',                   &
         'diabatic_salt_tendency', diag%axesTL, Time,                                     &
         'Diabatic diffusion of salt tendency',                                           &
-        'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, cmor_field_name='osaltdiff', &
+        'kg m-2 s-1', conversion=ppt2mks*GV%H_to_kg_m2*US%s_to_T, cmor_field_name='osaltdiff', &
         cmor_standard_name='tendency_of_sea_water_salinity_expressed_as_salt_content_'// &
                            'due_to_parameterized_dianeutral_mixing',                     &
         cmor_long_name='Tendency of sea water salinity expressed as salt content '//     &
@@ -3332,7 +3332,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_diabatic_diff_heat_tend_2d = register_diag_field('ocean_model',                        &
         'diabatic_heat_tendency_2d', diag%axesT1, Time,                                          &
         'Depth integrated diabatic diffusion heat tendency',                                     &
-        'W m-2', conversion=US%QRZ_T_to_W_m2, cmor_field_name='opottempdiff_2d',      &
+        'W m-2', conversion=GV%H_to_RZ*tv%C_p*US%QRZ_T_to_W_m2, cmor_field_name='opottempdiff_2d',&
         cmor_standard_name='tendency_of_sea_water_potential_temperature_expressed_as_heat_content_'//&
                            'due_to_parameterized_dianeutral_mixing_depth_integrated',            &
         cmor_long_name='Tendency of sea water potential temperature expressed as heat content '//&
@@ -3345,7 +3345,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_diabatic_diff_salt_tend_2d = register_diag_field('ocean_model',                &
         'diabatic_salt_tendency_2d', diag%axesT1, Time,                                  &
         'Depth integrated diabatic diffusion salt tendency',                             &
-        'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, cmor_field_name='osaltdiff_2d',              &
+        'kg m-2 s-1', conversion=ppt2mks*GV%H_to_kg_m2*US%s_to_T, cmor_field_name='osaltdiff_2d',&
         cmor_standard_name='tendency_of_sea_water_salinity_expressed_as_salt_content_'// &
                            'due_to_parameterized_dianeutral_mixing_depth_integrated',    &
         cmor_long_name='Tendency of sea water salinity expressed as salt content '//     &
@@ -3385,15 +3385,15 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_boundary_forcing_heat_tend = register_diag_field('ocean_model',&
         'boundary_forcing_heat_tendency', diag%axesTL, Time,             &
         'Boundary forcing heat tendency', &
-        'W m-2', conversion=US%QRZ_T_to_W_m2, v_extensive = .true.)
+        'W m-2', conversion=GV%H_to_RZ*tv%C_p*US%QRZ_T_to_W_m2, v_extensive=.true.)
     if (CS%id_boundary_forcing_heat_tend > 0) then
       CS%boundary_forcing_tendency_diag = .true.
     endif
 
     CS%id_boundary_forcing_salt_tend = register_diag_field('ocean_model',&
         'boundary_forcing_salt_tendency', diag%axesTL, Time,             &
-        'Boundary forcing salt tendency', 'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, &
-        v_extensive = .true.)
+        'Boundary forcing salt tendency', 'kg m-2 s-1',                  &
+        conversion=ppt2mks*GV%H_to_kg_m2*US%s_to_T, v_extensive=.true.)
     if (CS%id_boundary_forcing_salt_tend > 0) then
       CS%boundary_forcing_tendency_diag = .true.
     endif
@@ -3402,7 +3402,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_boundary_forcing_heat_tend_2d = register_diag_field('ocean_model',&
         'boundary_forcing_heat_tendency_2d', diag%axesT1, Time,             &
         'Depth integrated boundary forcing of ocean heat', &
-        'W m-2', conversion=US%QRZ_T_to_W_m2)
+        'W m-2', conversion=GV%H_to_RZ*tv%C_p*US%QRZ_T_to_W_m2)
     if (CS%id_boundary_forcing_heat_tend_2d > 0) then
       CS%boundary_forcing_tendency_diag = .true.
     endif
@@ -3411,7 +3411,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_boundary_forcing_salt_tend_2d = register_diag_field('ocean_model',&
         'boundary_forcing_salt_tendency_2d', diag%axesT1, Time,             &
         'Depth integrated boundary forcing of ocean salt', &
-        'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s)
+        'kg m-2 s-1', conversion=ppt2mks*GV%H_to_kg_m2*US%s_to_T)
     if (CS%id_boundary_forcing_salt_tend_2d > 0) then
       CS%boundary_forcing_tendency_diag = .true.
     endif
@@ -3434,7 +3434,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
   CS%id_frazil_heat_tend = register_diag_field('ocean_model',&
       'frazil_heat_tendency', diag%axesTL, Time,             &
       'Heat tendency due to frazil formation', &
-      'W m-2', conversion=US%QRZ_T_to_W_m2, v_extensive=.true.)
+      'W m-2', conversion=GV%H_to_RZ*tv%C_p*US%QRZ_T_to_W_m2, v_extensive=.true.)
   if (CS%id_frazil_heat_tend > 0) then
     CS%frazil_tendency_diag = .true.
   endif
@@ -3443,7 +3443,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
   CS%id_frazil_heat_tend_2d = register_diag_field('ocean_model',&
       'frazil_heat_tendency_2d', diag%axesT1, Time,             &
       'Depth integrated heat tendency due to frazil formation', &
-      'W m-2', conversion=US%QRZ_T_to_W_m2)
+      'W m-2', conversion=GV%H_to_RZ*tv%C_p*US%QRZ_T_to_W_m2)
   if (CS%id_frazil_heat_tend_2d > 0) then
     CS%frazil_tendency_diag = .true.
   endif
@@ -3456,7 +3456,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
 
   ! initialize the geothermal heating module
   if (CS%use_geothermal) &
-    call geothermal_init(Time, G, GV, US, param_file, diag, CS%geothermal, useALEalgorithm)
+    call geothermal_init(Time, G, GV, US, param_file, diag, CS%geothermal, tv, useALEalgorithm)
 
   ! initialize module for internal tide induced mixing
   if (CS%use_int_tides) then
