@@ -317,10 +317,10 @@ subroutine CFC_cap_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, C
     if (associated(KPP_CSp) .and. present(nonLocalTrans)) then
       flux_scale = GV%Z_to_H / GV%rho0
 
-      call KPP_NonLocalTransport(KPP_CSp, G, GV, h_old, nonLocalTrans, fluxes%cfc11_flux(:,:), dt, CS%diag, &
+      call KPP_NonLocalTransport(KPP_CSp, G, GV, h_old, nonLocalTrans, fluxes%cfc11_flux(:,:), dt, &
                                 CS%CFC_data(1)%tr_ptr, CS%CFC_data(1)%conc(:,:,:), &
                                 flux_scale=flux_scale)
-      call KPP_NonLocalTransport(KPP_CSp, G, GV, h_old, nonLocalTrans, fluxes%cfc12_flux(:,:), dt, CS%diag, &
+      call KPP_NonLocalTransport(KPP_CSp, G, GV, h_old, nonLocalTrans, fluxes%cfc12_flux(:,:), dt, &
                                 CS%CFC_data(2)%tr_ptr, CS%CFC_data(2)%conc(:,:,:), &
                                 flux_scale=flux_scale)
     endif

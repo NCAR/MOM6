@@ -49,7 +49,7 @@ use MOM_internal_tides,      only : internal_tides_init, internal_tides_end, int
 use MOM_kappa_shear,         only : kappa_shear_is_used
 use MOM_CVMix_KPP,           only : KPP_CS, KPP_init, KPP_compute_BLD, KPP_calculate
 use MOM_CVMix_KPP,           only : KPP_end, KPP_get_BLD
-use MOM_CVMix_KPP,           only : KPP_NonLocalTransport_temp, KPP_NonLocalTransport_saln
+use MOM_CVMix_KPP,           only : KPP_NonLocalTransport
 use MOM_oda_incupd,          only : apply_oda_incupd, oda_incupd_CS
 use MOM_opacity,             only : opacity_init, opacity_end, opacity_CS
 use MOM_opacity,             only : absorbRemainingSW, optics_type, optics_nbands
@@ -741,10 +741,10 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Tim
     endif
     ! Apply non-local transport of heat and salt
     ! Changes: tv%T, tv%S
-    call KPP_NonLocalTransport_temp(CS%KPP_CSp, G, GV, h, CS%KPP_NLTheat,   CS%KPP_temp_flux, &
-                                    dt, tv%tr_T, tv%T, tv%C_p)
-    call KPP_NonLocalTransport_saln(CS%KPP_CSp, G, GV, h, CS%KPP_NLTscalar, CS%KPP_salt_flux, &
-                                    dt, tv%tr_S, tv%S)
+    call KPP_NonLocalTransport(CS%KPP_CSp, G, GV, h, CS%KPP_NLTheat,   CS%KPP_temp_flux, dt, &
+                               tv%tr_T, tv%T)
+    call KPP_NonLocalTransport(CS%KPP_CSp, G, GV, h, CS%KPP_NLTscalar, CS%KPP_salt_flux, dt, &
+                               tv%tr_S, tv%S)
     call cpu_clock_end(id_clock_kpp)
     if (showCallTree) call callTree_waypoint("done with KPP_applyNonLocalTransport (diabatic)")
     if (CS%debugConservation) call MOM_state_stats('KPP_applyNonLocalTransport', u, v, h, tv%T, tv%S, G, GV, US)
@@ -1320,10 +1320,10 @@ subroutine diabatic_ALE(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, 
     endif
     ! Apply non-local transport of heat and salt
     ! Changes: tv%T, tv%S
-    call KPP_NonLocalTransport_temp(CS%KPP_CSp, G, GV, h, CS%KPP_NLTheat,   CS%KPP_temp_flux, &
-                                    dt, tv%tr_T, tv%T, tv%C_p)
-    call KPP_NonLocalTransport_saln(CS%KPP_CSp, G, GV, h, CS%KPP_NLTscalar, CS%KPP_salt_flux, &
-                                    dt, tv%tr_S, tv%S)
+    call KPP_NonLocalTransport(CS%KPP_CSp, G, GV, h, CS%KPP_NLTheat,   CS%KPP_temp_flux, dt, &
+                               tv%tr_T, tv%T)
+    call KPP_NonLocalTransport(CS%KPP_CSp, G, GV, h, CS%KPP_NLTscalar, CS%KPP_salt_flux, dt, &
+                               tv%tr_S, tv%S)
     call cpu_clock_end(id_clock_kpp)
     if (showCallTree) call callTree_waypoint("done with KPP_applyNonLocalTransport (diabatic)")
     if (CS%debugConservation) call MOM_state_stats('KPP_applyNonLocalTransport', u, v, h, tv%T, tv%S, G, GV, US)
@@ -1945,10 +1945,10 @@ subroutine layered_diabatic(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_e
     endif
     ! Apply non-local transport of heat and salt
     ! Changes: tv%T, tv%S
-    call KPP_NonLocalTransport_temp(CS%KPP_CSp, G, GV, h, CS%KPP_NLTheat,   CS%KPP_temp_flux, &
-                                    dt, tv%tr_T, tv%T, tv%C_p)
-    call KPP_NonLocalTransport_saln(CS%KPP_CSp, G, GV, h, CS%KPP_NLTscalar, CS%KPP_salt_flux, &
-                                    dt, tv%tr_S, tv%S)
+    call KPP_NonLocalTransport(CS%KPP_CSp, G, GV, h, CS%KPP_NLTheat,   CS%KPP_temp_flux, dt, &
+                               tv%tr_T, tv%T)
+    call KPP_NonLocalTransport(CS%KPP_CSp, G, GV, h, CS%KPP_NLTscalar, CS%KPP_salt_flux, dt, &
+                               tv%tr_S, tv%S)
     call cpu_clock_end(id_clock_kpp)
     if (showCallTree) call callTree_waypoint("done with KPP_applyNonLocalTransport (diabatic)")
     if (CS%debugConservation) call MOM_state_stats('KPP_applyNonLocalTransport', u, v, h, tv%T, tv%S, G, GV, US)

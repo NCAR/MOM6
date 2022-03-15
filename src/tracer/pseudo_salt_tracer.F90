@@ -218,7 +218,7 @@ subroutine pseudo_salt_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G
   if (present(KPP_CSp)) then
     if (associated(KPP_CSp) .and. present(nonLocalTrans)) &
       call KPP_NonLocalTransport(KPP_CSp, G, GV, h_old, nonLocalTrans, fluxes%KPP_salt_flux(:,:), &
-                                 dt, CS%diag, CS%tr_ptr, CS%ps(:,:,:))
+                                 dt, CS%tr_ptr, CS%ps(:,:,:))
   endif
 
   ! This uses applyTracerBoundaryFluxesInOut, usually in ALE mode
