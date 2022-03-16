@@ -27,7 +27,7 @@ use MOM_grid,              only : ocean_grid_type
 use MOM_interface_heights, only : find_eta
 use MOM_spatial_means,     only : global_area_mean, global_layer_mean
 use MOM_spatial_means,     only : global_volume_mean, global_area_integral
-use MOM_tracer_registry,   only : tracer_registry_type, post_tracer_transport_diagnostics
+use MOM_tracer_registry,   only : tracer_registry_type, post_tracer_advection_diagnostics
 use MOM_unit_scaling,      only : unit_scale_type
 use MOM_variables,         only : thermo_var_ptrs, ocean_internal_state, p3d
 use MOM_variables,         only : accel_diag_ptrs, cont_diag_ptrs, surface
@@ -1499,7 +1499,7 @@ subroutine post_transport_diagnostics(G, GV, US, uhtr, vhtr, h, IDs, diag_pre_dy
     call post_data(IDs%id_dynamics_h_tendency, h_tend, diag, alt_h=diag_pre_dyn%h_state)
   endif
 
-  call post_tracer_transport_diagnostics(G, GV, Reg, diag_pre_dyn%h_state, diag)
+  call post_tracer_advection_diagnostics(G, GV, Reg, diag_pre_dyn%h_state, diag)
 
   call diag_restore_grids(diag)
 

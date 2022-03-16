@@ -29,7 +29,8 @@ implicit none ; private
 
 public register_tracer
 public MOM_tracer_chksum, MOM_tracer_chkinv
-public register_tracer_diagnostics, post_tracer_diagnostics_at_sync, post_tracer_transport_diagnostics
+public register_tracer_diagnostics, post_tracer_diagnostics_at_sync
+public post_tracer_advection_diagnostics, post_tracer_hordiff_diagnostics
 public preALE_tracer_diagnostics, postALE_tracer_diagnostics
 public tracer_registry_init, lock_tracer_registry, tracer_registry_end
 public tracer_name_lookup
@@ -724,8 +725,8 @@ subroutine post_tracer_diagnostics_at_sync(Reg, h, diag_prev, diag, G, GV, dt)
 
 end subroutine post_tracer_diagnostics_at_sync
 
-!> Post the advective and diffusive tendencies
-subroutine post_tracer_transport_diagnostics(G, GV, Reg, h_diag, diag)
+!> Post the advective tendencies
+subroutine post_tracer_advection_diagnostics(G, GV, Reg, h_diag, diag)
   type(ocean_grid_type),      intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type),    intent(in) :: GV   !< The ocean's vertical grid structure
   type(tracer_registry_type), pointer    :: Reg  !< pointer to the tracer registry
@@ -744,12 +745,8 @@ subroutine post_tracer_transport_diagnostics(G, GV, Reg, h_diag, diag)
     if (Tr%id_tr_post_horzn> 0) call post_data(Tr%id_tr_post_horzn, Tr%t, diag)
     if (Tr%id_adx > 0) call post_data(Tr%id_adx, Tr%ad_x, diag, alt_h=h_diag)
     if (Tr%id_ady > 0) call post_data(Tr%id_ady, Tr%ad_y, diag, alt_h=h_diag)
-    if (Tr%id_dfx > 0) call post_data(Tr%id_dfx, Tr%df_x, diag, alt_h=h_diag)
-    if (Tr%id_dfy > 0) call post_data(Tr%id_dfy, Tr%df_y, diag, alt_h=h_diag)
     if (Tr%id_adx_2d > 0) call post_data(Tr%id_adx_2d, Tr%ad2d_x, diag)
     if (Tr%id_ady_2d > 0) call post_data(Tr%id_ady_2d, Tr%ad2d_y, diag)
-    if (Tr%id_dfx_2d > 0) call post_data(Tr%id_dfx_2d, Tr%df2d_x, diag)
-    if (Tr%id_dfy_2d > 0) call post_data(Tr%id_dfy_2d, Tr%df2d_y, diag)
     if (Tr%id_adv_xy > 0) call post_data(Tr%id_adv_xy, Tr%advection_xy, diag, alt_h=h_diag)
     if (Tr%id_adv_xy_2d > 0) then
       work2d(:,:) = 0.0
@@ -760,7 +757,33 @@ subroutine post_tracer_transport_diagnostics(G, GV, Reg, h_diag, diag)
     endif
   endif ; enddo
 
-end subroutine post_tracer_transport_diagnostics
+end subroutine post_tracer_advection_diagnostics
+
+!> Post the diffusive tendencies
+subroutine post_tracer_hordiff_diagnostics(G, GV, Reg, diag_pre_dyn, diag)
+  type(ocean_grid_type),      intent(in) :: G    !< The ocean's grid structure
+  type(verticalGrid_type),    intent(in) :: GV   !< The ocean's vertical grid structure
+  type(tracer_registry_type), pointer    :: Reg  !< pointer to the tracer registry
+  type(diag_grid_storage), intent(inout) :: diag_pre_dyn !< Stored grids from before dynamics
+  type(diag_ctrl),         intent(inout) :: diag !< regulates diagnostic output
+
+  integer :: m
+  type(tracer_type), pointer :: Tr=>NULL()
+
+  call diag_save_grids(diag)
+  call diag_copy_storage_to_diag(diag, diag_pre_dyn)
+
+  do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
+    Tr => Reg%Tr(m)
+    if (Tr%id_dfx > 0) call post_data(Tr%id_dfx, Tr%df_x, diag, alt_h=diag_pre_dyn%h_state)
+    if (Tr%id_dfy > 0) call post_data(Tr%id_dfy, Tr%df_y, diag, alt_h=diag_pre_dyn%h_state)
+    if (Tr%id_dfx_2d > 0) call post_data(Tr%id_dfx_2d, Tr%df2d_x, diag)
+    if (Tr%id_dfy_2d > 0) call post_data(Tr%id_dfy_2d, Tr%df2d_y, diag)
+  endif ; enddo
+
+  call diag_restore_grids(diag)
+
+end subroutine post_tracer_hordiff_diagnostics
 
 !> This subroutine writes out chksums for tracers.
 subroutine MOM_tracer_chksum(mesg, Tr, ntr, G)
