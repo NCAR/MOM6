@@ -10,12 +10,13 @@ implicit none ; private
 
 public field_stack_init, field_stack_end
 public field_stack_push, field_stack_pop
+public field_stack_peek, field_stack_drop
 
 !> The field_stack type
 type, public :: field_stack_type ; private
-  real, dimension(:,:,:,:), allocatable :: field !< field values stored in stack
-  integer :: top                                 !< index of top of stack, zero for an empty stack
-  character(:), allocatable :: name              !< stack name to include in informational messages
+  real, dimension(:,:,:,:), pointer :: field => NULL() !< field values stored in stack
+  integer :: top                                       !< index of top of stack, zero for an empty stack
+  character(:), allocatable :: name                    !< stack name to include in informational messages
 end type field_stack_type
 
 contains
@@ -31,11 +32,14 @@ subroutine field_stack_init(field_stack_obj, max_size, is, ie, js, je, nk, name)
   integer,                   intent(in) :: nk              !< The size to allocate for the 3rd dimension
   character(len=*),          intent(in) :: name            !< stack name to include in informational messages
 
-  if (max_size < 0) call MOM_error(FATAL, &
-      "field_stack_init: max_size not permitted to be negative")
+  ! Local variables
+  character(*), parameter :: sub_name = "field_stack_init"
 
-  if (allocated(field_stack_obj%field)) call MOM_error(FATAL, &
-      "field_stack_init: field_stack_obj has already been initialized")
+  if (max_size < 0) call MOM_error(FATAL, &
+      sub_name // ": max_size not permitted to be negative")
+
+  if (associated(field_stack_obj%field)) call MOM_error(FATAL, &
+      sub_name // ": field_stack_obj has already been initialized")
 
   allocate(field_stack_obj%field(is:ie, js:je, nk, max_size))
   field_stack_obj%top = 0
@@ -48,8 +52,9 @@ end subroutine field_stack_init
 subroutine field_stack_end(field_stack_obj)
   type(field_stack_type), intent(inout) :: field_stack_obj !< field_stack object being operated on
 
-  if (allocated(field_stack_obj%field)) then
+  if (associated(field_stack_obj%field)) then
     deallocate(field_stack_obj%field)
+    field_stack_obj%field => NULL()
     deallocate(field_stack_obj%name)
   endif
 
@@ -64,34 +69,23 @@ subroutine field_stack_push(field_stack_obj, field, info_msg)
 
   ! Local variables
   character(*), parameter :: sub_name = "field_stack_push"
-  character(:), allocatable :: info_msg_full
-  integer :: info_msg_full_len, i, j, k
+  integer :: i, j, k
   integer :: i_offset, j_offset
 
-  ! Only construct full informational message if verbosity is sufficiently high
-  if (MOM_get_verbosity() >= 4) then
-    info_msg_full_len = &
-        len(sub_name) + 2 + len_trim(field_stack_obj%name) + 1 + len_trim(info_msg) + 6 + 3
-    allocate(character(len=info_msg_full_len) :: info_msg_full)
-    write(info_msg_full, '(A,I3)') &
-        sub_name // ": " // trim(field_stack_obj%name) // " " // trim(info_msg) // ", top=", &
-        field_stack_obj%top
-    call MOM_mesg(info_msg_full, 4)
-    deallocate(info_msg_full)
-  endif
+  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
 
-  if (.not. allocated(field_stack_obj%field)) call MOM_error(FATAL, &
-      "field_stack_push: field_stack_obj has not been initialized")
+  if (.not. associated(field_stack_obj%field)) call MOM_error(FATAL, &
+      sub_name // ": field_stack_obj has not been initialized")
 
   if (field_stack_obj%top == size(field_stack_obj%field, 4)) call MOM_error(FATAL, &
-      "field_stack_push: attempting to push to full stack")
+      sub_name // ": attempting to push to full stack")
 
   ! verify that field has same shape as stack field
   if ((size(field, 1) /= size(field_stack_obj%field, 1)) .or. &
       (size(field, 2) /= size(field_stack_obj%field, 2)) .or. &
       (size(field, 3) /= size(field_stack_obj%field, 3))) then
     call MOM_error(FATAL, &
-        "field_stack_push: field argument shape doesn't match stack field shape")
+        sub_name // ": field argument shape doesn't match stack field shape")
   endif
 
   field_stack_obj%top = field_stack_obj%top + 1
@@ -113,34 +107,23 @@ subroutine field_stack_pop(field_stack_obj, field, info_msg)
 
   ! Local variables
   character(*), parameter :: sub_name = "field_stack_pop"
-  character(:), allocatable :: info_msg_full
-  integer :: info_msg_full_len, i, j, k
+  integer :: i, j, k
   integer :: i_offset, j_offset
 
-  ! Only construct full informational message if verbosity is sufficiently high
-  if (MOM_get_verbosity() >= 4) then
-    info_msg_full_len = &
-        len(sub_name) + 2 + len_trim(field_stack_obj%name) + 1 + len_trim(info_msg) + 6 + 3
-    allocate(character(len=info_msg_full_len) :: info_msg_full)
-    write(info_msg_full, '(A,I3)') &
-        sub_name // ": " // trim(field_stack_obj%name) // " " // trim(info_msg) // ", top=", &
-        field_stack_obj%top
-    call MOM_mesg(info_msg_full, 4)
-    deallocate(info_msg_full)
-  endif
+  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
 
-  if (.not. allocated(field_stack_obj%field)) call MOM_error(FATAL, &
-      "field_stack_pop: field_stack_obj has not been initialized")
+  if (.not. associated(field_stack_obj%field)) call MOM_error(FATAL, &
+      sub_name // ": field_stack_obj has not been initialized")
 
   if (field_stack_obj%top == 0) call MOM_error(FATAL, &
-      "field_stack_pop: attempting to pop from empty stack")
+      sub_name // ": attempting to pop from empty stack")
 
   ! verify that field has same shape as stack field
   if ((size(field, 1) /= size(field_stack_obj%field, 1)) .or. &
       (size(field, 2) /= size(field_stack_obj%field, 2)) .or. &
       (size(field, 3) /= size(field_stack_obj%field, 3))) then
     call MOM_error(FATAL, &
-        "field_stack_pop: field argument shape doesn't match stack field shape")
+        sub_name // ": field argument shape doesn't match stack field shape")
   endif
 
   i_offset = lbound(field_stack_obj%field, 1) - 1
@@ -152,5 +135,69 @@ subroutine field_stack_pop(field_stack_obj, field, info_msg)
   field_stack_obj%top = field_stack_obj%top - 1
 
 end subroutine field_stack_pop
+
+
+!> Associate pointer with top item on stack
+subroutine field_stack_peek(field_stack_obj, field_ptr, info_msg)
+  type(field_stack_type), intent(in) :: field_stack_obj !< field_stack object being inspected
+  real, dimension(:,:,:), pointer    :: field_ptr       !< pointer to be associated with top of stack
+  character(len=*),       intent(in) :: info_msg        !< informational message to write
+
+  ! Local variables
+  character(*), parameter :: sub_name = "field_stack_peek"
+
+  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
+
+  if (.not. associated(field_stack_obj%field)) call MOM_error(FATAL, &
+      sub_name // ": field_stack_obj has not been initialized")
+
+  if (field_stack_obj%top == 0) call MOM_error(FATAL, &
+      sub_name // ": attempting to peek at empty stack")
+
+  field_ptr => field_stack_obj%field(:,:,:,field_stack_obj%top)
+
+end subroutine field_stack_peek
+
+
+!> Drop top field values from stack
+subroutine field_stack_drop(field_stack_obj, info_msg)
+  type(field_stack_type), intent(inout) :: field_stack_obj !< field_stack object being operated on
+  character(len=*),          intent(in) :: info_msg        !< informational message to write
+
+  ! Local variables
+  character(*), parameter :: sub_name = "field_stack_drop"
+  integer :: i, j, k
+  integer :: i_offset, j_offset
+
+  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
+
+  if (.not. associated(field_stack_obj%field)) call MOM_error(FATAL, &
+      sub_name // ": field_stack_obj has not been initialized")
+
+  if (field_stack_obj%top == 0) call MOM_error(FATAL, &
+      sub_name // ": attempting to drop from empty stack")
+
+  field_stack_obj%top = field_stack_obj%top - 1
+
+end subroutine field_stack_drop
+
+
+!> Write informational message using MOM_mesg
+subroutine write_stack_info_msg(caller, field_stack_obj, info_msg)
+  character(len=*),       intent(in) :: caller          !< name of subroutine writing message
+  type(field_stack_type), intent(in) :: field_stack_obj !< field_stack object being referred to
+  character(len=*),       intent(in) :: info_msg        !< informational message to write
+
+  ! Local variables
+  character(3) :: i3
+
+  ! Only construct full informational message if verbosity is sufficiently high
+  if (MOM_get_verbosity() >= 4) then
+    write(i3, '(I3)') field_stack_obj%top
+    call MOM_mesg( &
+        caller // ": " // trim(field_stack_obj%name) // " " // trim(info_msg) // ", top=" // i3, 4)
+  endif
+
+end subroutine write_stack_info_msg
 
 end module MOM_field_stack
