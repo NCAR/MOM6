@@ -361,7 +361,7 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
                         intent(in)  :: bathyT !< The depth of the bathymetry [Z ~> m]
   type(EOS_type),       pointer     :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US !< A dimensional unit scaling type
-  logical,              intent(in) :: use_stanley_eos !!If true, turn on Stanley SGS T variance parameterization
+  logical,              intent(in) :: use_stanley_eos !< If true, turn on Stanley SGS T variance parameterization
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(inout) :: dpa !< The change in the pressure anomaly across the layer [R L2 T-2 ~> Pa]
   real, dimension(SZI_(HI),SZJ_(HI)), &
@@ -804,7 +804,7 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
                         intent(in)  :: bathyT !< The depth of the bathymetry [Z ~> m]
   type(EOS_type),       pointer     :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US  !< A dimensional unit scaling type
-  logical,              intent(in)  :: use_stanley_eos !!If true, turn on Stanley SGS T variance parameterization
+  logical,              intent(in)  :: use_stanley_eos !< If true, turn on Stanley SGS T variance parameterization
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(inout) :: dpa !< The change in the pressure anomaly across the layer [R L2 T-2 ~> Pa]
   real, dimension(SZI_(HI),SZJ_(HI)), &
@@ -820,6 +820,7 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
                                            !! pressure anomaly at the top and bottom of the layer
                                            !! divided by the y grid spacing [R L2 T-2 ~> Pa]
   logical,    optional, intent(in)  :: useMassWghtInterp !< If true, uses mass weighting to
+                                           !! interpolate T/S for top and bottom integrals.
 
 ! This subroutine calculates (by numerical quadrature) integrals of
 ! pressure anomalies across layers, which are required for calculating the

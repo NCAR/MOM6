@@ -620,10 +620,10 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
     pres_v        ! Pressure on the interface at the v-point [R L2 T-2 ~> Pa].
   real, dimension(SZI_(G)) :: &
     T_h, &        ! Temperature on the interface at the h-point [degC].
-    S_h, &        ! Salinity on the interface at the h-point [ppt]
+    S_h, &        ! Salinity on the interface at the h-point [ppt].
     pres_h, &     ! Pressure on the interface at the h-point [R L2 T-2 ~> Pa].
     T_hr, &       ! Temperature on the interface at the h (+1) point [degC].
-    S_hr, &       ! Salinity on the interface at the h (+1) point [ppt]
+    S_hr, &       ! Salinity on the interface at the h (+1) point [ppt].
     pres_hr       ! Pressure on the interface at the h (+1) point [R L2 T-2 ~> Pa].
   real :: Work_u(SZIB_(G), SZJ_(G)) ! The work being done by the thickness
   real :: Work_v(SZI_(G), SZJB_(G)) ! diffusion integrated over a cell [R Z L4 T-3  ~> W ]

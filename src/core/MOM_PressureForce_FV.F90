@@ -57,7 +57,8 @@ type, public :: PressureForce_FV_CS ; private
   integer :: Recon_Scheme   !< Order of the polynomial of the reconstruction of T & S
                             !! for the finite volume pressure gradient calculation.
                             !! By the default (1) is for a piecewise linear method
-  logical :: use_stanley_pgf ! If true, turn on Stanley parameterization in the PGF
+
+  logical :: use_stanley_pgf  !< If true, turn on Stanley parameterization in the PGF
   integer :: id_e_tidal = -1 !< Diagnostic identifier
   integer :: id_rho_pgf = -1 !< Diagnostic identifier
   integer :: id_rho_stanley_pgf = -1 !< Diagnostic identifier
@@ -470,8 +471,8 @@ subroutine PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, p_atm
     S_t, S_b, T_t, T_b ! Top and bottom edge values for linear reconstructions
                        ! of salinity and temperature within each layer.
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: &
-    rho_pgf, rho_stanley_pgf !Density [kg m-3] from EOS with and without SGS T variance
-                             ! in Stanley parameterization.
+    rho_pgf, rho_stanley_pgf ! Density [kg m-3] from EOS with and without SGS T variance
+                                        ! in Stanley parameterization.
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: &
     p_stanley ! Pressure [Pa] estimated with Rho_0
   real :: rho_stanley_scalar ! Scalar quantity to hold density [kg m-3] in Stanley diagnostics.
@@ -765,7 +766,7 @@ subroutine PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, p_atm
         rho_stanley_pgf(i,j,k) = rho_stanley_scalar
         p_stanley(i,j,k) = p_stanley_scalar
         p_stanley_scalar = p_stanley_scalar + 0.5 * h(i,j,k) * GV%H_to_Pa !Pressure at bottom of layer
-    enddo; enddo; enddo
+     enddo; enddo; enddo
    endif
 
   if (CS%id_e_tidal>0) call post_data(CS%id_e_tidal, e_tidal, CS%diag)
