@@ -36,7 +36,7 @@ type, public :: MOM_stoch_eos_CS
   real,public  ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: pattern
                     !< Random pattern for stochastic EOS
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: phi
-                    !< temporal correlation stochastic EOS (deugging)
+                  !< temporal correlation stochastic EOS (deugging)
   logical :: use_stoch_eos  !< If true, use the stochastic equation of state (Stanley et al. 2020)
   real :: stanley_coeff !< Coefficient correlating the temperature gradient
                         !and SGS T variance; if <0, turn off scheme in all codes

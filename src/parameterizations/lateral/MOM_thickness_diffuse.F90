@@ -688,7 +688,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
                                      ! state calculations at u-points.
   integer, dimension(2) ::  EOSdom_v ! The shifted I-computational domain to use for equation of
                                      ! state calculations at v-points.
-  logical :: use_Stanley
+  logical :: use_stanley
   integer :: is, ie, js, je, nz, IsdB, halo
   integer :: i, j, k
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke ; IsdB = G%IsdB
@@ -707,7 +707,8 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
   present_int_slope_v = PRESENT(int_slope_v)
   present_slope_x = PRESENT(slope_x)
   present_slope_y = PRESENT(slope_y)
-  use_Stanley = CS%use_Stanley_gm
+
+  use_stanley = CS%use_stanley_gm
 
   nk_linear = max(GV%nkml, 1)
 
@@ -728,7 +729,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
   if (CS%use_FGNV_streamfn .and. .not. associated(cg1)) call MOM_error(FATAL, &
        "cg1 must be associated when using FGNV streamfunction.")
 
-!$OMP parallel default(none) shared(is,ie,js,je,h_avail_rsum,pres,h_avail,I4dt, use_Stanley, &
+!$OMP parallel default(none) shared(is,ie,js,je,h_avail_rsum,pres,h_avail,I4dt, use_stanley, &
 !$OMP                               CS,G,GV,tv,h,h_frac,nz,uhtot,Work_u,vhtot,Work_v,T, &
 !$OMP                               diag_sfn_x, diag_sfn_y, diag_sfn_unlim_x, diag_sfn_unlim_y )
   ! Find the maximum and minimum permitted streamfunction.
@@ -774,7 +775,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
 !$OMP                                  int_slope_u,KH_u,uhtot,h_frac,h_avail_rsum,  &
 !$OMP                                  uhD,h_avail,G_scale,Work_u,CS,slope_x,cg1,   &
 !$OMP                                  diag_sfn_x, diag_sfn_unlim_x,N2_floor,EOSdom_u, &
-!$OMP                                  use_Stanley,                                 &
+!$OMP                                  use_stanley,                                 &
 !$OMP                                  present_slope_x,G_rho0,Slope_x_PE,hN2_x_PE)  &
 !$OMP                          private(drdiA,drdiB,drdkL,drdkR,pres_u,T_u,S_u,      &
 !$OMP                                  drho_dT_u,drho_dS_u,hg2A,hg2B,hg2L,hg2R,haA, &
@@ -792,7 +793,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
       endif
 
       calc_derivatives = use_EOS .and. (k >= nk_linear) .and. &
-         (find_work .or. .not. present_slope_x .or. CS%use_FGNV_streamfn .or. use_Stanley)
+         (find_work .or. .not. present_slope_x .or. CS%use_FGNV_streamfn .or. use_stanley)
 
       ! Calculate the zonal fluxes and gradients.
       if (calc_derivatives) then
@@ -804,8 +805,8 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
         call calculate_density_derivs(T_u, S_u, pres_u, drho_dT_u, drho_dS_u, &
                                       tv%eqn_of_state, EOSdom_u)
       endif
-      if (use_Stanley) then
-        do i=is-1,ie
+      if (use_stanley) then
+        do i=is-1,ie+1
           pres_h(i) = pres(i,j,K)
           T_h(i) = 0.5*(T(i,j,k) + T(i,j,k-1))
           S_h(i) = 0.5*(S(i,j,k) + S(i,j,k-1))
@@ -814,7 +815,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
         !            drho_dS_dS, drho_dS_dT, drho_dT_dT, drho_dS_dP, drho_dT_dP, &
         call calculate_density_second_derivs(T_h, S_h, pres_h, &
                      scrap, scrap, drho_dT_dT_h, scrap, scrap, &
-                     is-1, ie-is+2, tv%eqn_of_state)
+                     is-1, ie-is+3, tv%eqn_of_state)
       endif
 
       do I=is-1,ie
@@ -834,13 +835,13 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
         elseif (find_work) then ! This is used in pure stacked SW mode
           drdkDe_u(I,K) = drdkR * e(i+1,j,K) - drdkL * e(i,j,K)
         endif
-        if (use_Stanley) then
+        if (use_stanley) then
           ! Correction to the horizontal density gradient due to nonlinearity in
           ! the EOS rectifying SGS temperature anomalies
           drdiA = drdiA + 0.5 * ((drho_dT_dT_h(i+1) * tv%varT(i+1,j,k-1)) - &
-                                         (drho_dT_dT_h(i) * tv%varT(i,j,k-1)) )
+                                (drho_dT_dT_h(i) * tv%varT(i,j,k-1)) )
           drdiB = drdiB + 0.5 * ((drho_dT_dT_h(i+1) * tv%varT(i+1,j,k)) - &
-                                         (drho_dT_dT_h(i) * tv%varT(i,j,k)) )
+                                (drho_dT_dT_h(i) * tv%varT(i,j,k)) )
         endif
         if (find_work) drdi_u(I,k) = drdiB
 
@@ -1053,7 +1054,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
 !$OMP                                  int_slope_v,KH_v,vhtot,h_frac,h_avail_rsum,  &
 !$OMP                                  vhD,h_avail,G_scale,Work_v,CS,slope_y,cg1,   &
 !$OMP                                  diag_sfn_y,diag_sfn_unlim_y,N2_floor,EOSdom_v,&
-!$OMP                                  use_Stanley,                                 &
+!$OMP                                  use_stanley,                                 &
 !$OMP                                  present_slope_y,G_rho0,Slope_y_PE,hN2_y_PE)  &
 !$OMP                          private(drdjA,drdjB,drdkL,drdkR,pres_v,T_v,S_v,      &
 !$OMP                                  drho_dT_v,drho_dS_v,hg2A,hg2B,hg2L,hg2R,haA, &
@@ -1071,7 +1072,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
       endif
 
       calc_derivatives = use_EOS .and. (k >= nk_linear) .and. &
-         (find_work .or. .not. present_slope_y .or. CS%use_FGNV_streamfn .or. use_Stanley)
+         (find_work .or. .not. present_slope_y .or. CS%use_FGNV_streamfn .or. use_stanley)
 
       if (calc_derivatives) then
         do i=is,ie
@@ -1082,7 +1083,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
         call calculate_density_derivs(T_v, S_v, pres_v, drho_dT_v, drho_dS_v, &
                                       tv%eqn_of_state, EOSdom_v)
       endif
-      if (use_Stanley) then
+      if (use_stanley) then
         do i=is,ie
           pres_h(i) = pres(i,j,K)
           T_h(i) = 0.5*(T(i,j,k) + T(i,j,k-1))
@@ -1118,13 +1119,13 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
         elseif (find_work) then ! This is used in pure stacked SW mode
           drdkDe_v(i,K) =  drdkR * e(i,j+1,K) - drdkL * e(i,j,K)
         endif
-        if (use_Stanley) then
+        if (use_stanley) then
           ! Correction to the horizontal density gradient due to nonlinearity in
           ! the EOS rectifying SGS temperature anomalies
           drdjA = drdjA + 0.5 * ((drho_dT_dT_hr(i) * tv%varT(i,j+1,k-1)) - &
-                                         (drho_dT_dT_h(i) * tv%varT(i,j,k-1)) )
+                                (drho_dT_dT_h(i) * tv%varT(i,j,k-1)) )
           drdjB = drdjB + 0.5 * ((drho_dT_dT_hr(i) * tv%varT(i,j+1,k)) - &
-                                         (drho_dT_dT_h(i) * tv%varT(i,j,k)) )
+                                (drho_dT_dT_h(i) * tv%varT(i,j,k)) )
         endif
 
         if (find_work) drdj_v(i,k) = drdjB
@@ -2072,7 +2073,6 @@ subroutine thickness_diffuse_init(Time, G, GV, US, param_file, diag, CDp, CS)
   CS%id_sfn_unlim_y =  register_diag_field('ocean_model', 'GM_sfn_unlim_y', diag%axesCvi, Time, &
            'Parameterized Meridional Overturning Streamfunction before limiting/smoothing', &
            'm3 s-1', conversion=US%Z_to_m*US%L_to_m**2*US%s_to_T)
-
 
 end subroutine thickness_diffuse_init
 
