@@ -55,7 +55,7 @@ type, public :: VarMix_CS
                                   !! This parameter is set depending on other parameters.
   logical :: calculate_Eady_growth_rate !< If true, calculate all the Eady growth rate.
                                   !! This parameter is set depending on other parameters.
-  logical :: use_stanley_iso      !! If true, use stanley parameterization in MOM_isopycnal_slopes
+  logical :: use_stanley_iso      !< If true, use Stanley parameterization in MOM_isopycnal_slopes
   real, dimension(:,:), pointer :: &
     SN_u => NULL(), &     !< S*N at u-points [T-1 ~> s-1]
     SN_v => NULL(), &     !< S*N at v-points [T-1 ~> s-1]

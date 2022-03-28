@@ -38,7 +38,7 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
                                                                      !! thermodynamic variables
   real,                                        intent(in)    :: dt_kappa_smooth !< A smoothing vertical diffusivity
                                                                      !! times a smoothing timescale [Z2 ~> m2].
-  logical,                                     intent(in)    :: use_stanley !turn on stanley param in slope
+  logical,                                     intent(in)    :: use_stanley !< turn on stanley param in slope
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1), intent(inout) :: slope_x !< Isopycnal slope in i-dir [Z L-1 ~> nondim]
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), intent(inout) :: slope_y !< Isopycnal slope in j-dir [Z L-1 ~> nondim]
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1), &
