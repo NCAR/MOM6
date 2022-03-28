@@ -361,7 +361,7 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
                         intent(in)  :: bathyT !< The depth of the bathymetry [Z ~> m]
   type(EOS_type),       pointer     :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US !< A dimensional unit scaling type
-  logical,              intent(in) :: use_stanley_eos !!If true, turn on Stanley SGS T variance parameterization 
+  logical,              intent(in) :: use_stanley_eos !< If true, turn on Stanley SGS T variance parameterization
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(inout) :: dpa !< The change in the pressure anomaly across the layer [R L2 T-2 ~> Pa]
   real, dimension(SZI_(HI),SZJ_(HI)), &
@@ -454,12 +454,12 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
   use_varT = .false. !ensure initialized
   use_covarTS = .false.
   use_varS = .false.
-  if (use_stanley_eos) then 
-    use_varT = associated(tv%varT) 
-    use_covarTS = associated(tv%covarTS) 
-    use_varS = associated(tv%varS) 
+  if (use_stanley_eos) then
+    use_varT = associated(tv%varT)
+    use_covarTS = associated(tv%covarTS)
+    use_varS = associated(tv%varS)
   endif
-  
+
   T25(:) = 0.
   TS5(:) = 0.
   S25(:) = 0.
@@ -804,7 +804,7 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
                         intent(in)  :: bathyT !< The depth of the bathymetry [Z ~> m]
   type(EOS_type),       pointer     :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US  !< A dimensional unit scaling type
-  logical,              intent(in)  :: use_stanley_eos !!If true, turn on Stanley SGS T variance parameterization 
+  logical,              intent(in)  :: use_stanley_eos !< If true, turn on Stanley SGS T variance parameterization
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(inout) :: dpa !< The change in the pressure anomaly across the layer [R L2 T-2 ~> Pa]
   real, dimension(SZI_(HI),SZJ_(HI)), &
@@ -821,7 +821,7 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
                                            !! divided by the y grid spacing [R L2 T-2 ~> Pa]
   logical,    optional, intent(in)  :: useMassWghtInterp !< If true, uses mass weighting to
                                            !! interpolate T/S for top and bottom integrals.
-  
+
 ! This subroutine calculates (by numerical quadrature) integrals of
 ! pressure anomalies across layers, which are required for calculating the
 ! finite-volume form pressure accelerations in a Boussinesq model.  The one
@@ -885,12 +885,12 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
   use_varT = .false. !ensure initialized
   use_covarTS = .false.
   use_varS = .false.
-  if (use_stanley_eos) then 
+  if (use_stanley_eos) then
      use_varT = associated(tv%varT)
      use_covarTS = associated(tv%covarTS)
      use_varS = associated(tv%varS)
-  endif  
-  
+  endif
+
   T25(:) = 0.
   TS5(:) = 0.
   S25(:) = 0.
