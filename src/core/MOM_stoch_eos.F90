@@ -38,11 +38,14 @@ type, public :: MOM_stoch_eos_CS
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: phi
                     !< temporal correlation stochastic EOS (deugging)
   logical :: use_stoch_eos  !< If true, use the stochastic equation of state (Stanley et al. 2020)
-  real :: stanley_coeff !< Coefficient correlating the temperature gradient 
+  real :: stanley_coeff !< Coefficient correlating the temperature gradient
                         !and SGS T variance; if <0, turn off scheme in all codes
-  real :: stanley_a !<a in exp(aX) in stochastic coefficient 
+  real :: stanley_a !<a in exp(aX) in stochastic coefficient
   real :: kappa_smooth    !< A diffusivity for smoothing T/S in vanished layers [Z2 T-1 ~> m2 s-1]
-  integer :: id_stoch_eos  = -1, id_stoch_phi  = -1, id_tvar_sgs = -1 !< Diagnostic IDs
+  !>@{ Diagnostic IDs
+  integer :: id_stoch_eos  = -1, id_stoch_phi  = -1, id_tvar_sgs = -1
+  !>@}
+
 end type MOM_stoch_eos_CS
 
 
@@ -50,12 +53,12 @@ contains
   subroutine MOM_stoch_eos_init(G,Time,param_file,stoch_eos_CS,restart_CS,diag)
 ! initialization subroutine called by MOM.F90,
   type(param_file_type), intent(in)    :: param_file  !< structure indicating parameter file to parse
-  type(ocean_grid_type), intent(in)    :: G
-  type(time_type),       intent(in)    :: Time
-  type(MOM_stoch_eos_CS), intent(inout) :: stoch_eos_CS
-  type(MOM_restart_CS),  pointer       :: restart_CS
+  type(ocean_grid_type), intent(in)    :: G           !< The ocean's grid structure.
+  type(time_type),       intent(in)    :: Time        !< Time for stochastic process
+  type(MOM_stoch_eos_CS), intent(inout) :: stoch_eos_CS !< Stochastic control structure
+  type(MOM_restart_CS),  pointer       :: restart_CS  !< A pointer to the restart control structure.
   type(diag_ctrl),       target, intent(inout) :: diag       !< to control diagnostics
-  integer :: i,j
+  integer :: i,j 
   type(vardesc)      :: vd
   seed=0
   ! contants
@@ -116,14 +119,14 @@ contains
   end subroutine MOM_stoch_eos_init
 
   subroutine MOM_stoch_eos_run(G,u,v,delt,Time,stoch_eos_CS,diag)
-  type(ocean_grid_type), intent(in)    :: G
+  type(ocean_grid_type), intent(in)    :: G !< The ocean's grid structure.
   real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), &
                                  intent(in)  :: u      !< The zonal velocity [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJB_(G),SZK_(G)), &
                                  intent(in)  :: v      !< The meridional velocity [L T-1 ~> m s-1].
-  real,                  intent(in)    :: delt
-  type(time_type),       intent(in)    :: Time
-  type(MOM_stoch_eos_CS), intent(inout) :: stoch_eos_CS
+  real,                  intent(in)    :: delt         !< Time step size for AR1 process [T ~> s].
+  type(time_type),       intent(in)    :: Time         !< Time for stochastic process
+  type(MOM_stoch_eos_CS), intent(inout) :: stoch_eos_CS !< Stochastic control structure
   type(diag_ctrl),       target, intent(inout) :: diag       !< to control diagnostics
 ! locals
   integer                                ::  i,j
@@ -147,27 +150,27 @@ contains
 
 
   subroutine MOM_calc_varT(G,GV,h,tv,stoch_eos_CS,dt)
-  type(ocean_grid_type), intent(in)    :: G
+  type(ocean_grid_type), intent(in)    :: G !< The ocean's grid structure.
   type(verticalGrid_type),                   intent(in)  :: GV  !< Vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)),  intent(in)  :: h   !< Layer thickness [H ~> m]
   type(thermo_var_ptrs), intent(inout) :: tv   !< Thermodynamics structure
-  type(MOM_stoch_eos_CS), intent(inout) :: stoch_eos_CS
+  type(MOM_stoch_eos_CS), intent(inout) :: stoch_eos_CS !< Stochastic control structure.
   real, intent(in)  :: dt    !< Time increment [T ~> s]
 ! locals
   real, dimension(SZI_(G), SZJ_(G), SZK_(GV)) :: &
-    T, &          ! The temperature (or density) [degC], with the values in
-                  ! in massless layers filled vertically by diffusion.
-    S             ! The filled salinity [ppt], with the values in
-                  ! in massless layers filled vertically by diffusion.
-  integer                                ::  i,j,k
-  real :: hl(5)              ! Copy of local stencil of H [H ~> m]
-  real :: dTdi2, dTdj2       ! Differences in T variance [degC2]
+    T, &          !> The temperature (or density) [degC], with the values in
+                  !! in massless layers filled vertically by diffusion.
+    S             !> The filled salinity [ppt], with the values in
+                  !! in massless layers filled vertically by diffusion.
+  integer                                ::  i,j,k 
+  real :: hl(5)              !> Copy of local stencil of H [H ~> m]
+  real :: dTdi2, dTdj2       !> Differences in T variance [degC2]
 
   ! This block does a thickness weighted variance calculation and helps control for
   ! extreme gradients along layers which are vanished against topography. It is
   ! still a poor approximation in the interior when coordinates are strongly tilted.
   if (.not. associated(tv%varT)) call safe_alloc_ptr(tv%varT, G%isd, G%ied, G%jsd, G%jed, GV%ke)
-  
+
   call vert_fill_TS(h, tv%T, tv%S, stoch_eos_CS%kappa_smooth*dt, T, S, G, GV, halo_here=1, larger_h_denom=.true.)
 
   do k=1,G%ke
