@@ -2904,7 +2904,7 @@ subroutine register_diags(Time, G, GV, US, IDs, diag)
       v_extensive=.true., conversion=H_convert)
   IDs%id_ssh_inst = register_diag_field('ocean_model', 'SSH_inst', diag%axesT1, &
       Time, 'Instantaneous Sea Surface Height', 'm')
-		
+
 end subroutine register_diags
 
 !> Set up CPU clock IDs for timing various subroutines.

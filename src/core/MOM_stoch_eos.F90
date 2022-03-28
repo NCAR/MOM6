@@ -58,7 +58,7 @@ contains
   type(MOM_stoch_eos_CS), intent(inout) :: stoch_eos_CS !< Stochastic control structure
   type(MOM_restart_CS),  pointer       :: restart_CS  !< A pointer to the restart control structure.
   type(diag_ctrl),       target, intent(inout) :: diag       !< to control diagnostics
-  integer :: i,j 
+  integer :: i,j
   type(vardesc)      :: vd
   seed=0
   ! contants
@@ -162,7 +162,7 @@ contains
                   !! in massless layers filled vertically by diffusion.
     S             !> The filled salinity [ppt], with the values in
                   !! in massless layers filled vertically by diffusion.
-  integer                                ::  i,j,k 
+  integer                                ::  i,j,k
   real :: hl(5)              !> Copy of local stencil of H [H ~> m]
   real :: dTdi2, dTdj2       !> Differences in T variance [degC2]
 
