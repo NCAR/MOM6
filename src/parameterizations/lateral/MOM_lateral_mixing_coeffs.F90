@@ -479,7 +479,7 @@ subroutine calc_slope_functions(h, tv, dt, G, GV, US, CS, OBC)
     else
       call find_eta(h, tv, G, GV, US, e, halo_size=2)
       if (CS%use_stored_slopes) then
-        call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, &
+        call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
                                     CS%slope_x, CS%slope_y, N2_u=N2_u, N2_v=N2_v, halo=1, OBC=OBC)
         call calc_Visbeck_coeffs_old(h, CS%slope_x, CS%slope_y, N2_u, N2_v, G, GV, US, CS, OBC)
       else
