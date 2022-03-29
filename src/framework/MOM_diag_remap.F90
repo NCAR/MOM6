@@ -63,6 +63,7 @@ use MOM_error_handler,    only : MOM_error, FATAL, assert, WARNING
 use MOM_debugging,        only : check_column_integrals
 use MOM_diag_manager_infra,only : MOM_diag_axis_init
 use MOM_diag_vkernels,    only : interpolate_column, reintegrate_column
+use MOM_field_stack,      only : field_stack_type
 use MOM_file_parser,      only : get_param, log_param, param_file_type
 use MOM_string_functions, only : lowercase, extractWord
 use MOM_grid,             only : ocean_grid_type
@@ -103,6 +104,8 @@ type :: diag_remap_ctrl
   logical :: configured = .false. !< Whether vertical coordinate has been configured
   logical :: initialized = .false.  !< Whether remappping initialized
   logical :: used = .false.  !< Whether this coordinate actually gets used.
+  logical :: in_sync_with_state = .false. !< Whether the coordinate's thicknesses are up to date
+                                          !! with respect to the model's state variables
   integer :: vertical_coord = 0 !< The vertical coordinate that we remap to
   character(len=10) :: vertical_coord_name ='' !< The coordinate name as understood by ALE
   character(len=16) :: diag_coord_name = '' !< A name for the purpose of run-time parameters
@@ -113,6 +116,7 @@ type :: diag_remap_ctrl
   real, dimension(:,:,:), allocatable :: h !< Remap grid thicknesses [H ~> m or kg m-2]
   real, dimension(:,:,:), allocatable :: h_extensive !< Remap grid thicknesses for extensive
                                            !! variables [H ~> m or kg m-2]
+  type(field_stack_type) :: h_prev !< Previous value of remap grid thicknesses [H ~> m or kg m-2]
   integer :: interface_axes_id = 0 !< Vertical axes id for remapping at interfaces
   integer :: layer_axes_id = 0 !< Vertical axes id for remapping on layers
   logical :: answers_2018      !< If true, use the order of arithmetic and expressions for remapping
@@ -138,6 +142,7 @@ subroutine diag_remap_init(remap_cs, coord_tuple, answers_2018)
   remap_cs%configured = .false.
   remap_cs%initialized = .false.
   remap_cs%used = .false.
+  remap_cs%in_sync_with_state = .false.
   remap_cs%answers_2018 = answers_2018
   remap_cs%nz = 0
 
@@ -153,6 +158,7 @@ subroutine diag_remap_end(remap_cs)
   remap_cs%configured = .false.
   remap_cs%initialized = .false.
   remap_cs%used = .false.
+  remap_cs%in_sync_with_state = .false.
   remap_cs%nz = 0
 
 end subroutine diag_remap_end
@@ -347,12 +353,13 @@ subroutine diag_remap_update(remap_cs, G, GV, US, h, T, S, eqn_of_state, h_targe
 end subroutine diag_remap_update
 
 !> Remap diagnostic field to alternative vertical grid.
-subroutine diag_remap_do_remap(remap_cs, G, GV, h, staggered_in_x, staggered_in_y, &
+subroutine diag_remap_do_remap(remap_cs, G, GV, h, h_target, staggered_in_x, staggered_in_y, &
                                mask, field, remapped_field)
   type(diag_remap_ctrl),   intent(in) :: remap_cs !< Diagnostic coodinate control structure
   type(ocean_grid_type),   intent(in) :: G  !< Ocean grid structure
   type(verticalGrid_type), intent(in) :: GV !< ocean vertical grid structure
   real, dimension(:,:,:),  intent(in) :: h  !< The current thicknesses [H ~> m or kg m-2]
+  real, dimension(:,:,:),  intent(in) :: h_target !< The thicknesses of the target grid [H ~> m or kg m-2]
   logical,                 intent(in) :: staggered_in_x !< True is the x-axis location is at u or q points
   logical,                 intent(in) :: staggered_in_y !< True is the y-axis location is at v or q points
   real, dimension(:,:,:),  pointer    :: mask !< A mask for the field [nondim]
@@ -397,7 +404,7 @@ subroutine diag_remap_do_remap(remap_cs, G, GV, h, staggered_in_x, staggered_in_
           if (mask(I,j,1) == 0.) cycle
         endif
         h_src(:) = 0.5 * (h(i_lo,j,:) + h(i_hi,j,:))
-        h_dest(:) = 0.5 * (remap_cs%h(i_lo,j,:) + remap_cs%h(i_hi,j,:))
+        h_dest(:) = 0.5 * (h_target(i_lo,j,:) + h_target(i_hi,j,:))
         call remapping_core_h(remap_cs%remap_cs, &
                               nz_src, h_src(:), field(I1,j,:), &
                               nz_dest, h_dest(:), remapped_field(I1,j,:), &
@@ -414,7 +421,7 @@ subroutine diag_remap_do_remap(remap_cs, G, GV, h, staggered_in_x, staggered_in_
           if (mask(i,J,1) == 0.) cycle
         endif
         h_src(:) = 0.5 * (h(i,j_lo,:) + h(i,j_hi,:))
-        h_dest(:) = 0.5 * (remap_cs%h(i,j_lo,:) + remap_cs%h(i,j_hi,:))
+        h_dest(:) = 0.5 * (h_target(i,j_lo,:) + h_target(i,j_hi,:))
         call remapping_core_h(remap_cs%remap_cs, &
                               nz_src, h_src(:), field(i,J1,:), &
                               nz_dest, h_dest(:), remapped_field(i,J1,:), &
@@ -429,7 +436,7 @@ subroutine diag_remap_do_remap(remap_cs, G, GV, h, staggered_in_x, staggered_in_
           if (mask(i,j,1) == 0.) cycle
         endif
         h_src(:) = h(i,j,:)
-        h_dest(:) = remap_cs%h(i,j,:)
+        h_dest(:) = h_target(i,j,:)
         call remapping_core_h(remap_cs%remap_cs, &
                               nz_src, h_src(:), field(i,j,:), &
                               nz_dest, h_dest(:), remapped_field(i,j,:), &

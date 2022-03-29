@@ -7,7 +7,7 @@ use MOM_cpu_clock,             only : cpu_clock_id, cpu_clock_begin, cpu_clock_e
 use MOM_cpu_clock,             only : CLOCK_MODULE, CLOCK_ROUTINE
 use MOM_domains,               only : pass_var
 use MOM_diag_mediator,         only : diag_ctrl, time_type
-use MOM_diag_mediator,         only : post_data, register_diag_field
+use MOM_diag_mediator,         only : post_data
 use MOM_EOS,                   only : EOS_type, EOS_manual_init, EOS_domain
 use MOM_EOS,                   only : calculate_density, calculate_density_derivs
 use MOM_EOS,                   only : extract_member_EOS, EOS_LINEAR, EOS_TEOS10, EOS_WRIGHT
@@ -564,10 +564,6 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   real, dimension(SZIB_(G),SZJ_(G),CS%nsurf-1) :: uFlx        ! Zonal flux of tracer [H conc ~> m conc or conc kg m-2]
   real, dimension(SZI_(G),SZJB_(G),CS%nsurf-1) :: vFlx        ! Meridional flux of tracer
                                                               ! [H conc ~> m conc or conc kg m-2]
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV))    :: tendency    ! tendency array for diagnostics
-                                                              ! [H conc T-1 ~> m conc s-1 or kg m-2 conc s-1]
-  real, dimension(SZI_(G),SZJ_(G))             :: tendency_2d ! depth integrated content tendency for diagn
-                                                              ! [H conc T-1 ~> m conc s-1 or kg m-2 conc s-1]
   real, dimension(SZIB_(G),SZJ_(G))            :: trans_x_2d  ! depth integrated diffusive tracer x-transport diagn
   real, dimension(SZI_(G),SZJB_(G))            :: trans_y_2d  ! depth integrated diffusive tracer y-transport diagn
   real, dimension(SZK_(GV))                    :: dTracer     ! change in tracer concentration due to ndiffusion
@@ -594,10 +590,8 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     tracer => Reg%Tr(m)
 
     ! for diagnostics
-    if (tracer%id_dfxy_conc > 0 .or. tracer%id_dfxy_cont > 0 .or. tracer%id_dfxy_cont_2d > 0 .or. &
-        tracer%id_dfx_2d > 0 .or. tracer%id_dfy_2d > 0) then
+    if (tracer%id_dfx_2d > 0 .or. tracer%id_dfy_2d > 0) then
       Idt = 1.0 / dt
-      tendency(:,:,:)  = 0.0
     endif
 
     uFlx(:,:,:) = 0.
@@ -647,12 +641,6 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
                           ( G%IareaT(i,j) / ( h(i,j,k) + GV%H_subroundoff ) )
         enddo
 
-        if (tracer%id_dfxy_conc > 0  .or. tracer%id_dfxy_cont > 0 .or. tracer%id_dfxy_cont_2d > 0 ) then
-          do k = 1, GV%ke
-            tendency(i,j,k) = dTracer(k) * G%IareaT(i,j) * Idt
-          enddo
-        endif
-
       endif
     enddo ; enddo
 
@@ -684,32 +672,6 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
         endif
       enddo ; enddo
       call post_data(tracer%id_dfy_2d, trans_y_2d(:,:), CS%diag)
-    endif
-
-    ! post tendency of layer-integrated tracer content
-    if (tracer%id_dfxy_cont > 0) then
-      call post_data(tracer%id_dfxy_cont, tendency(:,:,:), CS%diag)
-    endif
-
-    ! post depth summed tendency for tracer content
-    if (tracer%id_dfxy_cont_2d > 0) then
-      tendency_2d(:,:) = 0.
-      do j = G%jsc,G%jec ; do i = G%isc,G%iec
-        do k = 1, GV%ke
-          tendency_2d(i,j) = tendency_2d(i,j) + tendency(i,j,k)
-        enddo
-      enddo ; enddo
-      call post_data(tracer%id_dfxy_cont_2d, tendency_2d(:,:), CS%diag)
-    endif
-
-    ! post tendency of tracer concentration; this step must be
-    ! done after posting tracer content tendency, since we alter
-    ! the tendency array.
-    if (tracer%id_dfxy_conc > 0) then
-      do k = 1, GV%ke ; do j = G%jsc,G%jec ; do i = G%isc,G%iec
-        tendency(i,j,k) =  tendency(i,j,k) / ( h(i,j,k) + GV%H_subroundoff )
-      enddo ; enddo ; enddo
-      call post_data(tracer%id_dfxy_conc, tendency, CS%diag)
     endif
   enddo ! Loop over tracer registry
 

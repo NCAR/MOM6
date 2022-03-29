@@ -22,6 +22,8 @@ use MOM_diag_remap,       only : diag_remap_configure_axes, diag_remap_axes_conf
 use MOM_diag_remap,       only : diag_remap_diag_registration_closed, diag_remap_set_active
 use MOM_EOS,              only : EOS_type
 use MOM_error_handler,    only : MOM_error, FATAL, WARNING, is_root_pe, assert
+use MOM_field_stack,      only : field_stack_type, field_stack_init, field_stack_push
+use MOM_field_stack,      only : field_stack_peek, field_stack_drop
 use MOM_file_parser,      only : get_param, log_version, param_file_type
 use MOM_grid,             only : ocean_grid_type
 use MOM_io,               only : slasher, vardesc, query_vardesc, MOM_read_data
@@ -38,13 +40,15 @@ implicit none ; private
 #define IMPLIES(A, B) ((.not. (A)) .or. (B))
 #define MAX_DSAMP_LEV 2
 
-public set_axes_info, post_data, register_diag_field, time_type
+public set_axes_info, post_data, post_data_tend, register_diag_field, time_type
 public post_product_u, post_product_sum_u, post_product_v, post_product_sum_v
 public set_masks_for_axes
 public post_data_1d_k
 public safe_alloc_ptr, safe_alloc_alloc
 public enable_averaging, enable_averages, disable_averaging, query_averaging_enabled
 public diag_mediator_init, diag_mediator_end, set_diag_mediator_grid
+public diag_push_h, diag_drop_h
+public set_diag_in_sync_with_state
 public diag_mediator_infrastructure_init
 public diag_mediator_close_registration, get_diag_time_end
 public diag_axis_init, ocean_register_diag, register_static_field
@@ -326,8 +330,7 @@ type, public :: diag_ctrl
   !> Number of checksum-only diagnostics
   integer :: num_chksum_diags
 
-  real, dimension(:,:,:), allocatable :: h_begin !< Layer thicknesses at the beginning of the timestep used
-                                                 !! for remapping of extensive variables
+  type(field_stack_type) :: h_prev !< stack of previous native thickness values [H ~> m or kg m-2]
 
 end type diag_ctrl
 
@@ -350,6 +353,7 @@ subroutine set_axes_info(G, GV, US, param_file, diag_cs, set_vertical)
   integer :: id_xq, id_yq, id_zl, id_zi, id_xh, id_yh, id_null
   integer :: id_zl_native, id_zi_native
   integer :: i, j, k, nz
+  integer :: max_h_prev_size
   real :: zlev(GV%ke), zinter(GV%ke+1)
   logical :: set_vert
   real, allocatable, dimension(:) :: IaxB,iax
@@ -498,6 +502,14 @@ subroutine set_axes_info(G, GV, US, param_file, diag_cs, set_vertical)
     ! Allocate these arrays since the size of the diagnostic array is now known
     allocate(diag_cs%diag_remap_cs(i)%h(G%isd:G%ied,G%jsd:G%jed, diag_cs%diag_remap_cs(i)%nz))
     allocate(diag_cs%diag_remap_cs(i)%h_extensive(G%isd:G%ied,G%jsd:G%jed, diag_cs%diag_remap_cs(i)%nz))
+
+    ! Axes info is set before tracer diagnostics are registered, making it hard
+    ! to adaptively determine max_h_prev_size. So use 2. Will need to be
+    ! increased to 3 if multiprocess tendencies are implemented and used.
+    max_h_prev_size = 2
+    call field_stack_init(diag_cs%diag_remap_cs(i)%h_prev, max_h_prev_size, &
+        G%isd, G%ied, G%jsd, G%jed, diag_cs%diag_remap_cs(i)%nz, &
+        "diag h_prev " // trim(diag_cs%diag_remap_cs(i)%diag_coord_name))
 
     ! This vertical coordinate has been configured so can be used.
     if (diag_remap_axes_configured(diag_cs%diag_remap_cs(i))) then
@@ -1337,6 +1349,58 @@ subroutine post_data_1d_k(diag_field_id, field, diag_cs, is_static)
   if (id_clock_diag_mediator>0) call cpu_clock_end(id_clock_diag_mediator)
 end subroutine post_data_1d_k
 
+!> Get the diagnostics-compute indices (to be passed to send_data)
+!! based on the shape of the diag field
+subroutine diag_indices_get(caller, fo1, fo2, diag_cs, isv, iev, jsv, jev)
+  character(len=*),  intent(in)  :: caller  !< name of calling subroutine
+  integer,           intent(in)  :: fo1     !< The size of the diag field in x
+  integer,           intent(in)  :: fo2     !< The size of the diag field in y
+  type(diag_ctrl),   intent(in)  :: diag_CS !< Structure used to regulate diagnostic output
+  integer,           intent(out) :: isv     !< i-start index for diagnostics
+  integer,           intent(out) :: iev     !< i-end index for diagnostics
+  integer,           intent(out) :: jsv     !< j-start index for diagnostics
+  integer,           intent(out) :: jev     !< j-end index for diagnostics
+  ! Local variables
+  integer :: dszi,cszi,dszj,cszj
+  character(len=500) :: mesg
+
+  ! Determine the proper array indices, noting that because of the (:,:)
+  ! declaration of field, symmetric arrays are using a SW-grid indexing,
+  ! but non-symmetric arrays are using a NE-grid indexing.  Send_data
+  ! actually only uses the difference between ie and is to determine
+  ! the output data size and assumes that halos are symmetric.
+
+  cszi = diag_cs%ie-diag_cs%is +1 ; dszi = diag_cs%ied-diag_cs%isd +1
+  if ( fo1 == dszi ) then
+    isv = diag_cs%is ; iev = diag_cs%ie     ! Data domain
+  elseif ( fo1 == dszi + 1 ) then
+    isv = diag_cs%is ; iev = diag_cs%ie+1   ! Symmetric data domain
+  elseif ( fo1 == cszi) then
+    isv = 1 ; iev = cszi                    ! Computational domain
+  elseif ( fo1 == cszi + 1 ) then
+    isv = 1 ; iev = cszi+1                  ! Symmetric computational domain
+  else
+    write (mesg,*) " peculiar size ",fo1," in i-direction\n"//&
+          "does not match one of ", cszi, cszi+1, dszi, dszi+1
+    call MOM_error(FATAL,trim(caller)//":diag_indices_get: "//trim(mesg))
+  endif
+
+  cszj = diag_cs%je-diag_cs%js +1 ; dszj = diag_cs%jed-diag_cs%jsd +1
+  if ( fo2 == dszj ) then
+    jsv = diag_cs%js ; jev = diag_cs%je     ! Data domain
+  elseif ( fo2 == dszj + 1 ) then
+    jsv = diag_cs%js ; jev = diag_cs%je+1   ! Symmetric data domain
+  elseif ( fo2 == cszj ) then
+    jsv = 1 ; jev = cszj                    ! Computational domain
+  elseif ( fo2 == cszj+1 ) then
+    jsv = 1 ; jev = cszj+1                  ! Symmetric computational domain
+  else
+    write (mesg,*) " peculiar size ",fo2," in j-direction\n"//&
+          "does not match one of ", cszj, cszj+1, dszj, dszj+1
+    call MOM_error(FATAL,trim(caller)//":diag_indices_get: "//trim(mesg))
+  endif
+end subroutine diag_indices_get
+
 !> Make a real 2-d array diagnostic available for averaging or output
 subroutine post_data_2d(diag_field_id, field, diag_cs, is_static, mask)
   integer,           intent(in) :: diag_field_id !< The id for an output variable returned by a
@@ -1377,7 +1441,6 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
   real, dimension(:,:), pointer :: locmask
   character(len=300) :: mesg
   logical :: used, is_stat
-  integer :: cszi, cszj, dszi, dszj
   integer :: isv, iev, jsv, jev, i, j, chksum, isv_o,jsv_o
   real, dimension(:,:), allocatable, target :: locfield_dsamp
   real, dimension(:,:), allocatable, target :: locmask_dsamp
@@ -1387,42 +1450,8 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
   locmask => NULL()
   is_stat = .false. ; if (present(is_static)) is_stat = is_static
 
-  ! Determine the propery array indices, noting that because of the (:,:)
-  ! declaration of field, symmetric arrays are using a SW-grid indexing,
-  ! but non-symmetric arrays are using a NE-grid indexing.  Send_data
-  ! actually only uses the difference between ie and is to determine
-  ! the output data size and assumes that halos are symmetric.
-  isv = diag_cs%is ; iev = diag_cs%ie ; jsv = diag_cs%js ; jev = diag_cs%je
-
-  cszi = diag_cs%ie-diag_cs%is +1 ; dszi = diag_cs%ied-diag_cs%isd +1
-  cszj = diag_cs%je-diag_cs%js +1 ; dszj = diag_cs%jed-diag_cs%jsd +1
-  if ( size(field,1) == dszi ) then
-    isv = diag_cs%is ; iev = diag_cs%ie     ! Data domain
-  elseif ( size(field,1) == dszi + 1 ) then
-    isv = diag_cs%is ; iev = diag_cs%ie+1   ! Symmetric data domain
-  elseif ( size(field,1) == cszi) then
-    isv = 1 ; iev = cszi                    ! Computational domain
-  elseif ( size(field,1) == cszi + 1 ) then
-    isv = 1 ; iev = cszi+1                  ! Symmetric computational domain
-  else
-    write (mesg,*) " peculiar size ",size(field,1)," in i-direction\n"//&
-       "does not match one of ", cszi, cszi+1, dszi, dszi+1
-    call MOM_error(FATAL,"post_data_2d_low: "//trim(diag%debug_str)//trim(mesg))
-  endif
-
-  if ( size(field,2) == dszj ) then
-    jsv = diag_cs%js ; jev = diag_cs%je     ! Data domain
-  elseif ( size(field,2) == dszj + 1 ) then
-    jsv = diag_cs%js ; jev = diag_cs%je+1   ! Symmetric data domain
-  elseif ( size(field,2) == cszj ) then
-    jsv = 1 ; jev = cszj                    ! Computational domain
-  elseif ( size(field,2) == cszj+1 ) then
-    jsv = 1 ; jev = cszj+1                  ! Symmetric computational domain
-  else
-    write (mesg,*) " peculiar size ",size(field,2)," in j-direction\n"//&
-       "does not match one of ", cszj, cszj+1, dszj, dszj+1
-    call MOM_error(FATAL,"post_data_2d_low: "//trim(diag%debug_str)//trim(mesg))
-  endif
+  call diag_indices_get(trim(diag%debug_str)//":post_data_2d_low", size(field,1), size(field,2), &
+                        diag_cs, isv, iev, jsv, jev)
 
   if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.)) then
     allocate( locfield( lbound(field,1):ubound(field,1), lbound(field,2):ubound(field,2) ) )
@@ -1514,7 +1543,7 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
   integer,           intent(in) :: diag_field_id !< The id for an output variable returned by a
                                                  !! previous call to register_diag_field.
   real,              intent(in) :: field(:,:,:)  !< 3-d array being offered for output or averaging
-  type(diag_ctrl), target, intent(in) :: diag_CS !< Structure used to regulate diagnostic output
+  type(diag_ctrl), target, intent(inout) :: diag_CS !< Structure used to regulate diagnostic output
   logical, optional, intent(in) :: is_static !< If true, this is a static field that is always offered.
   real,    optional, intent(in) :: mask(:,:,:) !< If present, use this real array as the data mask.
   real, dimension(:,:,:), &
@@ -1549,6 +1578,16 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
     staggered_in_x = diag%axes%is_u_point .or. diag%axes%is_q_point
     staggered_in_y = diag%axes%is_v_point .or. diag%axes%is_q_point
 
+    if (.not.diag%axes%is_native) then
+      ! update non-native diagnostic grid if it is not in sync with model state
+      if (.not. diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%in_sync_with_state) then
+        call diag_remap_update(diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), &
+            diag_cs%G, diag_cs%GV, diag_cs%US, h_diag, diag_cs%T, diag_cs%S, diag_cs%eqn_of_state, &
+            diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h)
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%in_sync_with_state = .true.
+      endif
+    endif
+
     if (diag%v_extensive .and. .not.diag%axes%is_native) then
       ! The field is vertically integrated and needs to be re-gridded
       if (present(mask)) then
@@ -1559,7 +1598,7 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
       allocate(remapped_field(size(field,1), size(field,2), diag%axes%nz))
       call vertically_reintegrate_diag_field(                                    &
         diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), diag_cs%G,  &
-        diag_cs%h_begin,                                                         &
+        h_diag,                                                                  &
         diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h_extensive, &
         staggered_in_x, staggered_in_y, diag%axes%mask3d, field, remapped_field)
       if (id_clock_diag_remap>0) call cpu_clock_end(id_clock_diag_remap)
@@ -1583,7 +1622,9 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
       if (id_clock_diag_remap>0) call cpu_clock_begin(id_clock_diag_remap)
       allocate(remapped_field(size(field,1), size(field,2), diag%axes%nz))
       call diag_remap_do_remap(diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), &
-              diag_cs%G, diag_cs%GV, h_diag, staggered_in_x, staggered_in_y, &
+              diag_cs%G, diag_cs%GV, h_diag, &
+              diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h, &
+              staggered_in_x, staggered_in_y, &
               diag%axes%mask3d, field, remapped_field)
       if (id_clock_diag_remap>0) call cpu_clock_end(id_clock_diag_remap)
       if (associated(diag%axes%mask3d)) then
@@ -1630,6 +1671,205 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
 
 end subroutine post_data_3d
 
+!> Make a real 3-d array tendency diagnostic available for averaging or output.
+!! At least one of field_tend and field_prev must be provided.
+subroutine post_data_tend(diag_field_id, dt, field_new, h_new, diag_cs, &
+                          field_tend, field_prev, mask)
+
+  integer,                    intent(in) :: diag_field_id      !< The id for an output variable returned by a
+                                                               !! previous call to register_diag_field.
+  real,                       intent(in) :: dt                 !< duration of time interval that field_tend is over
+  real,                       intent(in) :: field_new(:,:,:)   !< field after tendency was applied
+  real,                       intent(in) :: h_new(:,:,:)       !< model layer thicknesses after tendency was applied
+  type(diag_ctrl), target, intent(inout) :: diag_cs            !< Structure used to regulate diagnostic output
+  real,     target, optional, intent(in) :: field_tend(:,:,:)  !< tendency of field (on model vertical grid)
+  real,     target, optional, intent(in) :: field_prev(:,:,:)  !< field before tendency was applied
+  real,             optional, intent(in) :: mask(:,:,:)        !< If present, use this real array as the data mask.
+
+  ! Local variables
+  type(diag_type), pointer :: diag => null()
+  integer :: isv, iev, jsv, jev, i, j, k, k0
+  logical :: staggered_in_x, staggered_in_y
+  real :: Idt
+  real, dimension(:,:,:), pointer :: h_prev_ptr ! points to previous thicknesses
+  real, dimension(:,:,:), pointer :: remap_h_prev_ptr ! points to previous diagnostic thicknesses
+  real, dimension(:,:,:), pointer :: field_prev_ptr ! if field_prev present, points to field_prev,
+    ! else points to space allocated for the computation of field_prev
+  real, dimension(:,:,:), pointer :: field_tend_ptr ! if field_tend present, points to field_tend,
+    ! else points to space allocated for the computation of field_tend
+  real, dimension(:,:,:,:), allocatable :: remapped_field_work ! space for construction of remapped tendency
+
+  ! Tendencies on diagnostic grids are defined as
+  ! d field / dt := Idt * (L_new(field_new) - L_prev(field_prev)),
+  ! where L_new and L_prev are operators that remap from the model grid to diagnostic grids,
+  ! based on model thicknesses h_new and h_prev respectively.
+  ! If field_tend is provided instead of field_prev, then field_prev is computed from
+  ! field_new and field_tend.
+
+  if (id_clock_diag_mediator>0) call cpu_clock_begin(id_clock_diag_mediator)
+
+  call diag_indices_get("post_data_tend", size(field_new,1), size(field_new,2), diag_cs, &
+                        isv, iev, jsv, jev)
+
+  ! Ensure that at least one of field_tend and field_prev are provided.
+  call assert(present(field_tend) .or. present(field_prev), &
+              "post_data_tend: At least one of field_tend and field_prev must be provided.")
+
+  ! Ensure field arrays have same shape.
+  if (present(field_tend)) then
+    call assert(all(shape(field_tend) == shape(field_new)), &
+                "post_data_tend: field_tend and field_new shapes differ")
+  endif
+  if (present(field_prev)) then
+    call assert(all(shape(field_prev) == shape(field_new)), &
+                "post_data_tend: field_prev and field_new shapes differ")
+  endif
+
+  field_prev_ptr => NULL()
+  if (present(field_prev)) field_prev_ptr => field_prev
+
+  field_tend_ptr => NULL()
+  if (present(field_tend)) field_tend_ptr => field_tend
+
+  Idt = 1.0 / dt
+
+  ! Iterate over list of diag 'variants', e.g. CMOR aliases, different vertical
+  ! grids, and post each.
+  call assert(diag_field_id < diag_cs%next_free_diag_id, &
+              "post_data_tend: Unregistered diagnostic id")
+  diag => diag_cs%diags(diag_field_id)
+  do while (associated(diag))
+    call assert(associated(diag%axes), "post_data_tend: axes is not associated")
+
+    staggered_in_x = diag%axes%is_u_point .or. diag%axes%is_q_point
+    staggered_in_y = diag%axes%is_v_point .or. diag%axes%is_q_point
+
+    if (.not.diag%axes%is_native) then
+      ! update non-native diagnostic grid if it is not in sync with model state
+      if (.not. diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%in_sync_with_state) then
+        call diag_remap_update(diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), &
+            diag_cs%G, diag_cs%GV, diag_cs%US, h_new, diag_cs%T, diag_cs%S, diag_cs%eqn_of_state, &
+            diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h)
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%in_sync_with_state = .true.
+      endif
+    endif
+
+    if (diag%v_extensive .and. .not.diag%axes%is_native) then
+      ! The field is vertically integrated and needs to be re-gridded
+      if (present(mask)) then
+        call MOM_error(FATAL,"post_data_tend: no mask for regridded field.")
+      endif
+
+      ! Setup field_prev_ptr if needed
+      if (.not. associated(field_prev_ptr)) then
+        allocate(field_prev_ptr(size(field_new,1), size(field_new,2), size(field_new,3)))
+        do k=1,size(field_new,3) ; do j=jsv,jev ; do i=isv,iev
+          field_prev_ptr(i,j,k) = field_new(i,j,k) - dt * field_tend(i,j,k)
+        enddo ; enddo ; enddo
+      endif
+
+      if (id_clock_diag_remap>0) call cpu_clock_begin(id_clock_diag_remap)
+      allocate(remapped_field_work(size(field_new,1), size(field_new,2), diag%axes%nz, 2))
+      call vertically_reintegrate_diag_field(                                          &
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), diag_cs%G, h_new, &
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h,                 &
+        staggered_in_x, staggered_in_y, diag%axes%mask3d, field_new,                   &
+        remapped_field_work(:,:,:,1))
+
+      call field_stack_peek(diag_cs%h_prev, h_prev_ptr, "post_data_tend")
+      call field_stack_peek(diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h_prev, &
+          remap_h_prev_ptr, "post_data_tend" )
+      call vertically_reintegrate_diag_field(                                               &
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), diag_cs%G, h_prev_ptr, &
+        remap_h_prev_ptr, staggered_in_x, staggered_in_y, diag%axes%mask3d, field_prev_ptr, &
+        remapped_field_work(:,:,:,2))
+
+      do k=1,diag%axes%nz ; do j=jsv,jev ; do i=isv,iev
+        remapped_field_work(i,j,k,1) = Idt * (remapped_field_work(i,j,k,1) - remapped_field_work(i,j,k,2))
+      enddo ; enddo ; enddo
+      if (id_clock_diag_remap>0) call cpu_clock_end(id_clock_diag_remap)
+      if (associated(diag%axes%mask3d)) then
+        ! Since 3d masks do not vary in the vertical, just use as much as is
+        ! needed.
+        call post_data_3d_low(diag, remapped_field_work(:,:,:,1), diag_cs, mask=diag%axes%mask3d)
+      else
+        call post_data_3d_low(diag, remapped_field_work(:,:,:,1), diag_cs)
+      endif
+      if (id_clock_diag_remap>0) call cpu_clock_begin(id_clock_diag_remap)
+      deallocate(remapped_field_work)
+      if (id_clock_diag_remap>0) call cpu_clock_end(id_clock_diag_remap)
+    elseif (diag%axes%needs_remapping) then
+      ! Remap this field to another vertical coordinate.
+      if (present(mask)) then
+        call MOM_error(FATAL,"post_data_tend: no mask for regridded field.")
+      endif
+
+      ! Setup field_prev_ptr if needed
+      if (.not. associated(field_prev_ptr)) then
+        allocate(field_prev_ptr(size(field_new,1), size(field_new,2), size(field_new,3)))
+        do k=1,size(field_new,3) ; do j=jsv,jev ; do i=isv,iev
+          field_prev_ptr(i,j,k) = field_new(i,j,k) - dt * field_tend(i,j,k)
+        enddo ; enddo ; enddo
+      endif
+
+      if (id_clock_diag_remap>0) call cpu_clock_begin(id_clock_diag_remap)
+      allocate(remapped_field_work(size(field_new,1), size(field_new,2), diag%axes%nz, 2))
+      call diag_remap_do_remap(diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), &
+              diag_cs%G, diag_cs%GV, h_new, &
+              diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h, &
+              staggered_in_x, staggered_in_y, &
+              diag%axes%mask3d, field_new, remapped_field_work(:,:,:,1))
+
+      call field_stack_peek(diag_cs%h_prev, h_prev_ptr, "post_data_tend")
+      call field_stack_peek(diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h_prev, &
+          remap_h_prev_ptr, "post_data_tend" )
+      call diag_remap_do_remap(diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), &
+              diag_cs%G, diag_cs%GV, h_prev_ptr, remap_h_prev_ptr, staggered_in_x, &
+              staggered_in_y, diag%axes%mask3d, field_prev_ptr, remapped_field_work(:,:,:,2))
+      do k=1,diag%axes%nz ; do j=jsv,jev ; do i=isv,iev
+        remapped_field_work(i,j,k,1) = Idt * (remapped_field_work(i,j,k,1) - remapped_field_work(i,j,k,2))
+      enddo ; enddo ; enddo
+      if (id_clock_diag_remap>0) call cpu_clock_end(id_clock_diag_remap)
+      if (associated(diag%axes%mask3d)) then
+        ! Since 3d masks do not vary in the vertical, just use as much as is
+        ! needed.
+        call post_data_3d_low(diag, remapped_field_work(:,:,:,1), diag_cs, mask=diag%axes%mask3d)
+      else
+        call post_data_3d_low(diag, remapped_field_work(:,:,:,1), diag_cs)
+      endif
+      if (id_clock_diag_remap>0) call cpu_clock_begin(id_clock_diag_remap)
+      deallocate(remapped_field_work)
+      if (id_clock_diag_remap>0) call cpu_clock_end(id_clock_diag_remap)
+    elseif (diag%axes%needs_interpolating) then
+      ! Interpolate this field to another vertical coordinate.
+      if (present(mask)) then
+        call MOM_error(FATAL,"post_data_tend: no mask for regridded field.")
+      endif
+
+      call MOM_error(FATAL,"post_data_tend: not implemented for needs_interpolating.")
+    else
+      ! Setup field_tend_ptr if needed
+      if (.not. associated(field_tend_ptr)) then
+        allocate(field_tend_ptr(size(field_new,1), size(field_new,2), size(field_new,3)))
+        do k=1,size(field_new,3) ; do j=jsv,jev ; do i=isv,iev
+          field_tend_ptr(i,j,k) = Idt * (field_new(i,j,k) - field_prev(i,j,k))
+        enddo ; enddo ; enddo
+      endif
+
+      call post_data_3d_low(diag, field_tend_ptr, diag_cs, mask=mask)
+    endif
+    diag => diag%next
+  enddo
+
+  if (associated(field_prev_ptr) .and. .not. associated(field_prev_ptr, field_prev)) &
+    deallocate(field_prev_ptr)
+  if (associated(field_tend_ptr) .and. .not. associated(field_tend_ptr, field_tend)) &
+    deallocate(field_tend_ptr)
+
+  if (id_clock_diag_mediator>0) call cpu_clock_end(id_clock_diag_mediator)
+
+end subroutine post_data_tend
+
 !> Make a real 3-d array diagnostic available for averaging or output
 !! using a diag_type instead of an integer id.
 subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
@@ -1646,7 +1886,6 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
   logical :: used  ! The return value of send_data is not used for anything.
   logical :: staggered_in_x, staggered_in_y
   logical :: is_stat
-  integer :: cszi, cszj, dszi, dszj
   integer :: isv, iev, jsv, jev, ks, ke, i, j, k, isv_c, jsv_c, isv_o,jsv_o
   integer :: chksum
   real, dimension(:,:,:), allocatable, target :: locfield_dsamp
@@ -1657,42 +1896,8 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
   locmask => NULL()
   is_stat = .false. ; if (present(is_static)) is_stat = is_static
 
-  ! Determine the proper array indices, noting that because of the (:,:)
-  ! declaration of field, symmetric arrays are using a SW-grid indexing,
-  ! but non-symmetric arrays are using a NE-grid indexing.  Send_data
-  ! actually only uses the difference between ie and is to determine
-  ! the output data size and assumes that halos are symmetric.
-  isv = diag_cs%is ; iev = diag_cs%ie ; jsv = diag_cs%js ; jev = diag_cs%je
-
-  cszi = (diag_cs%ie-diag_cs%is) +1 ; dszi = (diag_cs%ied-diag_cs%isd) +1
-  cszj = (diag_cs%je-diag_cs%js) +1 ; dszj = (diag_cs%jed-diag_cs%jsd) +1
-  if ( size(field,1) == dszi ) then
-    isv = diag_cs%is ; iev = diag_cs%ie     ! Data domain
-  elseif ( size(field,1) == dszi + 1 ) then
-    isv = diag_cs%is ; iev = diag_cs%ie+1   ! Symmetric data domain
-  elseif ( size(field,1) == cszi) then
-    isv = 1 ; iev = cszi                    ! Computational domain
-  elseif ( size(field,1) == cszi + 1 ) then
-    isv = 1 ; iev = cszi+1                  ! Symmetric computational domain
-  else
-    write (mesg,*) " peculiar size ",size(field,1)," in i-direction\n"//&
-       "does not match one of ", cszi, cszi+1, dszi, dszi+1
-    call MOM_error(FATAL,"post_data_3d_low: "//trim(diag%debug_str)//trim(mesg))
-  endif
-
-  if ( size(field,2) == dszj ) then
-    jsv = diag_cs%js ; jev = diag_cs%je     ! Data domain
-  elseif ( size(field,2) == dszj + 1 ) then
-    jsv = diag_cs%js ; jev = diag_cs%je+1   ! Symmetric data domain
-  elseif ( size(field,2) == cszj ) then
-    jsv = 1 ; jev = cszj                    ! Computational domain
-  elseif ( size(field,2) == cszj+1 ) then
-    jsv = 1 ; jev = cszj+1                  ! Symmetric computational domain
-  else
-    write (mesg,*) " peculiar size ",size(field,2)," in j-direction\n"//&
-       "does not match one of ", cszj, cszj+1, dszj, dszj+1
-    call MOM_error(FATAL,"post_data_3d_low: "//trim(diag%debug_str)//trim(mesg))
-  endif
+  call diag_indices_get(trim(diag%debug_str)//":post_data_3d_low", size(field,1), size(field,2), &
+                        diag_cs, isv, iev, jsv, jev)
 
   ks = lbound(field,3) ; ke = ubound(field,3)
   if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.)) then
@@ -1812,7 +2017,7 @@ subroutine post_product_u(id, u_a, u_b, G, nz, diag, mask, alt_h)
                             intent(in) :: u_a  !< The first u-point array in arbitrary units [A]
   real, dimension(G%IsdB:G%IedB, G%jsd:G%jed, nz), &
                             intent(in) :: u_b  !< The second u-point array in arbitrary units [B]
-  type(diag_ctrl),          intent(in) :: diag !< regulates diagnostic output
+  type(diag_ctrl),       intent(inout) :: diag !< regulates diagnostic output
   real,           optional, intent(in) :: mask(:,:,:)  !< If present, use this real array as the data mask [nondim]
   real,   target, optional, intent(in) :: alt_h(:,:,:) !< An alternate thickness to use for vertically
                                                !! remapping this diagnostic [H ~> m or kg m-2]
@@ -1863,7 +2068,7 @@ subroutine post_product_v(id, v_a, v_b, G, nz, diag, mask, alt_h)
                             intent(in) :: v_a  !< The first v-point array in arbitrary units [A]
   real, dimension(G%isd:G%ied, G%JsdB:G%JedB, nz), &
                             intent(in) :: v_b  !< The second v-point array in arbitrary units [B]
-  type(diag_ctrl),          intent(in) :: diag !< regulates diagnostic output
+  type(diag_ctrl),       intent(inout) :: diag !< regulates diagnostic output
   real,           optional, intent(in) :: mask(:,:,:)  !< If present, use this real array as the data mask [nondim]
   real,   target, optional, intent(in) :: alt_h(:,:,:) !< An alternate thickness to use for vertically
                                                !! remapping this diagnostic [H ~> m or kg m-2]
@@ -3141,6 +3346,7 @@ subroutine diag_mediator_init(G, GV, US, nz, param_file, diag_cs, doc_file_dir)
 
   ! Local variables
   integer :: ios, i, new_unit
+  integer :: max_h_prev_size
   logical :: opened, new_file
   logical :: answers_2018, default_2018_answers
   character(len=8)   :: this_pe
@@ -3223,11 +3429,17 @@ subroutine diag_mediator_init(G, GV, US, nz, param_file, diag_cs, doc_file_dir)
   diag_cs%S => null()
   diag_cs%eqn_of_state => null()
 
-  allocate(diag_cs%h_begin(G%isd:G%ied,G%jsd:G%jed,nz))
 #if defined(DEBUG) || defined(__DO_SAFETY_CHECKS__)
   allocate(diag_cs%h_old(G%isd:G%ied,G%jsd:G%jed,nz))
   diag_cs%h_old(:,:,:) = 0.0
 #endif
+
+  ! diag_mediator is initialized before tracer diagnostics are registered, making it hard
+  ! to adaptively determine max_h_prev_size. So use 2. Will need to be
+  ! increased to 3 if multiprocess tendencies are implemented and used.
+  max_h_prev_size = 2
+  call field_stack_init(diag_cs%h_prev, max_h_prev_size, &
+      G%isd, G%ied, G%jsd, G%jed, nz, "diag h_prev native")
 
   diag_cs%is = G%isc - (G%isd-1) ; diag_cs%ie = G%iec - (G%isd-1)
   diag_cs%js = G%jsc - (G%jsd-1) ; diag_cs%je = G%jec - (G%jsd-1)
@@ -3333,6 +3545,54 @@ subroutine diag_mediator_init(G, GV, US, nz, param_file, diag_cs, doc_file_dir)
 
 end subroutine diag_mediator_init
 
+!> Push diagnostic thicknesses onto respective stacks
+subroutine diag_push_h(diag_cs, msg)
+  type(diag_ctrl), intent(inout) :: diag_cs !< diag mediator control structure
+  character(len=*),   intent(in) :: msg     !< informational message
+
+  ! Local variables
+  integer :: i
+
+  call field_stack_push(diag_cs%h_prev, diag_cs%h, msg)
+  do i=1,diag_cs%num_diag_coords
+    ! before pushing diagnostic grid, update it if it is not in sync
+    if (.not. diag_cs%diag_remap_cs(i)%in_sync_with_state) then
+      call diag_remap_update(diag_cs%diag_remap_cs(i), diag_cs%G, diag_cs%GV, diag_cs%US, &
+          diag_cs%h, diag_cs%T, diag_cs%S, diag_cs%eqn_of_state, diag_cs%diag_remap_cs(i)%h)
+      diag_cs%diag_remap_cs(i)%in_sync_with_state = .true.
+    endif
+    call field_stack_push(diag_cs%diag_remap_cs(i)%h_prev, diag_cs%diag_remap_cs(i)%h, msg)
+  enddo
+end subroutine diag_push_h
+
+!> Drop diagnostic thicknesses from top of respective stacks
+!! I.e., pop the top of the stack, but don't store the popped values anywhere
+subroutine diag_drop_h(diag_cs, msg)
+  type(diag_ctrl), intent(inout) :: diag_cs !< diag mediator control structure
+  character(len=*),   intent(in) :: msg     !< informational message
+
+  ! Local variables
+  integer :: i
+
+  call field_stack_drop(diag_cs%h_prev, msg)
+  do i=1,diag_cs%num_diag_coords
+    call field_stack_drop(diag_cs%diag_remap_cs(i)%h_prev, msg)
+  enddo
+end subroutine diag_drop_h
+
+!> Set diagnostic grids' in_sync_with_state flag to value
+subroutine set_diag_in_sync_with_state(diag_cs, value)
+  type(diag_ctrl), intent(inout) :: diag_cs !< diag mediator control structure
+  logical,            intent(in) :: value   !< value to set in_sync_with_state to
+
+  ! Local variables
+  integer :: i
+
+  do i=1,diag_cs%num_diag_coords
+    diag_cs%diag_remap_cs(i)%in_sync_with_state = value
+  enddo
+end subroutine set_diag_in_sync_with_state
+
 !> Set pointers to the default state fields used to remap diagnostics.
 subroutine diag_set_state_ptrs(h, T, S, eqn_of_state, diag_cs)
   real, dimension(:,:,:), target, intent(in   ) :: h !< the model thickness array [H ~> m or kg m-2]
@@ -3352,7 +3612,7 @@ end subroutine
 !> Build/update vertical grids for diagnostic remapping.
 !! \note The target grids need to be updated whenever sea surface
 !! height changes.
-subroutine diag_update_remap_grids(diag_cs, alt_h, alt_T, alt_S, update_intensive, update_extensive )
+subroutine diag_update_remap_grids(diag_cs, alt_h, alt_T, alt_S, update_intensive, update_extensive)
   type(diag_ctrl),        intent(inout) :: diag_cs      !< Diagnostics control structure
   real, target, optional, intent(in   ) :: alt_h(:,:,:) !< Used if remapped grids should be something other than
                                                         !! the current thicknesses [H ~> m or kg m-2]
@@ -3363,7 +3623,6 @@ subroutine diag_update_remap_grids(diag_cs, alt_h, alt_T, alt_S, update_intensiv
   logical, optional,      intent(in   ) :: update_intensive !< If true (default), update the grids used for
                                                             !! intensive diagnostics
   logical, optional,      intent(in   ) :: update_extensive !< If true (not default), update the grids used for
-                                                            !! intensive diagnostics
   ! Local variables
   integer :: i
   real, dimension(:,:,:), pointer :: h_diag => NULL() ! The layer thickneses for diagnostics [H ~> m or kg m-2]
@@ -3409,10 +3668,10 @@ subroutine diag_update_remap_grids(diag_cs, alt_h, alt_T, alt_S, update_intensiv
     do i=1, diag_cs%num_diag_coords
       call diag_remap_update(diag_cs%diag_remap_cs(i), diag_cs%G, diag_cs%GV, diag_cs%US, h_diag, T_diag, S_diag, &
                              diag_cs%eqn_of_state, diag_cs%diag_remap_cs(i)%h)
+      if (.not. present(alt_h)) diag_cs%diag_remap_cs(i)%in_sync_with_state = .true.
     enddo
   endif
   if (update_extensive_local) then
-    diag_cs%h_begin(:,:,:) = diag_cs%h(:,:,:)
     do i=1, diag_cs%num_diag_coords
       call diag_remap_update(diag_cs%diag_remap_cs(i), diag_cs%G, diag_cs%GV, diag_cs%US, h_diag, T_diag, S_diag, &
                              diag_cs%eqn_of_state, diag_cs%diag_remap_cs(i)%h_extensive)

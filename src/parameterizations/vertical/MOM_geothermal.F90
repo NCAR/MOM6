@@ -5,11 +5,15 @@ module MOM_geothermal
 
 use MOM_diag_mediator, only : post_data, register_diag_field, safe_alloc_alloc
 use MOM_diag_mediator, only : register_static_field, time_type, diag_ctrl
+use MOM_diag_mediator, only : post_data_tend, diag_push_h, diag_drop_h
+use MOM_diag_mediator, only : set_diag_in_sync_with_state
 use MOM_domains,       only : pass_var
 use MOM_error_handler, only : MOM_error, FATAL, WARNING
+use MOM_field_stack,   only : field_stack_push, field_stack_peek
 use MOM_file_parser,   only : get_param, log_param, log_version, param_file_type
 use MOM_io,            only : MOM_read_data, slasher
 use MOM_grid,          only : ocean_grid_type
+use MOM_tracer_registry, only : diagnose_tracer_tend
 use MOM_unit_scaling,  only : unit_scale_type
 use MOM_variables,     only : thermo_var_ptrs
 use MOM_verticalGrid,  only : verticalGrid_type, get_thickness_units
@@ -103,15 +107,10 @@ subroutine geothermal_entraining(h, tv, dt, ea, eb, G, GV, US, CS, halo)
   real :: dTemp         ! temperature increase in a layer [degC]
   real :: Irho_cp       ! inverse of heat capacity per unit layer volume
                         ! [degC H Q-1 R-1 Z-1 ~> degC m3 J-1 or degC kg J-1]
-
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
-    T_old, & ! Temperature of each layer before any heat is added, for diagnostics [degC]
-    h_old, & ! Thickness of each layer before any heat is added, for diagnostics [H ~> m or kg m-2]
-    work_3d ! Scratch variable used to calculate changes due to geothermal
-  real :: Idt           ! inverse of the timestep [T-1 ~> s-1]
+  real, dimension(:,:,:), pointer :: h_prev_ptr ! points to previous thicknesses
 
   logical :: do_i(SZI_(G))
-  logical :: compute_h_old, compute_T_old
+  logical :: calc_diags
   integer :: i, j, k, is, ie, js, je, nz, k2, i2
   integer :: isj, iej, num_left, nkmb, k_tgt
 
@@ -129,7 +128,6 @@ subroutine geothermal_entraining(h, tv, dt, ea, eb, G, GV, US, CS, halo)
   Angstrom  = GV%Angstrom_H
   H_neglect = GV%H_subroundoff
   p_ref(:)  = tv%P_Ref
-  Idt       = 1.0 / dt
 
   if (.not.associated(tv%T)) call MOM_error(FATAL, "MOM geothermal_entraining: "//&
       "Geothermal heating can only be applied if T & S are state variables.")
@@ -139,24 +137,15 @@ subroutine geothermal_entraining(h, tv, dt, ea, eb, G, GV, US, CS, halo)
 !  enddo ; enddo
 
   ! Conditionals for tracking diagnostic depdendencies
-  compute_h_old = CS%id_internal_heat_h_tendency > 0 &
-                  .or. CS%id_internal_heat_heat_tendency > 0 &
-                  .or. CS%id_internal_heat_temp_tendency > 0
+  calc_diags = (CS%id_internal_heat_heat_tendency > 0) .or. (CS%id_internal_heat_temp_tendency > 0)
 
-  compute_T_old = CS%id_internal_heat_heat_tendency > 0 &
-                  .or. CS%id_internal_heat_temp_tendency > 0
-
-  if (CS%id_internal_heat_heat_tendency > 0) work_3d(:,:,:) = 0.0
-
-  if (compute_h_old .or. compute_T_old) then ; do k=1,nz ; do j=js,je ; do i=is,ie
-    ! Save temperature and thickness before any changes are made (for diagnostics)
-    h_old(i,j,k) = h(i,j,k)
-    T_old(i,j,k) = tv%T(i,j,k)
-  enddo ; enddo ; enddo ; endif
+  if (calc_diags) &
+      call field_stack_push(tv%tr_T%t_prev, tv%T, "geothermal_entraining")
+  if (calc_diags .or. (CS%id_internal_heat_h_tendency > 0)) &
+      call diag_push_h(CS%diag, "geothermal_entraining")
 
 !$OMP parallel do default(none) shared(is,ie,js,je,G,GV,US,CS,dt,Irho_cp,nkmb,tv, &
-!$OMP                                  p_Ref,h,Angstrom,nz,H_neglect,eb,          &
-!$OMP                                  h_old,T_old,work_3d,Idt)                   &
+!$OMP                                  p_Ref,h,Angstrom,nz,H_neglect,eb)          &
 !$OMP                          private(heat_rem,do_i,h_geo_rem,num_left,          &
 !$OMP                                  isj,iej,Rcv_BL,h_heated,heat_avail,k_tgt,  &
 !$OMP                                  Rcv_tgt,Rcv,dRcv_dT,T2,S2,dRcv_dT_,        &
@@ -318,11 +307,6 @@ subroutine geothermal_entraining(h, tv, dt, ea, eb, G, GV, US, CS, halo)
           endif
         endif
 
-        ! Calculate heat tendency due to addition and transfer of internal heat
-        if (CS%id_internal_heat_heat_tendency > 0) then
-          work_3d(i,j,k) = Idt * (h(i,j,k) * tv%T(i,j,k) - h_old(i,j,k) * T_old(i,j,k))
-        endif
-
       endif ; enddo
       if (num_left <= 0) exit
     enddo ! k-loop
@@ -333,22 +317,20 @@ subroutine geothermal_entraining(h, tv, dt, ea, eb, G, GV, US, CS, halo)
     enddo ; endif
   enddo ! j-loop
 
+  ! state dependent diagnostic grids are now out of sync with respect to h
+  call set_diag_in_sync_with_state(CS%diag, .false.)
+
   ! Post diagnostic of 3D tendencies (heat, temperature, and thickness) due to internal heat
-  if (CS%id_internal_heat_heat_tendency > 0) then
-    call post_data(CS%id_internal_heat_heat_tendency, work_3d, CS%diag, alt_h=h_old)
-  endif
-  if (CS%id_internal_heat_temp_tendency > 0) then
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      work_3d(i,j,k) = Idt * (tv%T(i,j,k) - T_old(i,j,k))
-    enddo ; enddo ; enddo
-    call post_data(CS%id_internal_heat_temp_tendency, work_3d, CS%diag, alt_h=h_old)
+  if (calc_diags) then
+    call diagnose_tracer_tend(G, GV, dt, tv%tr_T%t_prev, tv%T, h, CS%diag, &
+        CS%id_internal_heat_temp_tendency, CS%id_internal_heat_heat_tendency, -1)
   endif
   if (CS%id_internal_heat_h_tendency > 0) then
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      work_3d(i,j,k) = Idt * (h(i,j,k) - h_old(i,j,k))
-    enddo ; enddo ; enddo
-    call post_data(CS%id_internal_heat_h_tendency, work_3d, CS%diag, alt_h=h_old)
+    call field_stack_peek(CS%diag%h_prev, h_prev_ptr, "geothermal_entraining")
+    call post_data_tend(CS%id_internal_heat_h_tendency, dt, h, h, CS%diag, field_prev=h_prev_ptr)
   endif
+  if (calc_diags .or. (CS%id_internal_heat_h_tendency > 0)) &
+      call diag_drop_h(CS%diag, "geothermal_entraining")
 
 !  do j=js,je ; do i=is,ie
 !    resid(i,j) = tv%internal_heat(i,j) - resid(i,j) - GV%H_to_RZ * &
@@ -382,10 +364,6 @@ subroutine geothermal_in_place(h, tv, dt, G, GV, US, CS, halo)
   real :: Irho_cp       ! inverse of heat capacity per unit layer volume
                         ! [degC H Q-1 R-1 Z-1 ~> degC m3 J-1 or degC kg J-1]
 
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
-    dTdt_diag           ! Diagnostic of temperature tendency [degC T-1 ~> degC s-1] which might be
-                        ! converted into a layer-integrated heat tendency [Q R Z T-1 ~> W m-2]
-  real :: Idt           ! inverse of the timestep [T-1 ~> s-1]
   logical :: do_any     ! True if there is more to be done on the current j-row.
   logical :: calc_diags ! True if diagnostic tendencies are needed.
   integer :: i, j, k, is, ie, js, je, nz, i2, isj, iej
@@ -402,7 +380,6 @@ subroutine geothermal_in_place(h, tv, dt, G, GV, US, CS, halo)
   Irho_cp   = 1.0 / (GV%H_to_RZ * tv%C_p)
   Angstrom  = GV%Angstrom_H
   H_neglect = GV%H_subroundoff
-  Idt       = 1.0 / dt
 
   if (.not.associated(tv%T)) call MOM_error(FATAL, "MOM geothermal_in_place: "//&
       "Geothermal heating can only be applied if T & S are state variables.")
@@ -414,7 +391,10 @@ subroutine geothermal_in_place(h, tv, dt, G, GV, US, CS, halo)
   ! Conditionals for tracking diagnostic depdendencies
   calc_diags = (CS%id_internal_heat_heat_tendency > 0) .or. (CS%id_internal_heat_temp_tendency > 0)
 
-  if (calc_diags) dTdt_diag(:,:,:) = 0.0
+  if (calc_diags) &
+      call field_stack_push(tv%tr_T%t_prev, tv%T, "geothermal_in_place")
+  if (calc_diags .or. (CS%id_internal_heat_h_tendency > 0)) &
+      call diag_push_h(CS%diag, "geothermal_in_place")
 
   !$OMP parallel do default(shared) private(heat_rem,do_any,h_geo_rem,isj,iej,heat_here,dTemp)
   do j=js,je
@@ -453,7 +433,6 @@ subroutine geothermal_in_place(h, tv, dt, G, GV, US, CS, halo)
 
           dTemp = heat_here / (h(i,j,k) + H_neglect)
           tv%T(i,j,k) = tv%T(i,j,k) + dTemp
-          if (calc_diags) dTdt_diag(i,j,k) = dTemp * Idt
         endif
 
         if (heat_rem(i) > 0.0) do_any= .true.
@@ -468,20 +447,19 @@ subroutine geothermal_in_place(h, tv, dt, G, GV, US, CS, halo)
     enddo ; endif
   enddo ! j-loop
 
-  ! Post diagnostics of 3D tendencies of heat and temperature due to geothermal heat
-  if (CS%id_internal_heat_temp_tendency > 0) then
-    call post_data(CS%id_internal_heat_temp_tendency, dTdt_diag, CS%diag, alt_h=h)
+  ! state dependent diagnostic grids are now out of sync with respect to h
+  call set_diag_in_sync_with_state(CS%diag, .false.)
+
+  ! Post diagnostic of 3D tendencies (heat, temperature, and thickness) due to internal heat
+  if (calc_diags) then
+    call diagnose_tracer_tend(G, GV, dt, tv%tr_T%t_prev, tv%T, h, CS%diag, &
+        CS%id_internal_heat_temp_tendency, CS%id_internal_heat_heat_tendency, -1)
   endif
-  if (CS%id_internal_heat_heat_tendency > 0) then
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      ! Dangerously reuse dTdt_diag for a related variable with different units, going from
-      ! units of [degC T-1 ~> degC s-1] to units of [H degC T-1 -> (m or kg m-2) degC T-1],
-      ! which is converted to [Q R Z T-1 ~> W m-2] with the conversion argument
-      ! to register_diag_field.
-      dTdt_diag(i,j,k) = h(i,j,k) * dTdt_diag(i,j,k)
-    enddo ; enddo ; enddo
-    call post_data(CS%id_internal_heat_heat_tendency, dTdt_diag, CS%diag, alt_h=h)
+  if (CS%id_internal_heat_h_tendency > 0) then
+    call post_data_tend(CS%id_internal_heat_h_tendency, dt, h, h, CS%diag, field_prev=h)
   endif
+  if (calc_diags .or. (CS%id_internal_heat_h_tendency > 0)) &
+      call diag_drop_h(CS%diag, "geothermal_in_place")
 
 !  do j=js,je ; do i=is,ie
 !    resid(i,j) = tv%internal_heat(i,j) - resid(i,j) - GV%H_to_RZ * &
@@ -583,7 +561,9 @@ subroutine geothermal_init(Time, G, GV, US, param_file, diag, CS, tv, useALEalgo
   CS%id_internal_heat_temp_tendency=register_diag_field('ocean_model', &
         'internal_heat_temp_tendency', diag%axesTL, Time,              &
         'Temperature tendency (in 3D) due to internal (geothermal) sources', &
-        'degC s-1', conversion=US%s_to_T, v_extensive=.true.)
+        'degC s-1', conversion=US%s_to_T)
+  if ((CS%id_internal_heat_heat_tendency > 0) .or. (CS%id_internal_heat_temp_tendency > 0)) &
+      tv%tr_T%comp_process_tend = .true.
   if (.not.useALEalgorithm) then
     ! Do not offer this diagnostic if heating will be in place.
     CS%id_internal_heat_h_tendency=register_diag_field('ocean_model',    &

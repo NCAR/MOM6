@@ -12,7 +12,9 @@ module MOM_ALE
 
 use MOM_debugging,        only : check_column_integrals
 use MOM_diag_mediator,    only : register_diag_field, post_data, diag_ctrl
-use MOM_diag_mediator,    only : time_type, diag_update_remap_grids
+use MOM_diag_mediator,    only : time_type
+use MOM_diag_mediator,    only : post_data_tend, set_diag_in_sync_with_state
+use MOM_diag_mediator,    only : diag_push_h, diag_drop_h
 use MOM_diag_vkernels,    only : interpolate_column, reintegrate_column
 use MOM_domains,          only : create_group_pass, do_group_pass, group_pass_type
 use MOM_EOS,              only : calculate_density
@@ -44,6 +46,7 @@ use MOM_remapping,        only : remappingSchemesDoc, remappingDefaultScheme
 use MOM_remapping,        only : remapping_CS, dzFromH1H2
 use MOM_string_functions, only : uppercase, extractWord, extract_integer
 use MOM_tracer_registry,  only : tracer_registry_type, tracer_type, MOM_tracer_chkinv
+use MOM_tracer_registry,  only : prep_tracer_tend, diagnose_tracer_tend
 use MOM_unit_scaling,     only : unit_scale_type
 use MOM_variables,        only : ocean_grid_type, thermo_var_ptrs
 use MOM_verticalGrid,     only : get_thickness_units, verticalGrid_type
@@ -86,7 +89,6 @@ type, public :: ALE_CS ; private
   integer, dimension(:), allocatable :: id_tracer_remap_tendency      !< diagnostic id
   integer, dimension(:), allocatable :: id_Htracer_remap_tendency     !< diagnostic id
   integer, dimension(:), allocatable :: id_Htracer_remap_tendency_2d  !< diagnostic id
-  logical, dimension(:), allocatable :: do_tendency_diag              !< flag for doing diagnostics
   integer                            :: id_dzRegrid = -1              !< diagnostic id
 
   ! diagnostic for fields prior to applying ALE remapping
@@ -360,6 +362,13 @@ subroutine ALE_main( G, GV, US, h, u, v, tv, Reg, CS, OBC, dt, frac_shelf_h)
   endif
   dzRegrid(:,:,:) = 0.0
 
+  ! store preALE values for tendency diagnostics
+  if (present(dt)) then
+    call prep_tracer_tend(Reg, Reg%comp_remap_tend, "remap")
+    if (any(Reg%comp_remap_tend(:)) .or. (CS%id_vert_remap_h_tendency > 0)) &
+        call diag_push_h(CS%diag, "remap")
+  endif
+
   ! Build new grid. The new grid is stored in h_new. The old grid is h.
   ! Both are needed for the subsequent remapping of variables.
   if (ice_shelf) then
@@ -370,13 +379,11 @@ subroutine ALE_main( G, GV, US, h, u, v, tv, Reg, CS, OBC, dt, frac_shelf_h)
 
   call check_grid( G, GV, h, 0. )
 
+  ! all diagnostic grids are now out of sync with respect to h_new
+  if (present(dt)) call set_diag_in_sync_with_state(CS%diag, .false.)
+
   if (CS%show_call_tree) call callTree_waypoint("new grid generated (ALE_main)")
 
-  ! The presence of dt is used for expediency to distinguish whether ALE_main is being called during init
-  ! or in the main loop. Tendency diagnostics in remap_all_state_vars also rely on this logic.
-  if (present(dt)) then
-    call diag_update_remap_grids(CS%diag)
-  endif
   ! Remap all variables from old grid h onto new grid h_new
   call remap_all_state_vars( CS%remapCS, CS, G, GV, h, h_new, Reg, OBC, dzRegrid, &
                              u, v, CS%show_call_tree, dt )
@@ -389,6 +396,13 @@ subroutine ALE_main( G, GV, US, h, u, v, tv, Reg, CS, OBC, dt, frac_shelf_h)
   do k = 1,nk ; do j = jsc-1,jec+1 ; do i = isc-1,iec+1
     h(i,j,k) = h_new(i,j,k)
   enddo ; enddo ; enddo
+
+  ! drop stored preALE thicknesses
+  ! stored tracer values were popped in remap_all_state_vars
+  if (present(dt)) then
+    if (any(Reg%comp_remap_tend(:)) .or. (CS%id_vert_remap_h_tendency > 0)) &
+        call diag_drop_h(CS%diag, "remap")
+  endif
 
   if (CS%show_call_tree) call callTree_leave("ALE_main()")
 
@@ -425,11 +439,21 @@ subroutine ALE_main_offline( G, GV, h, tv, Reg, CS, OBC, dt)
   endif
   dzRegrid(:,:,:) = 0.0
 
+  ! store preALE values for tendency diagnostics
+  if (present(dt)) then
+    call prep_tracer_tend(Reg, Reg%comp_remap_tend, "remap")
+    if (any(Reg%comp_remap_tend(:)) .or. (CS%id_vert_remap_h_tendency > 0)) &
+        call diag_push_h(CS%diag, "remap")
+  endif
+
   ! Build new grid. The new grid is stored in h_new. The old grid is h.
   ! Both are needed for the subsequent remapping of variables.
   call regridding_main( CS%remapCS, CS%regridCS, G, GV, h, tv, h_new, dzRegrid )
 
   call check_grid( G, GV, h, 0. )
+
+  ! all diagnostic grids are now out of sync with respect to h_new
+  call set_diag_in_sync_with_state(CS%diag, .false.)
 
   if (CS%show_call_tree) call callTree_waypoint("new grid generated (ALE_main)")
 
@@ -446,6 +470,13 @@ subroutine ALE_main_offline( G, GV, h, tv, Reg, CS, OBC, dt)
   do k = 1,nk ; do j = jsc-1,jec+1 ; do i = isc-1,iec+1
     h(i,j,k) = h_new(i,j,k)
   enddo ; enddo ; enddo
+
+  ! drop stored preALE thicknesses
+  ! stored tracer values were popped in remap_all_state_vars
+  if (present(dt)) then
+    if (any(Reg%comp_remap_tend(:)) .or. (CS%id_vert_remap_h_tendency > 0)) &
+        call diag_drop_h(CS%diag, "remap")
+  endif
 
   if (CS%show_call_tree) call callTree_leave("ALE_main()")
   if (CS%id_dzRegrid>0 .and. present(dt)) call post_data(CS%id_dzRegrid, dzRegrid, CS%diag)
@@ -763,13 +794,6 @@ subroutine remap_all_state_vars(CS_remapping, CS_ALE, G, GV, h_old, h_new, Reg, 
   real, dimension(GV%ke)                      :: h2   ! A column of updated thicknesses [H ~> m or kg m-2]
   real, dimension(GV%ke)                      :: u_column ! A column of properties, like tracer concentrations
                                                       ! or velocities, being remapped [various units]
-  real, dimension(SZI_(G), SZJ_(G), SZK_(GV)) :: work_conc ! The rate of change of concentrations [Conc T-1 ~> Conc s-1]
-  real, dimension(SZI_(G), SZJ_(G), SZK_(GV)) :: work_cont ! The rate of change of cell-integrated tracer
-                                                      ! content [Conc H T-1 ~> Conc m s-1 or Conc kg m-2 s-1] or
-                                                      ! cell thickness [H T-1 ~> m s-1 or Conc kg m-2 s-1]
-  real, dimension(SZI_(G), SZJ_(G))           :: work_2d ! The rate of change of column-integrated tracer
-                                                      ! content [Conc H T-1 ~> Conc m s-1 or Conc kg m-2 s-1]
-  real                                        :: Idt  ! The inverse of the timestep [T-1 ~> s-1]
   real :: h_neglect, h_neglect_edge  ! Tiny thicknesses used in remapping [H ~> m or kg m-2]
   logical                                     :: show_call_tree
   type(tracer_type), pointer                  :: Tr => NULL()
@@ -798,13 +822,9 @@ subroutine remap_all_state_vars(CS_remapping, CS_ALE, G, GV, h_old, h_new, Reg, 
 
   ntr = 0 ; if (associated(Reg)) ntr = Reg%ntr
 
-  if (present(dt)) then
-    Idt = 1.0/dt
-    work_conc(:,:,:) = 0.0
-    work_cont(:,:,:) = 0.0
-  endif
-
   ! Remap tracer
+  ! The presence of dt is used for expediency to distinguish whether ALE_main
+  ! was called during init or in the main loop.
   if (ntr>0) then
     if (show_call_tree) call callTree_waypoint("remapping tracers (remap_all_state_vars)")
     !$OMP parallel do default(shared) private(h1,h2,u_column,Tr)
@@ -816,44 +836,23 @@ subroutine remap_all_state_vars(CS_remapping, CS_ALE, G, GV, h_old, h_new, Reg, 
         h2(:) = h_new(i,j,:)
         call remapping_core_h(CS_remapping, nz, h1, Tr%t(i,j,:), nz, h2, &
                               u_column, h_neglect, h_neglect_edge)
-
-        ! Intermediate steps for tendency of tracer concentration and tracer content.
-        if (present(dt)) then
-          if (Tr%id_remap_conc > 0) then
-            do k=1,GV%ke
-              work_conc(i,j,k) = (u_column(k) - Tr%t(i,j,k)) * Idt
-            enddo
-          endif
-          if (Tr%id_remap_cont > 0 .or. Tr%id_remap_cont_2d > 0) then
-            do k=1,GV%ke
-              work_cont(i,j,k) = (u_column(k)*h2(k) - Tr%t(i,j,k)*h1(k)) * Idt
-            enddo
-          endif
-        endif
         ! update tracer concentration
         Tr%t(i,j,:) = u_column(:)
       endif ; enddo ; enddo
-
-      ! tendency diagnostics.
-      if (present(dt)) then
-        if (Tr%id_remap_conc > 0) then
-          call post_data(Tr%id_remap_conc, work_conc, CS_ALE%diag)
-        endif
-        if (Tr%id_remap_cont > 0) then
-          call post_data(Tr%id_remap_cont, work_cont, CS_ALE%diag)
-        endif
-        if (Tr%id_remap_cont_2d > 0) then
-          do j = G%jsc,G%jec ; do i = G%isc,G%iec
-            work_2d(i,j) = 0.0
-            do k = 1,GV%ke
-              work_2d(i,j) = work_2d(i,j) + work_cont(i,j,k)
-            enddo
-          enddo ; enddo
-          call post_data(Tr%id_remap_cont_2d, work_2d, CS_ALE%diag)
-        endif
-      endif
     enddo ! m=1,ntr
 
+  endif   ! endif for ntr > 0
+
+  ! tracer tendency diagnostics.
+  ! Posting of diagnostics might trigger the update of diagnostic grids, so first remap all
+  ! tracers, in particular temp and salinity, before posting diagnostics for any tracers.
+  if ((ntr > 0) .and. present(dt)) then
+    !$OMP parallel do default(shared) private(Tr)
+    do m=1,ntr ! For each tracer
+      Tr => Reg%Tr(m)
+      if (Reg%comp_remap_tend(m)) call diagnose_tracer_tend(G, GV, dt, Tr%t_prev, Tr%t, &
+          h_new, CS_ALE%diag, Tr%id_remap_conc, Tr%id_remap_cont, Tr%id_remap_cont_2d)
+    enddo ! m=1,ntr
   endif   ! endif for ntr > 0
 
   if (show_call_tree) call callTree_waypoint("tracers remapped (remap_all_state_vars)")
@@ -922,13 +921,14 @@ subroutine remap_all_state_vars(CS_remapping, CS_ALE, G, GV, h_old, h_new, Reg, 
     endif ; enddo ; enddo
   endif
 
-  if (CS_ALE%id_vert_remap_h > 0) call post_data(CS_ALE%id_vert_remap_h, h_old, CS_ALE%diag)
-  if ((CS_ALE%id_vert_remap_h_tendency > 0) .and. present(dt)) then
-    do k = 1, nz ; do j = G%jsc,G%jec ; do i = G%isc,G%iec
-      work_cont(i,j,k) = (h_new(i,j,k) - h_old(i,j,k))*Idt
-    enddo ; enddo ; enddo
-    call post_data(CS_ALE%id_vert_remap_h_tendency, work_cont, CS_ALE%diag)
+  if (CS_ALE%id_vert_remap_h > 0) call post_data(CS_ALE%id_vert_remap_h, h_new, CS_ALE%diag)
+  if (present(dt)) then
+    if (CS_ALE%id_vert_remap_h_tendency > 0) then
+      call post_data_tend(CS_ALE%id_vert_remap_h_tendency, dt, h_new, h_new, &
+                          CS_ALE%diag, field_prev=h_old)
+    endif
   endif
+
   if (show_call_tree) call callTree_waypoint("v remapped (remap_all_state_vars)")
   if (show_call_tree) call callTree_leave("remap_all_state_vars()")
 

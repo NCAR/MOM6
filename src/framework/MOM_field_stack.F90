@@ -15,7 +15,7 @@ public field_stack_peek, field_stack_drop
 !> The field_stack type
 type, public :: field_stack_type ; private
   real, dimension(:,:,:,:), pointer :: field => NULL() !< field values stored in stack
-  integer :: top                                       !< index of top of stack, zero for an empty stack
+  integer :: top = 0                                   !< index of top of stack, zero for an empty stack
   character(:), allocatable :: name                    !< stack name to include in informational messages
 end type field_stack_type
 

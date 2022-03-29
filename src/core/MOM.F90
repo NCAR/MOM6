@@ -21,8 +21,9 @@ use MOM_diag_mediator,        only : register_diag_field, register_cell_measure
 use MOM_diag_mediator,        only : set_axes_info, diag_ctrl, diag_masks_set
 use MOM_diag_mediator,        only : set_masks_for_axes
 use MOM_diag_mediator,        only : diag_grid_storage, diag_grid_storage_init
-use MOM_diag_mediator,        only : diag_save_grids, diag_restore_grids
-use MOM_diag_mediator,        only : diag_copy_storage_to_diag, diag_copy_diag_to_storage
+use MOM_diag_mediator,        only : diag_copy_diag_to_storage
+use MOM_diag_mediator,        only : diag_push_h, diag_drop_h
+use MOM_diag_mediator,        only : set_diag_in_sync_with_state
 use MOM_domains,              only : MOM_domains_init
 use MOM_domains,              only : sum_across_PEs, pass_var, pass_vector
 use MOM_domains,              only : clone_MOM_domain, deallocate_MOM_domain
@@ -228,8 +229,6 @@ type, public :: MOM_control_struct ; private
                     !! multiple coupling timesteps.
   real :: t_dyn_rel_diag !< The time of the diagnostics relative to diabatic processes and remapping
                     !!  [T ~> s].  t_dyn_rel_diag is always positive, since the diagnostics must lag.
-  logical :: preadv_h_stored = .false. !< If true, the thicknesses from before the advective cycle
-                    !! have been stored for use in diagnostics.
 
   type(diag_ctrl)     :: diag !< structure to regulate diagnostic output timing
   type(vertvisc_type) :: visc !< structure containing vertical viscosities,
@@ -730,10 +729,6 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
 
     if (showCallTree) call callTree_enter("DT cycles (step_MOM) n=",n)
 
-    ! Update the vertically extensive diagnostic grids so that they are
-    ! referenced to the beginning timestep
-    call diag_update_remap_grids(CS%diag, update_intensive = .false., update_extensive = .true. )
-
     !===========================================================================
     ! This is the first place where the diabatic processes and remapping could occur.
     if (CS%diabatic_first .and. (CS%t_dyn_rel_adv==0.0) .and. do_thermo) then ! do thermodynamics.
@@ -785,9 +780,9 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
       ! Store pre-dynamics thicknesses for proper diagnostic remapping for transports or
       ! advective tendencies.  If there are more than one dynamics steps per advective
       ! step (i.e DT_THERM > DT), this needs to be stored at the first dynamics call.
-      if (.not.CS%preadv_h_stored .and. (CS%t_dyn_rel_adv == 0.)) then
+      if (CS%t_dyn_rel_adv == 0.) then
+        call diag_push_h(CS%diag, "transports")
         call diag_copy_diag_to_storage(CS%diag_pre_dyn, h, CS%diag)
-        CS%preadv_h_stored = .true.
       endif
 
       ! The pre-dynamics velocities might be stored for debugging truncations.
@@ -907,11 +902,15 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
       call cpu_clock_begin(id_clock_other) ; call cpu_clock_begin(id_clock_diagnostics)
       ! Diagnostics that require the complete state to be up-to-date can be calculated.
 
+      ! Update the diagnostic grids
+      call diag_update_remap_grids(CS%diag, update_extensive=.true.)
+
       call enable_averages(CS%t_dyn_rel_diag, Time_local, CS%diag)
-      call calculate_diagnostic_fields(u, v, h, CS%uh, CS%vh, CS%tv, CS%ADp,  &
-                          CS%CDp, p_surf, CS%t_dyn_rel_diag, CS%diag_pre_sync,&
-                          G, GV, US, CS%diagnostics_CSp)
-      call post_tracer_diagnostics_at_sync(CS%Tracer_reg, h, CS%diag_pre_sync, CS%diag, G, GV, CS%t_dyn_rel_diag)
+      call calculate_diagnostic_fields(u, v, h, CS%uh, CS%vh, CS%tv, CS%ADp, &
+          CS%CDp, p_surf, CS%t_dyn_rel_diag, CS%diag_pre_sync, G, GV, US, CS%diagnostics_CSp)
+      call post_tracer_diagnostics_at_sync(CS%Tracer_reg, h, CS%diag, G, GV, CS%t_dyn_rel_diag)
+      call diag_drop_h(CS%diag, "sync")
+      call diag_push_h(CS%diag, "sync")
       call diag_copy_diag_to_storage(CS%diag_pre_sync, h, CS%diag)
       if (showCallTree) call callTree_waypoint("finished calculate_diagnostic_fields (step_MOM)")
       call disable_averaging(CS%diag)
@@ -1076,10 +1075,6 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     call pass_var(h, G%Domain, clock=id_clock_pass, halo=max(2,CS%cont_stencil))
     call disable_averaging(CS%diag)
     if (showCallTree) call callTree_waypoint("finished thickness_diffuse_first (step_MOM)")
-
-    ! Whenever thickness changes let the diag manager know, target grids
-    ! for vertical remapping may need to be regenerated.
-    call diag_update_remap_grids(CS%diag)
   endif
 
   !update porous barrier fractional cell metrics
@@ -1278,20 +1273,25 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
   else
     x_first = (MODULO(G%first_direction,2) == 0)
   endif
+
   call advect_tracer(h, CS%uhtr, CS%vhtr, CS%OBC, CS%t_dyn_rel_adv, G, GV, US, &
                      CS%tracer_adv_CSp, CS%tracer_Reg, x_first_in=x_first)
+  ! all diagnostic grids are now out of sync with respect to h
+  call set_diag_in_sync_with_state(CS%diag, .false.)
+  call post_transport_diagnostics(G, GV, US, CS%uhtr, CS%vhtr, h, CS%transport_IDs, &
+           CS%diag_pre_dyn, CS%diag, CS%t_dyn_rel_adv, CS%tracer_reg)
+  call diag_drop_h(CS%diag, "transports")
+
   call tracer_hordiff(h, CS%t_dyn_rel_adv, CS%MEKE, CS%VarMix, G, GV, US, &
                       CS%tracer_diff_CSp, CS%tracer_Reg, CS%tv)
+  call post_tracer_hordiff_diagnostics(G, GV, CS%tracer_reg, CS%diag_pre_dyn, CS%diag)
+
   if (showCallTree) call callTree_waypoint("finished tracer advection/diffusion (step_MOM)")
   call update_segment_tracer_reservoirs(G, GV, CS%uhtr, CS%vhtr, h, CS%OBC, &
                      CS%t_dyn_rel_adv, CS%tracer_Reg)
   call cpu_clock_end(id_clock_tracer) ; call cpu_clock_end(id_clock_thermo)
 
   call cpu_clock_begin(id_clock_other) ; call cpu_clock_begin(id_clock_diagnostics)
-  call post_transport_diagnostics(G, GV, US, CS%uhtr, CS%vhtr, h, CS%transport_IDs, &
-           CS%diag_pre_dyn, CS%diag, CS%t_dyn_rel_adv, CS%tracer_reg)
-  call post_tracer_hordiff_diagnostics(G, GV, CS%tracer_reg, CS%diag_pre_dyn, CS%diag)
-  ! Rebuild the remap grids now that we've posted the fields which rely on thicknesses
   ! from before the dynamics calls
   call diag_update_remap_grids(CS%diag)
 
@@ -1321,8 +1321,6 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
       call do_group_pass(pass_T_S, G%Domain, clock=id_clock_pass)
     endif
   endif
-
-  CS%preadv_h_stored = .false.
 
 end subroutine step_MOM_tracer_dyn
 
@@ -1473,11 +1471,6 @@ subroutine step_MOM_thermo(CS, G, GV, US, u, v, h, tv, fluxes, dtdia, &
       call hchksum(tv%S, "Post-ALE S", G%HI, haloshift=1)
       call check_redundant("Post-ALE ", u, v, G)
     endif
-
-    ! Whenever thickness changes let the diag manager know, target grids
-    ! for vertical remapping may need to be regenerated. This needs to
-    ! happen after the H update and before the next post_data.
-    call diag_update_remap_grids(CS%diag)
 
     !### Consider moving this up into the if ALE block.
     call postALE_tracer_diagnostics(CS%tracer_Reg, G, GV, CS%diag, dtdia)
@@ -2734,7 +2727,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
   ! Whenever thickness/T/S changes let the diag manager know, target grids
   ! for vertical remapping may need to be regenerated.
   ! FIXME: are h, T, S updated at the same time? Review these for T, S updates.
-  call diag_update_remap_grids(diag)
+  call diag_update_remap_grids(diag, update_extensive=.true.)
 
   ! Setup the diagnostic grid storage types
   call diag_grid_storage_init(CS%diag_pre_sync, G, GV, diag)
@@ -2814,8 +2807,8 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
 
   call MOM_diagnostics_init(MOM_internal_state, CS%ADp, CS%CDp, Time, G, GV, US, &
                             param_file, diag, CS%diagnostics_CSp, CS%tv)
+  call diag_push_h(CS%diag, "sync")
   call diag_copy_diag_to_storage(CS%diag_pre_sync, CS%h, CS%diag)
-
 
   if (CS%adiabatic) then
     call adiabatic_driver_init(Time, G, param_file, diag, CS%diabatic_CSp, &

@@ -10,9 +10,11 @@ module MOM_tracer_registry
 use MOM_coms,          only : reproducing_sum
 use MOM_debugging,     only : hchksum
 use MOM_diag_mediator, only : diag_ctrl, register_diag_field, post_data, safe_alloc_ptr
-use MOM_diag_mediator, only : diag_grid_storage
+use MOM_diag_mediator, only : diag_grid_storage, post_data_tend
 use MOM_diag_mediator, only : diag_copy_storage_to_diag, diag_save_grids, diag_restore_grids
 use MOM_error_handler, only : MOM_error, FATAL, WARNING, MOM_mesg, is_root_pe
+use MOM_field_stack,   only : field_stack_type, field_stack_init
+use MOM_field_stack,   only : field_stack_push, field_stack_peek, field_stack_drop
 use MOM_file_parser,   only : get_param, log_version, param_file_type
 use MOM_hor_index,     only : hor_index_type
 use MOM_grid,          only : ocean_grid_type
@@ -20,20 +22,25 @@ use MOM_io,            only : vardesc, query_vardesc, cmor_long_std
 use MOM_restart,       only : register_restart_field, MOM_restart_CS
 use MOM_string_functions, only : lowercase
 use MOM_time_manager,  only : time_type
+use MOM_tracer_types,  only : tracer_type, tracer_registry_type
 use MOM_unit_scaling,  only : unit_scale_type
 use MOM_verticalGrid,  only : verticalGrid_type
-use MOM_tracer_types,  only : tracer_type, tracer_registry_type
 implicit none ; private
 
 #include <MOM_memory.h>
 
 public register_tracer
 public MOM_tracer_chksum, MOM_tracer_chkinv
-public register_tracer_diagnostics, post_tracer_diagnostics_at_sync
+public register_tracer_diagnostics, prep_tracer_tend, diagnose_tracer_tend
+public post_tracer_diagnostics_at_sync
 public post_tracer_advection_diagnostics, post_tracer_hordiff_diagnostics
 public preALE_tracer_diagnostics, postALE_tracer_diagnostics
 public tracer_registry_init, lock_tracer_registry, tracer_registry_end
 public tracer_name_lookup
+
+interface diagnose_tracer_tend
+  module procedure diagnose_tracer_tend_field_stack, diagnose_tracer_tend_field
+end interface diagnose_tracer_tend
 
 ! These types come from MOM_tracer_types
 public tracer_type, tracer_registry_type
@@ -44,7 +51,7 @@ contains
 subroutine register_tracer(tr_ptr, Reg, param_file, HI, GV, name, longname, units, &
                            cmor_name, cmor_units, cmor_longname, net_surfflux_name, NLT_budget_name, &
                            net_surfflux_longname, tr_desc, OBC_inflow, OBC_in_u, OBC_in_v, ad_x, ad_y, &
-                           df_x, df_y, ad_2d_x, ad_2d_y, df_2d_x, df_2d_y, advection_xy, registry_diags, &
+                           df_x, df_y, ad_2d_x, ad_2d_y, df_2d_x, df_2d_y, registry_diags, &
                            flux_nameroot, flux_longname, flux_units, flux_scale, &
                            convergence_units, convergence_scale, cmor_tendprefix, diag_form, &
                            restart_CS, mandatory, Tr_out)
@@ -89,8 +96,6 @@ subroutine register_tracer(tr_ptr, Reg, param_file, HI, GV, name, longname, unit
                                                                 !! [conc H L2 T-1 ~> CONC m3 s-1 or CONC kg s-1]
   real, dimension(:,:),   optional, pointer     :: df_2d_y      !< vert sum of diagnostic y-diffuse flux
                                                                 !! [conc H L2 T-1 ~> CONC m3 s-1 or CONC kg s-1]
-
-  real, dimension(:,:,:), optional, pointer     :: advection_xy !< convergence of lateral advective tracer fluxes
   logical,              optional, intent(in)    :: registry_diags !< If present and true, use the registry for
                                                                 !! the diagnostics of this tracer.
   character(len=*),     optional, intent(in)    :: flux_nameroot !< Short tracer name snippet used construct the
@@ -223,8 +228,6 @@ subroutine register_tracer(tr_ptr, Reg, param_file, HI, GV, name, longname, unit
   if (present(ad_2d_y)) then ; if (associated(ad_2d_y)) Tr%ad2d_y => ad_2d_y ; endif
   if (present(df_2d_x)) then ; if (associated(df_2d_x)) Tr%df2d_x => df_2d_x ; endif
 
-  if (present(advection_xy)) then ; if (associated(advection_xy)) Tr%advection_xy => advection_xy ; endif
-
   if (present(restart_CS)) then
     ! Register this tracer to be read from and written to restart files.
     mand = .true. ; if (present(mandatory)) mand = mandatory
@@ -263,6 +266,7 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
   logical,                    intent(in) :: use_KPP !< If true active diagnostics that only
                                                  !! apply to CVMix KPP mixings
 
+  ! Local variables
   character(len=24)  :: name     ! A variable's name in a NetCDF file.
   character(len=24)  :: shortnm  ! A shortened version of a variable's name for
                                  ! creating additional diagnostics.
@@ -281,8 +285,13 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
   character(len=120) :: var_lname      ! A temporary longname for a diagnostic.
   character(len=120) :: cmor_var_lname ! The temporary CMOR long name for a diagnostic
   character(len=72)  :: cmor_varname ! The temporary CMOR name for a diagnostic
+  logical :: comp_multiprocess_tend !< is a tracer multiprocess tendency diag requested
+                                    !! e.g., net hordiff, used to determine t_prev stack size
+  logical :: comp_process_tend      !< is a tracer process tendency diag requested
+                                    !! used to determine t_prev stack size
   type(tracer_type), pointer :: Tr=>NULL()
-  integer :: i, j, k, is, ie, js, je, nz, m, m2, nTr_in
+  integer :: t_prev_max_size
+  integer :: i, j, k, is, ie, js, je, nz, m, m2
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   isd  = G%isd  ; ied  = G%ied  ; jsd  = G%jsd  ; jed  = G%jed
@@ -291,10 +300,22 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
   if (.not. associated(Reg)) call MOM_error(FATAL, "register_tracer_diagnostics: "//&
        "register_tracer must be called before register_tracer_diagnostics")
 
-  nTr_in = Reg%ntr
+  ! allocate space for derived diagnostic flags
+  ! initialize here, via source, to ensure they are set, even if registry_diags=.false.
+  allocate(Reg%comp_net_tend(Reg%ntr), source=.false.)
+  allocate(Reg%comp_remap_tend(Reg%ntr), source=.false.)
+  allocate(Reg%comp_adv_tend(Reg%ntr), source=.false.)
+  allocate(Reg%comp_lbd_tend(Reg%ntr), source=.false.)
+  allocate(Reg%comp_neu_diff_tend(Reg%ntr), source=.false.)
 
-  do m=1,nTr_in ; if (Reg%Tr(m)%registry_diags) then
+  do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
     Tr => Reg%Tr(m)
+
+    comp_multiprocess_tend = .false.
+    comp_process_tend = Tr%comp_process_tend ! A process tendency outside of those
+        ! registered in this subroutine might be requested, e.g., diabatic
+        ! processes, tracer source terms.
+
 !    call query_vardesc(Tr%vd, name, units=units, longname=longname, &
 !                       cmor_field_name=cmorname, cmor_longname=cmor_longname, &
 !                       caller="register_tracer_diagnostics")
@@ -400,8 +421,6 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
     if (Tr%id_ady > 0) call safe_alloc_ptr(Tr%ad_y,isd,ied,JsdB,JedB,nz)
     if (Tr%id_dfx > 0) call safe_alloc_ptr(Tr%df_x,IsdB,IedB,jsd,jed,nz)
     if (Tr%id_dfy > 0) call safe_alloc_ptr(Tr%df_y,isd,ied,JsdB,JedB,nz)
-    if (Tr%id_lbd_dfx > 0) call safe_alloc_ptr(Tr%lbd_dfx,IsdB,IedB,jsd,jed,nz)
-    if (Tr%id_lbd_dfy > 0) call safe_alloc_ptr(Tr%lbd_dfy,isd,ied,JsdB,JedB,nz)
 
     Tr%id_adx_2d = register_diag_field("ocean_model", trim(shortnm)//"_adx_2d", &
         diag%axesCu1, Time, &
@@ -444,10 +463,6 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
     if (Tr%id_ady_2d > 0) call safe_alloc_ptr(Tr%ad2d_y,isd,ied,JsdB,JedB)
     if (Tr%id_dfx_2d > 0) call safe_alloc_ptr(Tr%df2d_x,IsdB,IedB,jsd,jed)
     if (Tr%id_dfy_2d > 0) call safe_alloc_ptr(Tr%df2d_y,isd,ied,JsdB,JedB)
-    if (Tr%id_lbd_bulk_dfx > 0) call safe_alloc_ptr(Tr%lbd_bulk_df_x,IsdB,IedB,jsd,jed)
-    if (Tr%id_lbd_bulk_dfy > 0) call safe_alloc_ptr(Tr%lbd_bulk_df_y,isd,ied,JsdB,JedB)
-    if (Tr%id_lbd_dfx_2d > 0) call safe_alloc_ptr(Tr%lbd_dfx_2d,IsdB,IedB,jsd,jed)
-    if (Tr%id_lbd_dfy_2d > 0) call safe_alloc_ptr(Tr%lbd_dfy_2d,isd,ied,JsdB,JedB)
 
     Tr%id_adv_xy = register_diag_field('ocean_model', trim(shortnm)//"_advection_xy", &
         diag%axesTL, Time, &
@@ -457,19 +472,14 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
         diag%axesT1, Time, &
         'Vertical sum of horizontal convergence of residual mean advective fluxes of '//&
         trim(lowercase(flux_longname)), conv_units, conversion=Tr%conv_scale*US%s_to_T)
-    if ((Tr%id_adv_xy > 0) .or. (Tr%id_adv_xy_2d > 0)) &
-      call safe_alloc_ptr(Tr%advection_xy,isd,ied,jsd,jed,nz)
+    if ((Tr%id_adv_xy > 0) .or. (Tr%id_adv_xy_2d > 0)) then
+      Reg%comp_adv_tend(m) = .true.
+      comp_process_tend = .true.
+    endif
 
     Tr%id_tendency = register_diag_field('ocean_model', trim(shortnm)//'_tendency', &
         diag%axesTL, Time, &
         'Net time tendency for '//trim(lowercase(longname)), trim(units)//' s-1', conversion=US%s_to_T)
-
-    if (Tr%id_tendency > 0) then
-      call safe_alloc_ptr(Tr%t_prev,isd,ied,jsd,jed,nz)
-      do k=1,nz ; do j=js,je ; do i=is,ie
-        Tr%t_prev(i,j,k) = Tr%t(i,j,k)
-      enddo ; enddo ; enddo
-    endif
 
     ! Neutral/Lateral diffusion convergence tendencies
     if (Tr%diag_form == 1) then
@@ -526,6 +536,16 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
         diag%axesTL, Time, "Lateral diffusion tracer concentration tendency for "//trim(shortnm), &
         trim(units)//' s-1', conversion=US%s_to_T)
 
+    if ((Tr%id_dfxy_conc > 0) .or. (Tr%id_dfxy_cont > 0) .or. (Tr%id_dfxy_cont_2d > 0)) then
+      Reg%comp_neu_diff_tend(m) = .true.
+      comp_process_tend = .true.
+    endif
+
+    if ((Tr%id_lbdxy_conc > 0) .or. (Tr%id_lbdxy_cont > 0) .or. (Tr%id_lbdxy_cont_2d > 0)) then
+      Reg%comp_lbd_tend(m) = .true.
+      comp_process_tend = .true.
+    endif
+
     var_lname = "Net time tendency for "//lowercase(flux_longname)
     if (len_trim(Tr%cmor_tendprefix) == 0) then
       Tr%id_trxh_tendency = register_diag_field('ocean_model', trim(shortnm)//'h_tendency', &
@@ -549,12 +569,9 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
           cmor_field_name=trim(Tr%cmor_tendprefix)//"tend_2d", &
           cmor_standard_name=cmor_long_std(cmor_var_lname), cmor_long_name=cmor_var_lname)
     endif
-    if ((Tr%id_trxh_tendency > 0) .or. (Tr%id_trxh_tendency_2d > 0)) then
-      call safe_alloc_ptr(Tr%Trxh_prev,isd,ied,jsd,jed,nz)
-      do k=1,nz ; do j=js,je ; do i=is,ie
-        Tr%Trxh_prev(i,j,k) = Tr%t(i,j,k) * h(i,j,k)
-      enddo ; enddo ; enddo
-    endif
+
+    if ((Tr%id_tendency > 0) .or. (Tr%id_trxh_tendency > 0) .or. (Tr%id_trxh_tendency_2d > 0)) &
+        Reg%comp_net_tend(m) = .true.
 
     ! Vertical regridding/remapping tendencies
     if (use_ALE .and. Tr%remap_tr) then
@@ -574,7 +591,19 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
           trim(Tr%flux_nameroot)//'h_tendency_vert_remap_2d', &
           diag%axesT1, Time, var_lname, conv_units, conversion=Tr%conv_scale*US%s_to_T)
 
+      if ((Tr%id_remap_conc > 0) .or. (Tr%id_remap_cont > 0) .or. (Tr%id_remap_cont_2d > 0)) then
+        Reg%comp_remap_tend(m) = .true.
+        comp_process_tend = .true.
+      endif
     endif
+
+    ! set up t_prev stack
+    t_prev_max_size = 0
+    if (Reg%comp_net_tend(m))   t_prev_max_size = t_prev_max_size + 1
+    if (comp_multiprocess_tend) t_prev_max_size = t_prev_max_size + 1
+    if (comp_process_tend)      t_prev_max_size = t_prev_max_size + 1
+    call field_stack_init(Tr%t_prev, t_prev_max_size, isd, ied, jsd, jed, nz, &
+        trim(shortnm) // "_prev")
 
     if (use_ALE .and. (Reg%ntr<MAX_FIELDS_) .and. Tr%remap_tr) then
       unit2 = trim(units)//"2"
@@ -610,9 +639,150 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
           conv_units, conversion=Tr%conv_scale*US%s_to_T, v_extensive=.true.)
     endif
 
+  else ! if (Reg%Tr(m)%registry_diags) then
+
+    Tr => Reg%Tr(m)
+
+    ! setup t_prev stack
+    ! needed if comp_process_tend == .true. despite registry_diags == .false.
+    t_prev_max_size = 0
+    if (comp_process_tend) t_prev_max_size = t_prev_max_size + 1
+    call field_stack_init(Tr%t_prev, t_prev_max_size, isd, ied, jsd, jed, nz, &
+        trim(Tr%flux_nameroot) // "_prev")
+
   endif ; enddo
 
+  call prep_tracer_tend(Reg, Reg%comp_net_tend, "sync")
+
 end subroutine register_tracer_diagnostics
+
+!> push tracer values, if needed, prior to computing tendencies
+subroutine prep_tracer_tend(Reg, comp_tracer_tend, msg)
+  type(tracer_registry_type), pointer :: Reg              !< pointer to the tracer registry
+  logical,   dimension(:), intent(in) :: comp_tracer_tend !< is tracer tendency being computed, per tracer
+  character(len=*),        intent(in) :: msg              !< which tend is being prepped for
+
+  ! Local variables
+  integer :: m
+
+  do m=1,Reg%ntr
+    if (comp_tracer_tend(m)) &
+        call field_stack_push(Reg%Tr(m)%t_prev, Reg%Tr(m)%t, "prep_tracer_tend " // trim(msg))
+  enddo
+
+end subroutine prep_tracer_tend
+
+!> call post_data for tracer concentration and content tendencies
+!! call post_data for tracer content after process, if diag ids provided
+subroutine diagnose_tracer_tend_field_stack(G, GV, dt, t_prev, tracer_new, h_new, &
+                                            diag_cs, id_conc_tend, id_cont_tend, id_cont_tend_2d, &
+                                            id_cont_new, id_cont_new_2d)
+  type(ocean_grid_type),                     intent(in) :: G                !< ocean grid structure
+  type(verticalGrid_type),                   intent(in) :: GV               !< ocean vertical grid structure
+  real,                                      intent(in) :: dt               !< time step [T ~> s]
+  type(field_stack_type),                 intent(inout) :: t_prev           !< stack of previous tracer concentration values [conc]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: tracer_new       !< tracer values after process
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h_new            !< layer thicknesses after process
+  type(diag_ctrl),                target, intent(inout) :: diag_cs          !< Structure used to regulate diagnostic output
+  integer,                                   intent(in) :: id_conc_tend     !< diagnostic id for concentration tendency
+  integer,                                   intent(in) :: id_cont_tend     !< diagnostic id for content tendency
+  integer,                                   intent(in) :: id_cont_tend_2d  !< diagnostic id for 2d content tendency
+  integer,                         optional, intent(in) :: id_cont_new      !< diagnostic id for content after process
+  integer,                         optional, intent(in) :: id_cont_new_2d   !< diagnostic id for 2d content after process
+
+  ! Local variables
+  real, dimension(:,:,:), pointer :: t_prev_ptr
+
+  ! use peek and drop to avoid copy from pop
+  call field_stack_peek(t_prev, t_prev_ptr, "diagnose_tracer_tend_field_stack")
+  call diagnose_tracer_tend_field(G, GV, dt, t_prev_ptr, tracer_new, h_new, &
+                                  diag_cs, id_conc_tend, id_cont_tend, id_cont_tend_2d, &
+                                  id_cont_new, id_cont_new_2d)
+  call field_stack_drop(t_prev, "diagnose_tracer_tend_field_stack")
+
+end subroutine diagnose_tracer_tend_field_stack
+
+
+!> call post_data for tracer concentration and content tendencies
+!! call post_data for tracer content after process, if diag ids provided
+subroutine diagnose_tracer_tend_field(G, GV, dt, t_prev_vals, tracer_new, h_new, &
+                                      diag_cs, id_conc_tend, id_cont_tend, id_cont_tend_2d, &
+                                      id_cont_new, id_cont_new_2d)
+  type(ocean_grid_type),                     intent(in) :: G                !< ocean grid structure
+  type(verticalGrid_type),                   intent(in) :: GV               !< ocean vertical grid structure
+  real,                                      intent(in) :: dt               !< time step [T ~> s]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: t_prev_vals      !< previous tracer concentration values [conc]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: tracer_new       !< tracer values after process
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h_new            !< layer thicknesses after process
+  type(diag_ctrl),                target, intent(inout) :: diag_cs          !< Structure used to regulate diagnostic output
+  integer,                                   intent(in) :: id_conc_tend     !< diagnostic id for concentration tendency
+  integer,                                   intent(in) :: id_cont_tend     !< diagnostic id for content tendency
+  integer,                                   intent(in) :: id_cont_tend_2d  !< diagnostic id for 2d content tendency
+  integer,                         optional, intent(in) :: id_cont_new      !< diagnostic id for content after process
+  integer,                         optional, intent(in) :: id_cont_new_2d   !< diagnostic id for 2d content after process
+
+  ! Local variables
+  real, dimension(:,:,:), pointer :: h_prev_ptr ! points to previous thicknesses
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: cont_prev
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: cont_new
+  real, dimension(SZI_(G),SZJ_(G))          :: work_2d
+  real :: Idt  ! The inverse of the timestep [T-1 ~> s-1]
+  integer :: i, j, k, is, ie, js, je, nz
+  integer :: id_cont_new_local, id_cont_new_2d_local
+  logical :: comp_cont_new
+
+  is  = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+  Idt = 0.; if (dt/=0.) Idt = 1.0 / dt ! The "if" is in case the diagnostic is called for a zero length interval
+
+  ! concentration tendency
+  if (id_conc_tend > 0) then
+    call post_data_tend(id_conc_tend, dt, tracer_new, h_new, diag_cs, &
+                        field_prev=t_prev_vals)
+  endif
+
+  ! compute cont_new if needed
+  id_cont_new_local = -1
+  if (present(id_cont_new)) id_cont_new_local = id_cont_new
+  id_cont_new_2d_local = -1
+  if (present(id_cont_new_2d)) id_cont_new_2d_local = id_cont_new_2d
+
+  if ((id_cont_new_local > 0) .or. (id_cont_new_2d_local > 0) .or. &
+      (id_cont_tend > 0) .or. (id_cont_tend_2d > 0)) then
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      cont_new(i,j,k) = h_new(i,j,k) * tracer_new(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+
+  ! content after process
+  if (id_cont_new_local > 0) call post_data(id_cont_new_local, cont_new, diag_cs)
+
+  if (id_cont_new_2d_local > 0) then
+    work_2d(:,:) = 0.0
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      work_2d(i,j) = work_2d(i,j) + cont_new(i,j,k)
+    enddo ; enddo ; enddo
+    call post_data(id_cont_new_2d_local, work_2d, diag_cs)
+  endif
+
+  ! content tendency
+  if ((id_cont_tend > 0) .or. (id_cont_tend_2d > 0)) then
+    call field_stack_peek(diag_cs%h_prev, h_prev_ptr, "diagnose_tracer_tend_field")
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      cont_prev(i,j,k) = h_prev_ptr(i,j,k) * t_prev_vals(i,j,k)
+    enddo ; enddo ; enddo
+    if (id_cont_tend > 0) then
+      call post_data_tend(id_cont_tend, dt, cont_new, h_new, diag_cs, field_prev=cont_prev)
+    endif
+    if (id_cont_tend_2d > 0) then
+      work_2d(:,:) = 0.0
+      do k=1,nz ; do j=js,je ; do i=is,ie
+        work_2d(i,j) = work_2d(i,j) + Idt * (cont_new(i,j,k) - cont_prev(i,j,k))
+      enddo ; enddo ; enddo
+      call post_data(id_cont_tend_2d, work_2d, diag_cs)
+    endif
+  endif
+
+end subroutine diagnose_tracer_tend_field
 
 subroutine preALE_tracer_diagnostics(Reg, G, GV)
   type(tracer_registry_type), pointer    :: Reg  !< pointer to the tracer registry
@@ -636,7 +806,7 @@ subroutine postALE_tracer_diagnostics(Reg, G, GV, diag, dt)
   type(tracer_registry_type), pointer    :: Reg  !< pointer to the tracer registry
   type(ocean_grid_type),      intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type),    intent(in) :: GV   !< ocean vertical grid structure
-  type(diag_ctrl),            intent(in) :: diag !< regulates diagnostic output
+  type(diag_ctrl),         intent(inout) :: diag !< regulates diagnostic output
   real,                       intent(in) :: dt   !< total time interval for these diagnostics [T ~> s]
 
   real    :: work(SZI_(G),SZJ_(G),SZK_(GV))
@@ -661,99 +831,83 @@ end subroutine postALE_tracer_diagnostics
 
 !> Post tracer diganostics when that should only be posted when MOM's state
 !! is self-consistent (also referred to as 'synchronized')
-subroutine post_tracer_diagnostics_at_sync(Reg, h, diag_prev, diag, G, GV, dt)
-  type(ocean_grid_type),      intent(in) :: G    !< The ocean's grid structure
-  type(verticalGrid_type),    intent(in) :: GV   !< The ocean's vertical grid structure
-  type(tracer_registry_type), pointer    :: Reg  !< pointer to the tracer registry
+subroutine post_tracer_diagnostics_at_sync(Reg, h_new, diag, G, GV, dt)
+  type(ocean_grid_type),      intent(in)    :: G      !< The ocean's grid structure
+  type(verticalGrid_type),    intent(in)    :: GV     !< The ocean's vertical grid structure
+  type(tracer_registry_type), pointer       :: Reg    !< pointer to the tracer registry
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                              intent(in) :: h    !< Layer thicknesses [H ~> m or kg m-2]
-  type(diag_grid_storage),    intent(in) :: diag_prev !< Contains diagnostic grids from previous timestep
-  type(diag_ctrl),            intent(inout) :: diag !< structure to regulate diagnostic output
-  real,                       intent(in) :: dt   !< total time step for tracer updates [T ~> s]
+                              intent(in)    :: h_new  !< Update layer thicknesses [H ~> m or kg m-2]
+  type(diag_ctrl),            intent(inout) :: diag   !< structure to regulate diagnostic output
+  real,                       intent(in)    :: dt     !< total time step for tracer updates [T ~> s]
 
-  real    :: work3d(SZI_(G),SZJ_(G),SZK_(GV))
-  real    :: work2d(SZI_(G),SZJ_(G))
-  real    :: Idt ! The inverse of the time step [T-1 ~> s-1]
+  ! Local variables
   type(tracer_type), pointer :: Tr=>NULL()
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: cont_new
+  real, dimension(SZI_(G),SZJ_(G)) :: cont_new_2d
   integer :: i, j, k, is, ie, js, je, nz, m
+
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  Idt = 0.; if (dt/=0.) Idt = 1.0 / dt ! The "if" is in case the diagnostic is called for a zero length interval
-
-  ! Tendency diagnostics need to be posted on the grid from the last call to this routine
-  call diag_save_grids(diag)
-  call diag_copy_storage_to_diag(diag, diag_prev)
   do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
     Tr => Reg%Tr(m)
     if (Tr%id_tr > 0) call post_data(Tr%id_tr, Tr%t, diag)
-    if ((Tr%id_trxh > 0) .or. (Tr%id_trxh_2d > 0)) then
+    ! If tendency diags are requested, compute and post content diags with tendency
+    ! diags, to avoid computing cont_new multiple times. Otherwise, compute and post
+    ! content diags in else block below.
+    if (Reg%comp_net_tend(m)) then
+      call diagnose_tracer_tend(G, GV, dt, Tr%t_prev, Tr%t, h_new, &
+                                diag, Tr%id_tendency, Tr%id_trxh_tendency, &
+                                Tr%id_trxh_tendency_2d, &
+                                id_cont_new=Tr%id_trxh, id_cont_new_2d=Tr%id_trxh_2d)
+    elseif (Tr%id_trxh > 0) then
       do k=1,nz ; do j=js,je ; do i=is,ie
-        work3d(i,j,k) = Tr%t(i,j,k)*h(i,j,k)
+        cont_new(i,j,k) = h_new(i,j,k) * Tr%t(i,j,k)
       enddo ; enddo ; enddo
-      if (Tr%id_trxh > 0) call post_data(Tr%id_trxh, work3d, diag)
+      call post_data(Tr%id_trxh, cont_new, diag)
       if (Tr%id_trxh_2d > 0) then
-        work2d(:,:) = 0.0
+        do j=js,je ; do i=is,ie ; cont_new_2d(i,j) = 0.0 ; end do ; end do
         do k=1,nz ; do j=js,je ; do i=is,ie
-          work2d(i,j) = work2d(i,j) + work3d(i,j,k)
+          cont_new_2d(i,j) = cont_new_2d(i,j) + cont_new(i,j,k)
         enddo ; enddo ; enddo
-        call post_data(Tr%id_trxh_2d, work2d, diag)
+        call post_data(Tr%id_trxh_2d, cont_new_2d, diag)
       endif
-    endif
-    if (Tr%id_tendency > 0) then
+    elseif (Tr%id_trxh_2d > 0) then
+      do j=js,je ; do i=is,ie ; cont_new_2d(i,j) = 0.0 ; end do ; end do
       do k=1,nz ; do j=js,je ; do i=is,ie
-        work3d(i,j,k)    = (Tr%t(i,j,k) - Tr%t_prev(i,j,k))*Idt
-        tr%t_prev(i,j,k) =  Tr%t(i,j,k)
+        cont_new_2d(i,j) = cont_new_2d(i,j) + h_new(i,j,k) * Tr%t(i,j,k)
       enddo ; enddo ; enddo
-      call post_data(Tr%id_tendency, work3d, diag, alt_h=diag_prev%h_state)
-    endif
-    if ((Tr%id_trxh_tendency > 0) .or. (Tr%id_trxh_tendency_2d > 0)) then
-      do k=1,nz ; do j=js,je ; do i=is,ie
-        work3d(i,j,k)     = (Tr%t(i,j,k)*h(i,j,k) - Tr%Trxh_prev(i,j,k)) * Idt
-        Tr%Trxh_prev(i,j,k) =  Tr%t(i,j,k) * h(i,j,k)
-      enddo ; enddo ; enddo
-      if (Tr%id_trxh_tendency > 0) call post_data(Tr%id_trxh_tendency, work3d, diag, alt_h=diag_prev%h_state)
-      if (Tr%id_trxh_tendency_2d > 0) then
-        work2d(:,:) = 0.0
-        do k=1,nz ; do j=js,je ; do i=is,ie
-          work2d(i,j) = work2d(i,j) + work3d(i,j,k)
-        enddo ; enddo ; enddo
-        call post_data(Tr%id_trxh_tendency_2d, work2d, diag)
-      endif
+      call post_data(Tr%id_trxh_2d, cont_new_2d, diag)
     endif
   endif ; enddo
-  call diag_restore_grids(diag)
+
+  call prep_tracer_tend(Reg, Reg%comp_net_tend, "sync")
 
 end subroutine post_tracer_diagnostics_at_sync
 
-!> Post the advective tendencies
-subroutine post_tracer_advection_diagnostics(G, GV, Reg, h_diag, diag)
-  type(ocean_grid_type),      intent(in) :: G    !< The ocean's grid structure
-  type(verticalGrid_type),    intent(in) :: GV   !< The ocean's vertical grid structure
-  type(tracer_registry_type), pointer    :: Reg  !< pointer to the tracer registry
+!> Post tracer advective tendencies
+subroutine post_tracer_advection_diagnostics(G, GV, h, Reg, h_diag, diag, dt_trans)
+  type(ocean_grid_type),      intent(in) :: G        !< The ocean's grid structure
+  type(verticalGrid_type),    intent(in) :: GV       !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                              intent(in) :: h_diag !< Layer thicknesses on which to post fields [H ~> m or kg m-2]
-  type(diag_ctrl),            intent(in) :: diag !< structure to regulate diagnostic output
+                              intent(in) :: h        !< The updated layer thicknesses [H ~> m or kg m-2]
+  type(tracer_registry_type), pointer    :: Reg      !< pointer to the tracer registry
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                              intent(in) :: h_diag   !< Layer thicknesses on which to post fields [H ~> m or kg m-2]
+  type(diag_ctrl),         intent(inout) :: diag     !< structure to regulate diagnostic output
+  real,                       intent(in) :: dt_trans !< total time step associated with the transports [T ~> s].
 
-  integer :: i, j, k, is, ie, js, je, nz, m
-  real    :: work2d(SZI_(G),SZJ_(G))
+  integer :: m
   type(tracer_type), pointer :: Tr=>NULL()
-
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
   do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
     Tr => Reg%Tr(m)
-    if (Tr%id_tr_post_horzn> 0) call post_data(Tr%id_tr_post_horzn, Tr%t, diag)
     if (Tr%id_adx > 0) call post_data(Tr%id_adx, Tr%ad_x, diag, alt_h=h_diag)
     if (Tr%id_ady > 0) call post_data(Tr%id_ady, Tr%ad_y, diag, alt_h=h_diag)
     if (Tr%id_adx_2d > 0) call post_data(Tr%id_adx_2d, Tr%ad2d_x, diag)
     if (Tr%id_ady_2d > 0) call post_data(Tr%id_ady_2d, Tr%ad2d_y, diag)
-    if (Tr%id_adv_xy > 0) call post_data(Tr%id_adv_xy, Tr%advection_xy, diag, alt_h=h_diag)
-    if (Tr%id_adv_xy_2d > 0) then
-      work2d(:,:) = 0.0
-      do k=1,nz ; do j=js,je ; do i=is,ie
-        work2d(i,j) = work2d(i,j) + Tr%advection_xy(i,j,k)
-      enddo ; enddo ; enddo
-      call post_data(Tr%id_adv_xy_2d, work2d, diag)
+    if (Reg%comp_adv_tend(m)) then
+      call diagnose_tracer_tend(G, GV, dt_trans, Tr%t_prev, Tr%t, h, &
+                                diag, -1, Tr%id_adv_xy, Tr%id_adv_xy_2d)
     endif
   endif ; enddo
 

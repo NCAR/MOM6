@@ -1,6 +1,8 @@
 !> This module contains the tracer_type and tracer_registry_type
 module MOM_tracer_types
 
+use MOM_field_stack, only : field_stack_type
+
 implicit none ; private
 
 #include <MOM_memory.h>
@@ -28,47 +30,19 @@ type, public :: tracer_type
                                                               !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
   real, dimension(:,:,:), pointer :: df_y           => NULL() !< diagnostic array for y-diffusive tracer flux
                                                               !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
-  real, dimension(:,:,:), pointer :: lbd_dfx       => NULL()  !< diagnostic array for x-diffusive tracer flux
-                                                              !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
-  real, dimension(:,:,:), pointer :: lbd_dfy       => NULL()  !< diagnostic array for y-diffusive tracer flux
-                                                              !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
-  real, dimension(:,:), pointer :: lbd_dfx_2d       => NULL() !< diagnostic array for x-diffusive tracer flux
-                                                              !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
-  real, dimension(:,:), pointer :: lbd_dfy_2d       => NULL() !< diagnostic array for y-diffusive tracer flux
-                                                              !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
-  !### These two arrays may be allocated but are never used.
-  real, dimension(:,:), pointer :: lbd_bulk_df_x       => NULL() !< diagnostic array for x-diffusive tracer flux
-                                                              !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
-  real, dimension(:,:), pointer :: lbd_bulk_df_y       => NULL() !< diagnostic array for y-diffusive tracer flux
-                                                              !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
   real, dimension(:,:),   pointer :: df2d_x         => NULL() !< diagnostic vertical sum x-diffusive flux
                                                               !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
   real, dimension(:,:),   pointer :: df2d_y         => NULL() !< diagnostic vertical sum y-diffusive flux
                                                               !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
-!  real, dimension(:,:),   pointer :: df2d_conc_x    => NULL() !< diagnostic vertical sum x-diffusive content flux
-!                                                              !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
-!  real, dimension(:,:),   pointer :: df2d_conc_y    => NULL() !< diagnostic vertical sum y-diffusive content flux
-!                                                              !! [conc H L2 T-1 ~> conc m3 s-1 or conc kg s-1]
-
-  real, dimension(:,:,:), pointer :: advection_xy   => NULL() !< convergence of lateral advective tracer fluxes
-                                                              !! [conc H T-1 ~> conc m s-1 or conc kg m-2 s-1]
-!  real, dimension(:,:,:), pointer :: diff_cont_xy   => NULL() !< convergence of lateral diffusive tracer fluxes
-!                                                              !! [conc H T-1 ~> conc m s-1 or conc kg m-2 s-1]
-!  real, dimension(:,:,:), pointer :: diff_conc_xy   => NULL() !< convergence of lateral diffusive tracer fluxes
-!                                                              !! expressed as a change in concentration
-                                                               !! [conc T-1 ~> conc s-1]
-  real, dimension(:,:,:), pointer :: t_prev         => NULL() !< tracer concentration array at a previous
-                                                              !! timestep used for diagnostics [conc]
-  real, dimension(:,:,:), pointer :: Trxh_prev      => NULL() !< layer integrated tracer concentration array
-                                                              !! at a previous timestep used for diagnostics
-                                                              !! [conc H ~> conc m or conc kg m-2]
-
+  type(field_stack_type)          :: t_prev                   !< stack of previous tracer concentration values
   character(len=32)               :: name                     !< tracer name used for diagnostics and error messages
   character(len=64)               :: units                    !< Physical dimensions of the tracer concentration
   character(len=240)              :: longname                 !< Long name of the variable
 !  type(vardesc), pointer          :: vd             => NULL() !< metadata describing the tracer
   logical                         :: registry_diags = .false. !< If true, use the registry to set up the
                                                               !! diagnostics associated with this tracer.
+  logical                         :: comp_process_tend = .false. !< If true, then some process tendency
+                                                              !! diagnostics are enabled for this tracer
   character(len=64)               :: cmor_name                !< CMOR name of this tracer
   character(len=64)               :: cmor_units               !< CMOR physical dimensions of the tracer
   character(len=240)              :: cmor_longname            !< CMOR long name of the tracer
@@ -118,13 +92,18 @@ end type tracer_type
 
 !> Type to carry basic tracer information
 type, public :: tracer_registry_type
-  integer                  :: ntr = 0           !< number of registered tracers
-  type(tracer_type)        :: Tr(MAX_FIELDS_)   !< array of registered tracers
-! type(diag_ctrl), pointer :: diag              !< structure to regulate timing of diagnostics
-  logical                  :: locked = .false.  !< New tracers may be registered if locked=.false.
-                                                !! When locked=.true., no more tracers can be registered,
-                                                !! at which point common diagnostics can be set up
-                                                !! for the registered tracers
+  integer                  :: ntr = 0               !< number of registered tracers
+  type(tracer_type)        :: Tr(MAX_FIELDS_)       !< array of registered tracers
+! type(diag_ctrl), pointer :: diag                  !< structure to regulate timing of diagnostics
+  logical                  :: locked = .false.      !< New tracers may be registered if locked=.false.
+                                                    !! When locked=.true., no more tracers can be registered,
+                                                    !! at which point common diagnostics can be set up
+                                                    !! for the registered tracers
+  logical, allocatable     :: comp_net_tend(:)      !< are net tendencies being computed, per tracer
+  logical, allocatable     :: comp_remap_tend(:)    !< are remap tendencies being computed, per tracer
+  logical, allocatable     :: comp_adv_tend(:)      !< are advective tendencies being computed, per tracer
+  logical, allocatable     :: comp_lbd_tend(:)      !< are lbdtendencies being computed, per tracer
+  logical, allocatable     :: comp_neu_diff_tend(:) !< are neutral diffusivetendencies being computed, per tracer
 end type tracer_registry_type
 
 

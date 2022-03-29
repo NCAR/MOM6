@@ -5,8 +5,8 @@ module MOM_CVMix_KPP
 
 use MOM_coms,           only : max_across_PEs
 use MOM_debugging,      only : hchksum, is_NaN
-use MOM_diag_mediator,  only : time_type, diag_ctrl, safe_alloc_ptr, post_data
-use MOM_diag_mediator,  only : query_averaging_enabled, register_diag_field
+use MOM_diag_mediator,  only : time_type, diag_ctrl, post_data
+use MOM_diag_mediator,  only : register_diag_field
 use MOM_error_handler,  only : MOM_error, MOM_mesg, FATAL, WARNING, is_root_PE
 use MOM_EOS,            only : EOS_type, calculate_density
 use MOM_file_parser,    only : get_param, log_param, log_version, param_file_type

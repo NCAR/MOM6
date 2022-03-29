@@ -8,7 +8,7 @@ module MOM_diagnostics
 use MOM_coms,              only : reproducing_sum
 use MOM_coupler_types,     only : coupler_type_send_data
 use MOM_density_integrals, only : int_density_dz
-use MOM_diag_mediator,     only : post_data, get_diag_time_end
+use MOM_diag_mediator,     only : post_data, post_data_tend, get_diag_time_end
 use MOM_diag_mediator,     only : post_product_u, post_product_sum_u
 use MOM_diag_mediator,     only : post_product_v, post_product_sum_v
 use MOM_diag_mediator,     only : register_diag_field, register_scalar_field
@@ -17,6 +17,7 @@ use MOM_diag_mediator,     only : diag_ctrl, time_type, safe_alloc_ptr
 use MOM_diag_mediator,     only : diag_get_volume_cell_measure_dm_id
 use MOM_diag_mediator,     only : diag_grid_storage
 use MOM_diag_mediator,     only : diag_save_grids, diag_restore_grids, diag_copy_storage_to_diag
+use MOM_diag_mediator,     only : diag_update_remap_grids
 use MOM_domains,           only : create_group_pass, do_group_pass, group_pass_type
 use MOM_domains,           only : To_North, To_East
 use MOM_EOS,               only : calculate_density, calculate_density_derivs, EOS_domain
@@ -253,7 +254,10 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
 
     if (CS%id_dv_dt>0) call post_data(CS%id_dv_dt, CS%dv_dt, CS%diag, alt_h=diag_pre_sync%h_state)
 
-    if (CS%id_dh_dt>0) call post_data(CS%id_dh_dt, CS%dh_dt, CS%diag, alt_h=diag_pre_sync%h_state)
+    call diag_restore_grids(CS%diag)
+    if (CS%id_dh_dt>0) call post_data_tend(CS%id_dh_dt, dt, h, h, CS%diag, field_tend=CS%dh_dt, &
+                                           field_prev=diag_pre_sync%h_state)
+    call diag_copy_storage_to_diag(CS%diag, diag_pre_sync)
 
     !! Diagnostics for terms multiplied by fractional thicknesses
 
@@ -1443,8 +1447,6 @@ subroutine post_transport_diagnostics(G, GV, US, uhtr, vhtr, h, IDs, diag_pre_dy
   real, dimension(SZI_(G), SZJB_(G)) :: vmo2d ! Diagnostics of integrated mass transport [R Z L2 T-1 ~> kg s-1]
   real, dimension(SZIB_(G), SZJ_(G),SZK_(GV)) :: umo ! Diagnostics of layer mass transport [R Z L2 T-1 ~> kg s-1]
   real, dimension(SZI_(G), SZJB_(G),SZK_(GV)) :: vmo ! Diagnostics of layer mass transport [R Z L2 T-1 ~> kg s-1]
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV))   :: h_tend ! Change in layer thickness due to dynamics
-                          ! [H T-1 ~> m s-1 or kg m-2 s-1].
   real :: Idt             ! The inverse of the time interval [T-1 ~> s-1]
   real :: H_to_RZ_dt      ! A conversion factor from accumulated transports to fluxes
                           ! [R Z H-1 T-1 ~> kg m-3 s-1 or s-1].
@@ -1453,6 +1455,8 @@ subroutine post_transport_diagnostics(G, GV, US, uhtr, vhtr, h, IDs, diag_pre_dy
 
   Idt = 1. / dt_trans
   H_to_RZ_dt = GV%H_to_RZ * Idt
+
+  call diag_update_remap_grids(diag)
 
   call diag_save_grids(diag)
   call diag_copy_storage_to_diag(diag, diag_pre_dyn)
@@ -1490,18 +1494,16 @@ subroutine post_transport_diagnostics(G, GV, US, uhtr, vhtr, h, IDs, diag_pre_dy
   if (IDs%id_vhtr > 0) call post_data(IDs%id_vhtr, vhtr, diag, alt_h=diag_pre_dyn%h_state)
   if (IDs%id_dynamics_h > 0) call post_data(IDs%id_dynamics_h, diag_pre_dyn%h_state, diag, &
                                             alt_h=diag_pre_dyn%h_state)
-  ! Post the change in thicknesses
-  if (IDs%id_dynamics_h_tendency > 0) then
-    h_tend(:,:,:) = 0.
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      h_tend(i,j,k) = (h(i,j,k) - diag_pre_dyn%h_state(i,j,k))*Idt
-    enddo ; enddo ; enddo
-    call post_data(IDs%id_dynamics_h_tendency, h_tend, diag, alt_h=diag_pre_dyn%h_state)
-  endif
-
-  call post_tracer_advection_diagnostics(G, GV, Reg, diag_pre_dyn%h_state, diag)
 
   call diag_restore_grids(diag)
+
+  ! Post the change in thicknesses
+  if (IDs%id_dynamics_h_tendency > 0) then
+    call post_data_tend(IDs%id_dynamics_h_tendency, dt_trans, h, h, &
+                        diag, field_prev=diag_pre_dyn%h_state)
+  endif
+
+  call post_tracer_advection_diagnostics(G, GV, h, Reg, diag_pre_dyn%h_state, diag, dt_trans)
 
 end subroutine post_transport_diagnostics
 

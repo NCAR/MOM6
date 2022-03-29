@@ -5,8 +5,10 @@ module MOM_tracer_hor_diff
 
 use MOM_cpu_clock,             only : cpu_clock_id, cpu_clock_begin, cpu_clock_end
 use MOM_cpu_clock,             only : CLOCK_MODULE, CLOCK_ROUTINE
-use MOM_diag_mediator,         only : post_data, diag_ctrl
-use MOM_diag_mediator,         only : register_diag_field, safe_alloc_ptr, time_type
+use MOM_diag_mediator,         only : post_data, post_data_tend, diag_ctrl
+use MOM_diag_mediator,         only : register_diag_field, time_type
+use MOM_diag_mediator,         only : set_diag_in_sync_with_state
+use MOM_diag_mediator,         only : diag_push_h, diag_drop_h
 use MOM_domains,               only : sum_across_PEs, max_across_PEs
 use MOM_domains,               only : create_group_pass, do_group_pass, group_pass_type
 use MOM_domains,               only : pass_vector
@@ -26,6 +28,7 @@ use MOM_neutral_diffusion,     only : neutral_diffusion_calc_coeffs, neutral_dif
 use MOM_lateral_boundary_diffusion, only : lbd_CS, lateral_boundary_diffusion_init
 use MOM_lateral_boundary_diffusion, only : lateral_boundary_diffusion
 use MOM_tracer_registry,       only : tracer_registry_type, tracer_type, MOM_tracer_chksum
+use MOM_tracer_registry,       only : prep_tracer_tend, diagnose_tracer_tend
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_variables,             only : thermo_var_ptrs
 use MOM_verticalGrid,          only : verticalGrid_type
@@ -78,6 +81,8 @@ type, public :: tracer_hor_diff_CS ; private
   integer :: id_CFL     = -1
   integer :: id_khdt_x  = -1
   integer :: id_khdt_y  = -1
+  integer :: id_lbd_h_tendency = -1
+  integer :: id_neu_diff_h_tendency = -1
   !>@}
 
   type(group_pass_type) :: pass_t !< For group halo pass, used in both
@@ -402,6 +407,10 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, G, GV, US, CS, Reg, tv, do_online
       enddo
     enddo
 
+    call prep_tracer_tend(Reg, Reg%comp_lbd_tend, "tracer_hordiff lbd")
+    if (any(Reg%comp_lbd_tend) .or. (CS%id_lbd_h_tendency > 0)) &
+        call diag_push_h(CS%diag, "tracer_hordiff lbd")
+
     do itt=1,num_itts
       if (CS%show_call_tree) call callTree_waypoint("Calling lateral boundary diffusion (tracer_hordiff)",itt)
       if (itt>1) then ! Update halos for subsequent iterations
@@ -410,6 +419,22 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, G, GV, US, CS, Reg, tv, do_online
       call lateral_boundary_diffusion(G, GV, US, h, Coef_x, Coef_y, I_numitts*dt, Reg, &
                                      CS%lateral_boundary_diffusion_CSp)
     enddo ! itt
+
+    ! state dependent diagnostic grids are now out of sync with respect to h_new
+    call set_diag_in_sync_with_state(CS%diag, .false.)
+
+    do m=1,ntr
+      if (Reg%comp_lbd_tend(m)) then
+        call diagnose_tracer_tend(G, GV, dt, Reg%Tr(m)%t_prev, Reg%Tr(m)%t, &
+                                  h, CS%diag, Reg%Tr(m)%id_lbdxy_conc, &
+                                  Reg%Tr(m)%id_lbdxy_cont, Reg%Tr(m)%id_lbdxy_cont_2d)
+      endif
+    enddo
+    if (CS%id_lbd_h_tendency > 0) &
+        call post_data_tend(CS%id_lbd_h_tendency, dt, h, h, CS%diag, field_prev=h)
+    if (any(Reg%comp_lbd_tend) .or. (CS%id_lbd_h_tendency > 0)) &
+        call diag_drop_h(CS%diag, "tracer_hordiff lbd")
+
   endif
 
   if (CS%use_neutral_diffusion) then
@@ -435,6 +460,10 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, G, GV, US, CS, Reg, tv, do_online
       enddo
     enddo
 
+    call prep_tracer_tend(Reg, Reg%comp_neu_diff_tend, "tracer_hordiff neu_diff")
+    if (any(Reg%comp_neu_diff_tend) .or. (CS%id_neu_diff_h_tendency > 0)) &
+        call diag_push_h(CS%diag, "tracer_hordiff neu_diff")
+
     do itt=1,num_itts
       if (CS%show_call_tree) call callTree_waypoint("Calling neutral diffusion (tracer_hordiff)",itt)
       if (itt>1) then ! Update halos for subsequent iterations
@@ -449,6 +478,21 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, G, GV, US, CS, Reg, tv, do_online
       endif
       call neutral_diffusion(G, GV,  h, Coef_x, Coef_y, I_numitts*dt, Reg, US, CS%neutral_diffusion_CSp)
     enddo ! itt
+
+    ! state dependent diagnostic grids are now out of sync with respect to h_new
+    call set_diag_in_sync_with_state(CS%diag, .false.)
+
+    do m=1,ntr
+      if (Reg%comp_neu_diff_tend(m)) then
+        call diagnose_tracer_tend(G, GV, dt, Reg%Tr(m)%t_prev, Reg%Tr(m)%t, &
+                                  h, CS%diag, Reg%Tr(m)%id_dfxy_conc, &
+                                  Reg%Tr(m)%id_dfxy_cont, Reg%Tr(m)%id_dfxy_cont_2d)
+      endif
+    enddo
+    if (CS%id_neu_diff_h_tendency > 0) &
+        call post_data_tend(CS%id_neu_diff_h_tendency, dt, h, h, CS%diag, field_prev=h)
+    if (any(Reg%comp_neu_diff_tend) .or. (CS%id_neu_diff_h_tendency > 0)) &
+        call diag_drop_h(CS%diag, "tracer_hordiff neu_diff")
 
   else    ! following if not using neutral diffusion, but instead along-surface diffusion
 
@@ -1524,11 +1568,6 @@ subroutine tracer_hor_diff_init(Time, G, GV, US, param_file, diag, EOS, diabatic
   id_clock_pass    = cpu_clock_id('(Ocean tracer halo updates)',     grain=CLOCK_ROUTINE)
   id_clock_sync    = cpu_clock_id('(Ocean tracer global synch)',     grain=CLOCK_ROUTINE)
 
-  CS%id_KhTr_u = -1
-  CS%id_KhTr_v = -1
-  CS%id_KhTr_h = -1
-  CS%id_CFL    = -1
-
   CS%id_KhTr_u = register_diag_field('ocean_model', 'KHTR_u', diag%axesCu1, Time, &
       'Epipycnal tracer diffusivity at zonal faces of tracer cell', 'm2 s-1', conversion=US%L_to_m**2*US%s_to_T)
   CS%id_KhTr_v = register_diag_field('ocean_model', 'KHTR_v', diag%axesCv1, Time, &
@@ -1548,6 +1587,23 @@ subroutine tracer_hor_diff_init(Time, G, GV, US, param_file, diag, EOS, diabatic
        'Grid CFL number for lateral/neutral tracer diffusion', 'nondim')
   endif
 
+  if (CS%use_lateral_boundary_diffusion) then
+    ! although lateral boundary diffusion does not change native thickness,
+    ! it can change thickness on non-native diagnostic grids
+    CS%id_lbd_h_tendency = register_diag_field('ocean_model',        &
+        'lbd_h_tendency', diag%axesTL, Time,                         &
+        'Cell thickness tendency due to lateral boundary diffusion', &
+        'm s-1', conversion=GV%H_to_m*US%s_to_T, v_extensive=.true.)
+  endif
+
+  if (CS%use_neutral_diffusion) then
+    ! although neutral diffusion does not change native thickness,
+    ! it can change thickness on non-native diagnostic grids
+    CS%id_neu_diff_h_tendency = register_diag_field('ocean_model', &
+        'neu_diff_h_tendency', diag%axesTL, Time,                  &
+        'Cell thickness tendency due to neutral diffusion',        &
+        'm s-1', conversion=GV%H_to_m*US%s_to_T, v_extensive=.true.)
+  endif
 
 end subroutine tracer_hor_diff_init
 

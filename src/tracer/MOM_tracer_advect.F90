@@ -5,8 +5,8 @@ module MOM_tracer_advect
 
 use MOM_cpu_clock,       only : cpu_clock_id, cpu_clock_begin, cpu_clock_end
 use MOM_cpu_clock,       only : CLOCK_MODULE, CLOCK_ROUTINE
-use MOM_diag_mediator,   only : post_data, query_averaging_enabled, diag_ctrl
-use MOM_diag_mediator,   only : register_diag_field, safe_alloc_ptr, time_type
+use MOM_diag_mediator,   only : diag_ctrl
+use MOM_diag_mediator,   only : time_type
 use MOM_domains,         only : sum_across_PEs, max_across_PEs
 use MOM_domains,         only : create_group_pass, do_group_pass, group_pass_type, pass_var
 use MOM_error_handler,   only : MOM_error, FATAL, WARNING, MOM_mesg, is_root_pe
@@ -15,7 +15,7 @@ use MOM_grid,            only : ocean_grid_type
 use MOM_open_boundary,   only : ocean_OBC_type, OBC_NONE, OBC_DIRECTION_E
 use MOM_open_boundary,   only : OBC_DIRECTION_W, OBC_DIRECTION_N, OBC_DIRECTION_S
 use MOM_open_boundary,   only : OBC_segment_type
-use MOM_tracer_registry, only : tracer_registry_type, tracer_type
+use MOM_tracer_registry, only : tracer_registry_type, tracer_type, prep_tracer_tend
 use MOM_unit_scaling,    only : unit_scale_type
 use MOM_verticalGrid,    only : verticalGrid_type
 implicit none ; private
@@ -186,6 +186,7 @@ subroutine advect_tracer(h_end, uhtr, vhtr, OBC, dt, G, GV, US, CS, Reg, x_first
   enddo ; enddo
 
   ! initialize diagnostic fluxes and tendencies
+  call prep_tracer_tend(Reg, Reg%comp_adv_tend, "advect_tracer")
   !$OMP do
   do m=1,ntr
     if (associated(Tr(m)%ad_x)) then
@@ -196,11 +197,6 @@ subroutine advect_tracer(h_end, uhtr, vhtr, OBC, dt, G, GV, US, CS, Reg, x_first
     if (associated(Tr(m)%ad_y)) then
       do k=1,nz ; do J=jsd,jed ; do i=isd,ied
         Tr(m)%ad_y(i,J,k) = 0.0
-      enddo ; enddo ; enddo
-    endif
-    if (associated(Tr(m)%advection_xy)) then
-      do k=1,nz ; do j=jsd,jed ; do i=isd,ied
-        Tr(m)%advection_xy(i,j,k) = 0.0
       enddo ; enddo ; enddo
     endif
     if (associated(Tr(m)%ad2d_x)) then
@@ -673,15 +669,6 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
         Tr(m)%ad_x(I,j,k) = Tr(m)%ad_x(I,j,k) + flux_x(I,j,m)*Idt
       endif ; enddo ; endif
 
-      ! diagnose convergence of flux_x (do not use the Ihnew(i) part of the logic).
-      ! division by areaT to get into W/m2 for heat and kg/(s*m2) for salt.
-      if (associated(Tr(m)%advection_xy)) then
-        do i=is,ie ; if (do_i(i,j)) then
-          Tr(m)%advection_xy(i,j,k) = Tr(m)%advection_xy(i,j,k) - (flux_x(I,j,m) - flux_x(I-1,j,m)) * &
-                                          Idt * G%IareaT(i,j)
-        endif ; enddo
-      endif
-
     enddo
 
   endif
@@ -1044,15 +1031,6 @@ subroutine advect_y(Tr, hprev, vhr, vh_neglect, OBC, domore_v, ntr, Idt, &
       if (associated(Tr(m)%ad_y)) then ; do i=is,ie ; if (do_i(i,j)) then
         Tr(m)%ad_y(i,J,k) = Tr(m)%ad_y(i,J,k) + flux_y(i,m,J)*Idt
       endif ; enddo ; endif
-
-      ! diagnose convergence of flux_y and add to convergence of flux_x.
-      ! division by areaT to get into W/m2 for heat and kg/(s*m2) for salt.
-      if (associated(Tr(m)%advection_xy)) then
-        do i=is,ie ; if (do_i(i,j)) then
-          Tr(m)%advection_xy(i,j,k) = Tr(m)%advection_xy(i,j,k) - (flux_y(i,m,J) - flux_y(i,m,J-1))* Idt * &
-                                          G%IareaT(i,j)
-        endif ; enddo
-      endif
 
     enddo
   endif ; enddo ! End of j-loop.
