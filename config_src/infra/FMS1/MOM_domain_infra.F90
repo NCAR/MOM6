@@ -9,7 +9,7 @@ use MOM_error_infra, only : MOM_error=>MOM_err, NOTE, WARNING, FATAL
 
 use mpp_domains_mod, only : domain2D, domain1D
 use mpp_domains_mod, only : mpp_define_io_domain, mpp_define_domains, mpp_deallocate_domain
-use mpp_domains_mod, only : mpp_get_domain_components, mpp_get_domain_extents
+use mpp_domains_mod, only : mpp_get_domain_components, mpp_get_domain_extents, mpp_get_layout
 use mpp_domains_mod, only : mpp_get_compute_domain, mpp_get_data_domain, mpp_get_global_domain
 use mpp_domains_mod, only : mpp_get_boundary, mpp_update_domains
 use mpp_domains_mod, only : mpp_start_update_domains, mpp_complete_update_domains
@@ -42,7 +42,7 @@ public :: deallocate_MOM_domain, get_global_shape, compute_block_extent
 public :: pass_var, pass_vector, fill_symmetric_edges, rescale_comp_data
 public :: pass_var_start, pass_var_complete, pass_vector_start, pass_vector_complete
 public :: create_group_pass, do_group_pass, start_group_pass, complete_group_pass
-public :: redistribute_array, broadcast_domain, global_field
+public :: redistribute_array, broadcast_domain, same_domain, global_field
 public :: get_simple_array_i_ind, get_simple_array_j_ind
 public :: MOM_thread_affinity_set, set_MOM_thread_affinity
 ! These are encoding constant parmeters.
@@ -105,7 +105,7 @@ end interface rescale_comp_data
 
 !> Pass an array from one MOM domain to another
 interface redistribute_array
-  module procedure redistribute_array_3d, redistribute_array_2d
+  module procedure redistribute_array_2d, redistribute_array_3d, redistribute_array_4d
 end interface redistribute_array
 
 !> Copy one MOM_domain_type into another
@@ -156,6 +156,9 @@ type, public :: MOM_domain_type
                                 !! would be contain only land points and are not
                                 !! assigned to actual processors. This need not be
                                 !! assigned if all logical processors are used.
+  integer :: turns              !< Number of quarter-turns from input to this grid.
+  type(MOM_domain_type), pointer :: domain_in => NULL()
+                                !< Reference to unrotated domain (if turned)
 end type MOM_domain_type
 
 integer, parameter :: To_All = To_East + To_West + To_North + To_South !< A flag for passing in all directions
@@ -1232,6 +1235,25 @@ subroutine redistribute_array_3d(Domain1, array1, Domain2, array2, complete)
 
 end subroutine redistribute_array_3d
 
+!> Pass a 4-D array from one MOM domain to another
+subroutine redistribute_array_4d(Domain1, array1, Domain2, array2, complete)
+  type(domain2d), &
+           intent(in)  :: Domain1 !< The MOM domain from which to extract information.
+  real, dimension(:,:,:,:), intent(in) :: array1 !< The array from which to extract information.
+  type(domain2d), &
+           intent(in)  :: Domain2 !< The MOM domain receiving information.
+  real, dimension(:,:,:,:), intent(out) :: array2 !< The array receiving information.
+  logical, optional, intent(in) :: complete  !< If true, finish communication before proceeding.
+
+  ! Local variables
+  logical :: do_complete
+
+  do_complete=.true.;if (PRESENT(complete)) do_complete = complete
+
+  call mpp_redistribute(Domain1, array1, Domain2, array2, do_complete)
+
+end subroutine redistribute_array_4d
+
 
 !> Rescale the values of a 4-D array in its computational domain by a constant factor
 subroutine rescale_comp_data_4d(domain, array, scale)
@@ -1377,6 +1399,9 @@ subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, l
     mask_table_exists = .false.
   endif
 
+  ! Initialize as an unrotated domain
+  MOM_dom%turns = 0
+
   call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain)
 
   !For downsampled domain, recommend a halo of 1 (or 0?) since we're not doing wide-stencil computations.
@@ -1468,8 +1493,9 @@ end subroutine get_domain_components_d2D
 !! some properties of the new type to differ from the original one.
 subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain_name, &
                           turns, refine, extra_halo)
-  type(MOM_domain_type), intent(in)    :: MD_in  !< An existing MOM_domain
-  type(MOM_domain_type), pointer       :: MOM_dom !< A pointer to a MOM_domain that will be
+  type(MOM_domain_type), target, intent(in) :: MD_in  !< An existing MOM_domain
+  type(MOM_domain_type), pointer :: MOM_dom
+                                  !< A pointer to a MOM_domain that will be
                                   !! allocated if it is unassociated, and will have data
                                   !! copied from MD_in
   integer, dimension(2), &
@@ -1600,8 +1626,12 @@ subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain
     MOM_dom%name = MD_in%name
   endif
 
-  call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain, xextent=exni, yextent=exnj)
+  MOM_dom%turns = qturns
+  if (qturns /= 0) then
+    MOM_dom%domain_in => MD_in
+  endif
 
+  call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain, xextent=exni, yextent=exnj)
   call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d2, domain_name=MOM_dom%name, coarsen=2)
 
 end subroutine clone_MD_to_MD
@@ -1686,13 +1716,13 @@ subroutine clone_MD_to_d2D(MD_in, mpp_domain, min_halo, halo_size, symmetric, &
                 symmetry=symmetric_dom, xextent=xextent, yextent=yextent, name=dom_name)
   endif
 
-  if ((MD_in%io_layout(1) + MD_in%io_layout(2) > 0) .and. &
-      (MD_in%layout(1)*MD_in%layout(2) > 1)) then
-    call mpp_define_io_domain(mpp_domain, MD_in%io_layout)
-  else
-    call mpp_define_io_domain(mpp_domain, (/ 1, 1 /) )
+  if (MD_in%layout(1) * MD_in%layout(2) > 1) then
+    if ((MD_in%io_layout(1) + MD_in%io_layout(2) > 0)) then
+      call mpp_define_io_domain(mpp_domain, MD_in%io_layout)
+    else
+      call mpp_define_io_domain(mpp_domain, [1, 1] )
+    endif
   endif
-
 end subroutine clone_MD_to_d2D
 
 !> Returns the index ranges that have been stored in a MOM_domain_type
@@ -1922,6 +1952,29 @@ subroutine global_field(domain, local, global)
 
   call mpp_global_field(domain, local, global)
 end subroutine global_field
+
+!> same_domain returns true if two domains use the same list of PEs and layouts and have the same
+!! size computational domains, and false if the domains do not conform with each other.
+!! Different halo sizes or indexing conventions do not alter the results.
+logical function same_domain(domain_a, domain_b)
+  type(domain2D), intent(in) :: domain_a !< The first domain in the comparison
+  type(domain2D), intent(in) :: domain_b !< The second domain in the comparison
+
+  ! Local variables
+  integer :: isc_a, iec_a, jsc_a, jec_a, isc_b, iec_b, jsc_b, jec_b
+  integer :: layout_a(2), layout_b(2)
+
+  ! This routine currently does a few checks for consistent domains; more could be added.
+  call mpp_get_layout(domain_a, layout_a)
+  call mpp_get_layout(domain_b, layout_b)
+
+  call get_domain_extent(domain_a, isc_a, iec_a, jsc_a, jec_a)
+  call get_domain_extent(domain_b, isc_b, iec_b, jsc_b, jec_b)
+
+  same_domain = (layout_a(1) == layout_b(1)) .and. (layout_a(2) == layout_b(2)) .and. &
+                (iec_a - isc_a == iec_b - isc_b) .and. (jec_a - jsc_a == jec_b - jsc_b)
+
+end function same_domain
 
 !> Returns arrays of the i- and j- sizes of the h-point computational domains for each
 !! element of the grid layout.  Any input values in the extent arrays are discarded, so

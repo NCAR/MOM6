@@ -9,15 +9,15 @@ use MOM_cpu_clock,     only : cpu_clock_id, cpu_clock_begin, cpu_clock_end, CLOC
 use MOM_domains,       only : pass_var
 use MOM_error_handler, only : MOM_mesg, MOM_error, FATAL, WARNING, is_root_pe
 use MOM_error_handler, only : callTree_enter, callTree_leave, callTree_waypoint
+use MOM_error_handler, only : MOM_get_verbosity
 use MOM_file_parser,   only : get_param, log_param, log_version, param_file_type
 use MOM_grid,          only : ocean_grid_type
-use MOM_interpolate,   only : time_interp_external, get_external_field_info, horiz_interp_init
+use MOM_interpolate,   only : time_interp_external, horiz_interp_init
 use MOM_interpolate,   only : build_horiz_interp_weights, run_horiz_interp, horiz_interp_type
-use MOM_io_infra,      only : axistype, get_axis_data
+use MOM_interp_infra,  only : axistype, get_external_field_info, get_axis_data
 use MOM_time_manager,  only : time_type
-
-use netcdf, only : NF90_OPEN, NF90_NOWRITE, NF90_GET_ATT, NF90_GET_VAR
-use netcdf, only : NF90_INQ_VARID, NF90_INQUIRE_VARIABLE, NF90_INQUIRE_DIMENSION
+use MOM_io,            only : axis_info, get_axis_info, get_var_axes_info, MOM_read_data
+use MOM_io,            only : read_attribute, read_variable
 
 implicit none ; private
 
@@ -259,16 +259,20 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
 
   character(len=*),      intent(in)    :: filename   !< Path to file containing tracer to be
                                                      !! interpolated.
-  character(len=*),      intent(in)    :: varnam     !< Name of tracer in filee.
+  character(len=*),      intent(in)    :: varnam     !< Name of tracer in file.
   real,                  intent(in)    :: conversion !< Conversion factor for tracer.
   integer,               intent(in)    :: recnum     !< Record number of tracer to be read.
   type(ocean_grid_type), intent(inout) :: G          !< Grid object
-  real, allocatable, dimension(:,:,:)  :: tr_z       !< pointer to allocatable tracer array on local
+  real, allocatable, dimension(:,:,:), intent(out) :: tr_z
+                                                     !< pointer to allocatable tracer array on local
                                                      !! model grid and input-file vertical levels.
-  real, allocatable, dimension(:,:,:)  :: mask_z     !< pointer to allocatable tracer mask array on
+  real, allocatable, dimension(:,:,:), intent(out) :: mask_z
+                                                     !< pointer to allocatable tracer mask array on
                                                      !! local model grid and input-file vertical levels.
-  real, allocatable,     dimension(:)  :: z_in       !< Cell grid values for input data.
-  real, allocatable,     dimension(:)  :: z_edges_in !< Cell grid edge values for input data.
+  real, allocatable, dimension(:), intent(out) :: z_in
+                                                     !< Cell grid values for input data.
+  real, allocatable, dimension(:), intent(out) :: z_edges_in
+                                                     !< Cell grid edge values for input data.
   real,                  intent(out)   :: missing_value !< The missing value in the returned array.
   logical,               intent(in)    :: reentrant_x !< If true, this grid is reentrant in the x-direction
   logical,               intent(in)    :: tripolar_n !< If true, this is a northern tripolar grid
@@ -299,10 +303,12 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
   real :: max_lat, min_lat, pole, max_depth, npole
   real :: roundoff  ! The magnitude of roundoff, usually ~2e-16.
   real :: add_offset, scale_factor
+  logical :: found_attr
   logical :: add_np
   logical :: is_ongrid
   character(len=8)  :: laynum
   type(horiz_interp_type) :: Interp
+  type(axis_info), dimension(4) :: axes_info ! Axis information used for regridding
   integer :: is, ie, js, je     ! compute domain indices
   integer :: isc, iec, jsc, jec ! global compute domain indices
   integer :: isg, ieg, jsg, jeg ! global extent
@@ -331,7 +337,6 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
 
   if (allocated(tr_z)) deallocate(tr_z)
   if (allocated(mask_z)) deallocate(mask_z)
-  if (allocated(z_edges_in)) deallocate(z_edges_in)
 
   PI_180 = atan(1.0)/45.
 
@@ -340,70 +345,23 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
 
   call cpu_clock_begin(id_clock_read)
 
-  rcode = NF90_OPEN(filename, NF90_NOWRITE, ncid)
-  if (rcode /= 0) call MOM_error(FATAL,"error opening file "//trim(filename)//&
-                           " in hinterp_extrap")
-  rcode = NF90_INQ_VARID(ncid, varnam, varid)
-  if (rcode /= 0) call MOM_error(FATAL,"error finding variable "//trim(varnam)//&
-                                 " in file "//trim(filename)//" in hinterp_extrap")
+  call get_var_axes_info(trim(filename), trim(varnam), axes_info)
 
-  rcode = NF90_INQUIRE_VARIABLE(ncid, varid, ndims=ndims, dimids=dims)
-  if (rcode /= 0) call MOM_error(FATAL,'error inquiring dimensions hinterp_extrap')
-  if (ndims < 3) call MOM_error(FATAL,"Variable "//trim(varnam)//" in file "// &
-              trim(filename)//" has too few dimensions.")
-
-  rcode = NF90_INQUIRE_DIMENSION(ncid, dims(1), dim_name(1), len=id)
-  if (rcode /= 0) call MOM_error(FATAL,"error reading dimension 1 data for "// &
-                trim(varnam)//" in file "// trim(filename)//" in hinterp_extrap")
-  rcode = NF90_INQ_VARID(ncid, dim_name(1), dim_id(1))
-  if (rcode /= 0) call MOM_error(FATAL,"error finding variable "//trim(dim_name(1))//&
-                                 " in file "//trim(filename)//" in hinterp_extrap")
-  rcode = NF90_INQUIRE_DIMENSION(ncid, dims(2), dim_name(2), len=jd)
-  if (rcode /= 0) call MOM_error(FATAL,"error reading dimension 2 data for "// &
-                trim(varnam)//" in file "// trim(filename)//" in hinterp_extrap")
-  rcode = NF90_INQ_VARID(ncid, dim_name(2), dim_id(2))
-  if (rcode /= 0) call MOM_error(FATAL,"error finding variable "//trim(dim_name(2))//&
-                                 " in file "//trim(filename)//" in hinterp_extrap")
-  rcode = NF90_INQUIRE_DIMENSION(ncid, dims(3), dim_name(3), len=kd)
-  if (rcode /= 0) call MOM_error(FATAL,"error reading dimension 3 data for "// &
-                trim(varnam)//" in file "// trim(filename)//" in hinterp_extrap")
-  rcode = NF90_INQ_VARID(ncid, dim_name(3), dim_id(3))
-  if (rcode /= 0) call MOM_error(FATAL,"error finding variable "//trim(dim_name(3))//&
-                                 " in file "//trim(filename)//" in hinterp_extrap")
-
-  missing_value=0.0
-  rcode = NF90_GET_ATT(ncid, varid, "_FillValue", missing_value)
-  if (rcode /= 0) call MOM_error(FATAL,"error finding missing value for "//&
-       trim(varnam)//" in file "// trim(filename)//" in hinterp_extrap")
-
-  rcode = NF90_GET_ATT(ncid, varid, "add_offset", add_offset)
-  if (rcode /= 0) add_offset = 0.0
-
-  rcode = NF90_GET_ATT(ncid, varid, "scale_factor", scale_factor)
-  if (rcode /= 0) scale_factor = 1.0
-
-  if (allocated(lon_in)) deallocate(lon_in)
-  if (allocated(lat_in)) deallocate(lat_in)
   if (allocated(z_in)) deallocate(z_in)
   if (allocated(z_edges_in)) deallocate(z_edges_in)
   if (allocated(tr_z)) deallocate(tr_z)
   if (allocated(mask_z)) deallocate(mask_z)
 
+  call get_axis_info(axes_info(1),ax_size=id)
+  call get_axis_info(axes_info(2),ax_size=jd)
+  call get_axis_info(axes_info(3),ax_size=kd)
+
   allocate(lon_in(id), lat_in(jd), z_in(kd), z_edges_in(kd+1))
   allocate(tr_z(isd:ied,jsd:jed,kd), mask_z(isd:ied,jsd:jed,kd))
 
-  start = 1 ; count = 1 ; count(1) = id
-  rcode = NF90_GET_VAR(ncid, dim_id(1), lon_in, start, count)
-  if (rcode /= 0) call MOM_error(FATAL,"error reading dimension 1 values for var_name "// &
-                trim(varnam)//",dim_name "//trim(dim_name(1))//" in file "// trim(filename)//" in hinterp_extrap")
-  start = 1 ; count = 1 ; count(1) = jd
-  rcode = NF90_GET_VAR(ncid, dim_id(2), lat_in, start, count)
-  if (rcode /= 0) call MOM_error(FATAL,"error reading dimension 2 values for var_name "// &
-                trim(varnam)//",dim_name "//trim(dim_name(2))//" in file "// trim(filename)//" in  hinterp_extrap")
-  start = 1 ; count = 1 ; count(1) = kd
-  rcode = NF90_GET_VAR(ncid, dim_id(3), z_in, start, count)
-  if (rcode /= 0) call MOM_error(FATAL,"error reading dimension 3 values for var_name "// &
-                trim(varnam//",dim_name "//trim(dim_name(3)))//" in file "// trim(filename)//" in  hinterp_extrap")
+  call get_axis_info(axes_info(1),ax_data=lon_in)
+  call get_axis_info(axes_info(2),ax_data=lat_in)
+  call get_axis_info(axes_info(3),ax_data=z_in)
 
   call cpu_clock_end(id_clock_read)
 
@@ -427,6 +385,21 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
   endif
   ! construct level cell boundaries as the mid-point between adjacent centers
 
+  ! Set the I/O attributes
+  call read_attribute(trim(filename), "_FillValue", missing_value, &
+                      varname=trim(varnam), found=found_attr)
+  if (.not. found_attr) call MOM_error(FATAL, &
+    "error finding missing value for " // trim(varnam) // &
+    " in file " // trim(filename) // " in hinterp_extrap")
+
+  call read_attribute(trim(filename), "scale_factor", scale_factor, &
+                      varname=trim(varnam), found=found_attr)
+  if (.not. found_attr) scale_factor = 1.
+
+  call read_attribute(trim(filename), "add_offset", add_offset, &
+                      varname=trim(varnam), found=found_attr)
+  if (.not. found_attr) add_offset = 0.
+
   z_edges_in(1) = 0.0
   do K=2,kd
     z_edges_in(K) = 0.5*(z_in(k-1)+z_in(k))
@@ -434,8 +407,8 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
   z_edges_in(kd+1) = 2.0*z_in(kd) - z_in(kd-1)
 
   if (is_ongrid) then
-    allocate(tr_in(is:ie,js:je)) ; tr_in(:,:)=0.0
-    allocate(mask_in(is:ie,js:je)) ; mask_in(:,:)=0.0
+    allocate(tr_in(is:ie,js:je), source=0.0)
+    allocate(mask_in(is:ie,js:je), source=0.0)
   else
     call horiz_interp_init()
     lon_in = lon_in*PI_180
@@ -444,15 +417,15 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
     call meshgrid(lon_in, lat_in, x_in, y_in)
     lon_out(:,:) = G%geoLonT(:,:)*PI_180
     lat_out(:,:) = G%geoLatT(:,:)*PI_180
-    allocate(tr_in(id,jd)) ; tr_in(:,:) = 0.0
-    allocate(tr_inp(id,jdp)) ; tr_inp(:,:) = 0.0
-    allocate(mask_in(id,jdp)) ; mask_in(:,:) = 0.0
+    allocate(tr_in(id,jd), source=0.0)
+    allocate(tr_inp(id,jdp), source=0.0)
+    allocate(mask_in(id,jdp), source=0.0)
   endif
 
-  max_depth = maxval(G%bathyT)
+  max_depth = maxval(G%bathyT(:,:)) + G%Z_ref
   call max_across_PEs(max_depth)
 
-  if (z_edges_in(kd+1)<max_depth) z_edges_in(kd+1)=max_depth
+  if (z_edges_in(kd+1) < max_depth) z_edges_in(kd+1) = max_depth
   roundoff = 3.0*EPSILON(missing_value)
 
   ! loop through each data level and interpolate to model grid.
@@ -463,12 +436,8 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
     mask_in = 0.0
     if (is_ongrid) then
       start(1) = is+G%HI%idg_offset ; start(2) = js+G%HI%jdg_offset ; start(3) = k
-      count(1) = ie-is+1 ; count(2) = je-js+1; count(3) = 1
-      rcode = NF90_GET_VAR(ncid,varid, tr_in, start, count)
-      if (rcode /= 0) call MOM_error(FATAL,"hinterp_and_extract_from_Fie: "//&
-           "error reading level "//trim(laynum)//" of variable "//&
-           trim(varnam)//" in file "// trim(filename))
-
+      count(1) = ie-is+1 ; count(2) = je-js+1; count(3) = 1; start(4) = 1; count(4) = 1
+      call MOM_read_data(trim(filename), trim(varnam), tr_in, G%Domain, timelevel=1)
       do j=js,je
         do i=is,ie
           if (abs(tr_in(i,j)-missing_value) > abs(roundoff*missing_value)) then
@@ -479,15 +448,11 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
           endif
         enddo
       enddo
-
     else
+      start(:) = 1 ; start(3) = k
+      count(:) = 1 ; count(1) = id ; count(2) = jd
+      call read_variable(trim(filename), trim(varnam), tr_in, start=start, nread=count)
       if (is_root_pe()) then
-        start = 1 ; start(3) = k ; count(:) = 1 ; count(1) = id ; count(2) = jd
-        rcode = NF90_GET_VAR(ncid,varid, tr_in, start, count)
-        if (rcode /= 0) call MOM_error(FATAL,"hinterp_and_extract_from_Fie: "//&
-             "error reading level "//trim(laynum)//" of variable "//&
-             trim(varnam)//" in file "// trim(filename))
-
         if (add_np) then
           pole = 0.0 ; npole = 0.0
           do i=1,id
@@ -561,7 +526,8 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
           nPoints = nPoints + 1
           varAvg = varAvg + tr_out(i,j)
         endif
-        if (G%mask2dT(i,j) == 1.0 .and. z_edges_in(k) <= G%bathyT(i,j) .and. mask_out(i,j) < 1.0) &
+        if ((G%mask2dT(i,j) == 1.0) .and. (z_edges_in(k) <= G%bathyT(i,j) + G%Z_ref) .and. &
+            (mask_out(i,j) < 1.0)) &
           fill(i,j)=1.0
       enddo
     enddo
@@ -607,6 +573,8 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam,  conversion, 
 
   enddo ! kd
 
+  deallocate(lon_in, lat_in)
+
 end subroutine horiz_interp_and_extrap_tracer_record
 
 !> Extrapolate and interpolate using a FMS time interpolation handle
@@ -618,12 +586,16 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(fms_id,  Time, conversion, G, t
   type(time_type),       intent(in)    :: Time       !< A FMS time type
   real,                  intent(in)    :: conversion !< Conversion factor for tracer.
   type(ocean_grid_type), intent(inout) :: G          !< Grid object
-  real, allocatable, dimension(:,:,:)  :: tr_z       !< pointer to allocatable tracer array on local
+  real, allocatable, dimension(:,:,:), intent(out) :: tr_z
+                                                     !< pointer to allocatable tracer array on local
                                                      !! model grid and native vertical levels.
-  real, allocatable, dimension(:,:,:)  :: mask_z     !< pointer to allocatable tracer mask array on
+  real, allocatable, dimension(:,:,:), intent(out) :: mask_z
+                                                     !< pointer to allocatable tracer mask array on
                                                      !! local model grid and native vertical levels.
-  real, allocatable,     dimension(:)  :: z_in       !< Cell grid values for input data.
-  real, allocatable,     dimension(:)  :: z_edges_in !< Cell grid edge values for input data. (Intent out)
+  real, allocatable, dimension(:), intent(out) :: z_in
+                                                     !< Cell grid values for input data.
+  real, allocatable, dimension(:), intent(out) :: z_edges_in
+                                                     !< Cell grid edge values for input data.
   real,                  intent(out)   :: missing_value !< The missing value in the returned array.
   logical,               intent(in)    :: reentrant_x !< If true, this grid is reentrant in the x-direction
   logical,               intent(in)    :: tripolar_n !< If true, this is a northern tripolar grid
@@ -649,8 +621,8 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(fms_id,  Time, conversion, G, t
   integer :: i,j,k
   integer, dimension(4) :: start, count, dims, dim_id
   real, dimension(:,:), allocatable :: x_in, y_in
-  real, dimension(:), allocatable  :: lon_in, lat_in ! The longitude and latitude in the input file
-  real, dimension(:), allocatable  :: lat_inp ! The input file latitudes expanded to the pole
+  real, dimension(:), allocatable :: lon_in, lat_in ! The longitude and latitude in the input file
+  real, dimension(:), allocatable :: lat_inp ! The input file latitudes expanded to the pole
   real :: max_lat, min_lat, pole, max_depth, npole
   real :: roundoff  ! The magnitude of roundoff, usually ~2e-16.
   logical :: add_np
@@ -677,6 +649,7 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(fms_id,  Time, conversion, G, t
   real, dimension(SZI_(G),SZJ_(G)) :: good2   ! 1 where the data is valid after Ice-9
   real, dimension(SZI_(G),SZJ_(G)) :: fill2   ! 1 for points that still need to be filled after Ice-9
   integer :: turns
+  integer :: verbosity
 
   turns = G%HI%turns
 
@@ -696,12 +669,8 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(fms_id,  Time, conversion, G, t
   call cpu_clock_begin(id_clock_read)
 
   call get_external_field_info(fms_id, size=fld_sz, axes=axes_data, missing=missing_value)
-  if (allocated(lon_in)) deallocate(lon_in)
-  if (allocated(lat_in)) deallocate(lat_in)
-  if (allocated(z_in)) deallocate(z_in)
-  if (allocated(z_edges_in)) deallocate(z_edges_in)
-  if (allocated(tr_z)) deallocate(tr_z)
-  if (allocated(mask_z)) deallocate(mask_z)
+
+  verbosity = MOM_get_verbosity()
 
   id = fld_sz(1) ; jd  = fld_sz(2) ; kd = fld_sz(3)
 
@@ -746,10 +715,10 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(fms_id,  Time, conversion, G, t
     call meshgrid(lon_in, lat_in, x_in, y_in)
     lon_out(:,:) = G%geoLonT(:,:)*PI_180
     lat_out(:,:) = G%geoLatT(:,:)*PI_180
-    allocate(data_in(id,jd,kd)) ; data_in(:,:,:)=0.0
-    allocate(tr_in(id,jd)) ; tr_in(:,:)=0.0
-    allocate(tr_inp(id,jdp)) ; tr_inp(:,:)=0.0
-    allocate(mask_in(id,jdp)) ; mask_in(:,:)=0.0
+    allocate(data_in(id,jd,kd), source=0.0)
+    allocate(tr_in(id,jd), source=0.0)
+    allocate(tr_inp(id,jdp), source=0.0)
+    allocate(mask_in(id,jdp), source=0.0)
   else
     allocate(data_in(isd:ied,jsd:jed,kd))
   endif
@@ -761,7 +730,7 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(fms_id,  Time, conversion, G, t
   z_edges_in(kd+1) = 2.0*z_in(kd) - z_in(kd-1)
 
 
-  max_depth = maxval(G%bathyT)
+  max_depth = maxval(G%bathyT) + G%Z_ref
   call max_across_PEs(max_depth)
 
   if (z_edges_in(kd+1)<max_depth) z_edges_in(kd+1)=max_depth
@@ -771,7 +740,7 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(fms_id,  Time, conversion, G, t
 
   if (.not.spongeDataOngrid) then
     if (is_root_pe()) &
-      call time_interp_external(fms_id, Time, data_in, verbose=.true., turns=turns)
+      call time_interp_external(fms_id, Time, data_in, verbose=(verbosity>5), turns=turns)
     ! Loop through each data level and interpolate to model grid.
     ! After interpolating, fill in points which will be needed to define the layers.
     do k=1,kd
@@ -841,7 +810,7 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(fms_id,  Time, conversion, G, t
           nPoints = nPoints + 1
           varAvg = varAvg + tr_out(i,j)
         endif
-        if ((G%mask2dT(i,j) == 1.0) .and. (z_edges_in(k) <= G%bathyT(i,j)) .and. &
+        if ((G%mask2dT(i,j) == 1.0) .and. (z_edges_in(k) <= G%bathyT(i,j) + G%Z_ref) .and. &
             (mask_out(i,j) < 1.0)) &
           fill(i,j) = 1.0
       enddo ;  enddo
@@ -887,7 +856,7 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(fms_id,  Time, conversion, G, t
 
     enddo ! kd
   else
-      call time_interp_external(fms_id, Time, data_in, verbose=.true., turns=turns)
+      call time_interp_external(fms_id, Time, data_in, verbose=(verbosity>5), turns=turns)
       do k=1,kd
         do j=js,je
           do i=is,ie
@@ -898,7 +867,6 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(fms_id,  Time, conversion, G, t
         enddo
       enddo
   endif
-
 end subroutine horiz_interp_and_extrap_tracer_fms_id
 
 !> Create a 2d-mesh of grid coordinates from 1-d arrays.

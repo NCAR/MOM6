@@ -25,9 +25,10 @@ public calc_isoneutral_slopes, vert_fill_TS
 
 contains
 
-!> Calculate isopycnal slopes, and optionally return N2 used in calculation.
+!> Calculate isopycnal slopes, and optionally return other stratification dependent functions such as N^2
+!! and dz*S^2*g-prime used, or calculable from factors used, during the calculation.
 subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stanley, &
-                                  slope_x, slope_y, N2_u, N2_v, halo, OBC) !, eta_to_m)
+                                  slope_x, slope_y, N2_u, N2_v, dzu, dzv, dzSxN, dzSyN, halo, OBC) !, eta_to_m)
   type(ocean_grid_type),                       intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),                     intent(in)    :: GV   !< The ocean's vertical grid structure
   type(unit_scale_type),                       intent(in)    :: US   !< A dimensional unit scaling type
@@ -47,6 +48,16 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), &
                                      optional, intent(inout) :: N2_v !< Brunt-Vaisala frequency squared at
                                                                      !! interfaces between v-points [L2 Z-2 T-2 ~> s-2]
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1), &
+                                     optional, intent(inout) :: dzu  !< Z-thickness at u-points [Z ~> m]
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), &
+                                     optional, intent(inout) :: dzv  !< Z-thickness at v-points [Z ~> m]
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1), &
+                                     optional, intent(inout) :: dzSxN !< Z-thickness times zonal slope contribution to
+                                                                     !! Eady growth rate at u-points. [Z T-1 ~> m s-1]
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), &
+                                     optional, intent(inout) :: dzSyN !< Z-thickness times meridional slope contrib. to
+                                                                     !! Eady growth rate at v-points. [Z T-1 ~> m s-1]
   integer,                           optional, intent(in)    :: halo !< Halo width over which to compute
   type(ocean_OBC_type),              optional, pointer       :: OBC  !< Open boundaries control structure.
 
@@ -96,22 +107,22 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
   real :: wtA, wtB, wtL, wtR  ! Unscaled weights, with various units.
   real :: drdx, drdy    ! Zonal and meridional density gradients [R L-1 ~> kg m-4].
   real :: drdz          ! Vertical density gradient [R Z-1 ~> kg m-4].
-  real :: Slope         ! The slope of density surfaces, calculated in a way
-                        ! that is always between -1 and 1.
+  real :: slope         ! The slope of density surfaces, calculated in a way
+                        ! that is always between -1 and 1. [Z L-1 ~> nondim]
   real :: mag_grad2     ! The squared magnitude of the 3-d density gradient [R2 Z-2 ~> kg2 m-8].
   real :: slope2_Ratio  ! The ratio of the slope squared to slope_max squared.
   real :: h_neglect     ! A thickness that is so small it is usually lost
                         ! in roundoff and can be neglected [H ~> m or kg m-2].
   real :: h_neglect2    ! h_neglect^2 [H2 ~> m2 or kg2 m-4].
-  real :: dz_neglect    ! A change in interface heighs that is so small it is usually lost
+  real :: dz_neglect    ! A change in interface heights that is so small it is usually lost
                         ! in roundoff and can be neglected [Z ~> m].
   logical :: use_EOS    ! If true, density is calculated from T & S using an equation of state.
   real :: G_Rho0        ! The gravitational acceleration divided by density [L2 Z-1 T-2 R-1 ~> m4 s-2 kg-1]
   real :: Z_to_L        ! A conversion factor between from units for e to the
-                        ! units for lateral distances.
+                        ! units for lateral distances [L Z-1 ~> 1]
   real :: L_to_Z        ! A conversion factor between from units for lateral distances
-                        ! to the units for e.
-  real :: H_to_Z        ! A conversion factor from thickness units to the units of e.
+                        ! to the units for e [Z L-1 ~> 1]
+  real :: H_to_Z        ! A conversion factor from thickness units to the units of e [Z H-1 ~> 1 or m3 kg-1]
 
   logical :: present_N2_u, present_N2_v
   integer, dimension(2) :: EOSdom_u, EOSdom_v ! Domains for the equation of state calculations at u and v points
@@ -159,6 +170,30 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
       N2_v(i,J,nz+1) = 0.
     enddo ; enddo
   endif
+  if (present(dzu)) then
+    do j=js,je ; do I=is-1,ie
+      dzu(I,j,1) = 0.
+      dzu(I,j,nz+1) = 0.
+    enddo ; enddo
+  endif
+  if (present(dzv)) then
+    do J=js-1,je ; do i=is,ie
+      dzv(i,J,1) = 0.
+      dzv(i,J,nz+1) = 0.
+    enddo ; enddo
+  endif
+  if (present(dzSxN)) then
+    do j=js,je ; do I=is-1,ie
+      dzSxN(I,j,1) = 0.
+      dzSxN(I,j,nz+1) = 0.
+    enddo ; enddo
+  endif
+  if (present(dzSyN)) then
+    do J=js-1,je ; do i=is,ie
+      dzSyN(i,J,1) = 0.
+      dzSyN(i,J,nz+1) = 0.
+    enddo ; enddo
+  endif
 
   if (use_EOS) then
     if (present(halo)) then
@@ -191,13 +226,13 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
 
   !$OMP parallel do default(none) shared(nz,is,ie,js,je,IsdB,use_EOS,G,GV,US,pres,T,S,tv,h,e, &
   !$OMP                                  h_neglect,dz_neglect,Z_to_L,L_to_Z,H_to_Z,h_neglect2, &
-  !$OMP                                  present_N2_u,G_Rho0,N2_u,slope_x,EOSdom_u,local_open_u_BC, &
-  !$OMP                                  OBC,use_stanley) &
+  !$OMP                                  present_N2_u,G_Rho0,N2_u,slope_x,dzSxN,EOSdom_u,local_open_u_BC, &
+  !$OMP                                  dzu,OBC,use_stanley) &
   !$OMP                          private(drdiA,drdiB,drdkL,drdkR,pres_u,T_u,S_u,      &
   !$OMP                                  drho_dT_u,drho_dS_u,hg2A,hg2B,hg2L,hg2R,haA, &
   !$OMP                                  drho_dT_dT_h,scrap,pres_h,T_h,S_h,           &
   !$OMP                                  haB,haL,haR,dzaL,dzaR,wtA,wtB,wtL,wtR,drdz,  &
-  !$OMP                                  drdx,mag_grad2,Slope,slope2_Ratio,l_seg)
+  !$OMP                                  drdx,mag_grad2,slope,slope2_Ratio,l_seg)
   do j=js,je ; do K=nz,2,-1
     if (.not.(use_EOS)) then
       drdiA = 0.0 ; drdiB = 0.0
@@ -251,31 +286,34 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
                               (drho_dT_dT_h(i) * tv%varT(i,j,k)) )
       endif
 
-      if (use_EOS) then
-        hg2A = h(i,j,k-1)*h(i+1,j,k-1) + h_neglect2
-        hg2B = h(i,j,k)*h(i+1,j,k) + h_neglect2
-        hg2L = h(i,j,k-1)*h(i,j,k) + h_neglect2
-        hg2R = h(i+1,j,k-1)*h(i+1,j,k) + h_neglect2
-        haA = 0.5*(h(i,j,k-1) + h(i+1,j,k-1))
-        haB = 0.5*(h(i,j,k) + h(i+1,j,k)) + h_neglect
-        haL = 0.5*(h(i,j,k-1) + h(i,j,k)) + h_neglect
-        haR = 0.5*(h(i+1,j,k-1) + h(i+1,j,k)) + h_neglect
-        if (GV%Boussinesq) then
-          dzaL = haL * H_to_Z ; dzaR = haR * H_to_Z
-        else
-          dzaL = 0.5*(e(i,j,K-1) - e(i,j,K+1)) + dz_neglect
-          dzaR = 0.5*(e(i+1,j,K-1) - e(i+1,j,K+1)) + dz_neglect
-        endif
-        ! Use the harmonic mean thicknesses to weight the horizontal gradients.
-        ! These unnormalized weights have been rearranged to minimize divisions.
-        wtA = hg2A*haB ; wtB = hg2B*haA
-        wtL = hg2L*(haR*dzaR) ; wtR = hg2R*(haL*dzaL)
+      hg2A = h(i,j,k-1)*h(i+1,j,k-1) + h_neglect2
+      hg2B = h(i,j,k)*h(i+1,j,k) + h_neglect2
+      hg2L = h(i,j,k-1)*h(i,j,k) + h_neglect2
+      hg2R = h(i+1,j,k-1)*h(i+1,j,k) + h_neglect2
+      haA = 0.5*(h(i,j,k-1) + h(i+1,j,k-1))
+      haB = 0.5*(h(i,j,k) + h(i+1,j,k)) + h_neglect
+      haL = 0.5*(h(i,j,k-1) + h(i,j,k)) + h_neglect
+      haR = 0.5*(h(i+1,j,k-1) + h(i+1,j,k)) + h_neglect
+      if (GV%Boussinesq) then
+        dzaL = haL * H_to_Z ; dzaR = haR * H_to_Z
+      else
+        dzaL = 0.5*(e(i,j,K-1) - e(i,j,K+1)) + dz_neglect
+        dzaR = 0.5*(e(i+1,j,K-1) - e(i+1,j,K+1)) + dz_neglect
+      endif
+      if (present(dzu)) dzu(I,j,K) = 0.5*( dzaL + dzaR )
+      ! Use the harmonic mean thicknesses to weight the horizontal gradients.
+      ! These unnormalized weights have been rearranged to minimize divisions.
+      wtA = hg2A*haB ; wtB = hg2B*haA
+      wtL = hg2L*(haR*dzaR) ; wtR = hg2R*(haL*dzaL)
 
-        drdz = (wtL * drdkL + wtR * drdkR) / (dzaL*wtL + dzaR*wtR)
-        ! The expression for drdz above is mathematically equivalent to:
-        !   drdz = ((hg2L/haL) * drdkL/dzaL + (hg2R/haR) * drdkR/dzaR) / &
-        !          ((hg2L/haL) + (hg2R/haR))
-        ! This is the gradient of density along geopotentials.
+      drdz = (wtL * drdkL + wtR * drdkR) / (dzaL*wtL + dzaR*wtR)
+      ! The expression for drdz above is mathematically equivalent to:
+      !   drdz = ((hg2L/haL) * drdkL/dzaL + (hg2R/haR) * drdkR/dzaR) / &
+      !          ((hg2L/haL) + (hg2R/haR))
+      ! This is the gradient of density along geopotentials.
+      if (present_N2_u) N2_u(I,j,K) = G_Rho0 * drdz * G%mask2dCu(I,j) ! Square of buoyancy freq. [L2 Z-2 T-2 ~> s-2]
+
+      if (use_EOS) then
         drdx = ((wtA * drdiA + wtB * drdiB) / (wtA + wtB) - &
                 drdz * (e(i,j,K)-e(i+1,j,K))) * G%IdxCu(I,j)
 
@@ -283,21 +321,18 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
         ! to be between -1 and 1.
         mag_grad2 = (Z_to_L*drdx)**2 + drdz**2
         if (mag_grad2 > 0.0) then
-          slope_x(I,j,K) = drdx / sqrt(mag_grad2)
+          slope = drdx / sqrt(mag_grad2)
         else ! Just in case mag_grad2 = 0 ever.
-          slope_x(I,j,K) = 0.0
+          slope = 0.0
         endif
-
-        if (present_N2_u) N2_u(I,j,k) = G_Rho0 * drdz * G%mask2dCu(I,j) ! Square of buoyancy freq. [L2 Z-2 T-2 ~> s-2]
-
       else ! With .not.use_EOS, the layers are constant density.
-        slope_x(I,j,K) = (e(i,j,K)-e(i+1,j,K)) * G%IdxCu(I,j)
+        slope = (e(i,j,K)-e(i+1,j,K)) * G%IdxCu(I,j)
       endif
       if (local_open_u_BC) then
         l_seg = OBC%segnum_u(I,j)
         if (l_seg /= OBC_NONE) then
           if (OBC%segment(l_seg)%open) then
-            slope_x(I,j,K) = 0.
+            slope = 0.
             ! This and/or the masking code below is to make slopes match inside
             ! land mask. Might not be necessary except for DEBUG output.
 !           if (OBC%segment(OBC%segnum_u(I,j))%direction == OBC_DIRECTION_E) then
@@ -307,8 +342,12 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
 !           endif
           endif
         endif
-        slope_x(I,j,K) = slope_x(I,j,k) * max(g%mask2dT(i,j),g%mask2dT(i+1,j))
+        slope = slope * max(g%mask2dT(i,j),g%mask2dT(i+1,j))
       endif
+      slope_x(I,j,K) = slope
+      if (present(dzSxN)) dzSxN(I,j,K) = sqrt( G_Rho0 * max(0., wtL * ( dzaL * drdkL ) &
+                                                              + wtR * ( dzaR * drdkR )) / (wtL + wtR) ) & ! dz * N
+                                         * abs(slope) * G%mask2dCu(I,j) ! x-direction contribution to S^2
 
     enddo ! I
   enddo ; enddo ! end of j-loop
@@ -318,14 +357,14 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
   ! Calculate the meridional isopycnal slope.
   !$OMP parallel do default(none) shared(nz,is,ie,js,je,IsdB,use_EOS,G,GV,US,pres,T,S,tv, &
   !$OMP                                  h,h_neglect,e,dz_neglect,Z_to_L,L_to_Z,H_to_Z, &
-  !$OMP                                  h_neglect2,present_N2_v,G_Rho0,N2_v,slope_y,EOSdom_v, &
-  !$OMP                                  local_open_v_BC,OBC,use_stanley) &
+  !$OMP                                  h_neglect2,present_N2_v,G_Rho0,N2_v,slope_y,dzSyN,EOSdom_v, &
+  !$OMP                                  dzv,local_open_v_BC,OBC,use_stanley) &
   !$OMP                          private(drdjA,drdjB,drdkL,drdkR,pres_v,T_v,S_v,      &
   !$OMP                                  drho_dT_v,drho_dS_v,hg2A,hg2B,hg2L,hg2R,haA, &
   !$OMP                                  drho_dT_dT_h,scrap,pres_h,T_h,S_h,           &
   !$OMP                                  drho_dT_dT_hr,pres_hr,T_hr,S_hr,             &
   !$OMP                                  haB,haL,haR,dzaL,dzaR,wtA,wtB,wtL,wtR,drdz,  &
-  !$OMP                                  drdy,mag_grad2,Slope,slope2_Ratio,l_seg)
+  !$OMP                                  drdy,mag_grad2,slope,slope2_Ratio,l_seg)
   do j=js-1,je ; do K=nz,2,-1
     if (.not.(use_EOS)) then
       drdjA = 0.0 ; drdjB = 0.0
@@ -383,31 +422,34 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
                               (drho_dT_dT_h(i) * tv%varT(i,j,k)) )
       endif
 
-      if (use_EOS) then
-        hg2A = h(i,j,k-1)*h(i,j+1,k-1) + h_neglect2
-        hg2B = h(i,j,k)*h(i,j+1,k) + h_neglect2
-        hg2L = h(i,j,k-1)*h(i,j,k) + h_neglect2
-        hg2R = h(i,j+1,k-1)*h(i,j+1,k) + h_neglect2
-        haA = 0.5*(h(i,j,k-1) + h(i,j+1,k-1)) + h_neglect
-        haB = 0.5*(h(i,j,k) + h(i,j+1,k)) + h_neglect
-        haL = 0.5*(h(i,j,k-1) + h(i,j,k)) + h_neglect
-        haR = 0.5*(h(i,j+1,k-1) + h(i,j+1,k)) + h_neglect
-        if (GV%Boussinesq) then
-          dzaL = haL * H_to_Z ; dzaR = haR * H_to_Z
-        else
-          dzaL = 0.5*(e(i,j,K-1) - e(i,j,K+1)) + dz_neglect
-          dzaR = 0.5*(e(i,j+1,K-1) - e(i,j+1,K+1)) + dz_neglect
-        endif
-        ! Use the harmonic mean thicknesses to weight the horizontal gradients.
-        ! These unnormalized weights have been rearranged to minimize divisions.
-        wtA = hg2A*haB ; wtB = hg2B*haA
-        wtL = hg2L*(haR*dzaR) ; wtR = hg2R*(haL*dzaL)
+      hg2A = h(i,j,k-1)*h(i,j+1,k-1) + h_neglect2
+      hg2B = h(i,j,k)*h(i,j+1,k) + h_neglect2
+      hg2L = h(i,j,k-1)*h(i,j,k) + h_neglect2
+      hg2R = h(i,j+1,k-1)*h(i,j+1,k) + h_neglect2
+      haA = 0.5*(h(i,j,k-1) + h(i,j+1,k-1)) + h_neglect
+      haB = 0.5*(h(i,j,k) + h(i,j+1,k)) + h_neglect
+      haL = 0.5*(h(i,j,k-1) + h(i,j,k)) + h_neglect
+      haR = 0.5*(h(i,j+1,k-1) + h(i,j+1,k)) + h_neglect
+      if (GV%Boussinesq) then
+        dzaL = haL * H_to_Z ; dzaR = haR * H_to_Z
+      else
+        dzaL = 0.5*(e(i,j,K-1) - e(i,j,K+1)) + dz_neglect
+        dzaR = 0.5*(e(i,j+1,K-1) - e(i,j+1,K+1)) + dz_neglect
+      endif
+      if (present(dzv)) dzv(i,J,K) = 0.5*( dzaL + dzaR )
+      ! Use the harmonic mean thicknesses to weight the horizontal gradients.
+      ! These unnormalized weights have been rearranged to minimize divisions.
+      wtA = hg2A*haB ; wtB = hg2B*haA
+      wtL = hg2L*(haR*dzaR) ; wtR = hg2R*(haL*dzaL)
 
-        drdz = (wtL * drdkL + wtR * drdkR) / (dzaL*wtL + dzaR*wtR)
-        ! The expression for drdz above is mathematically equivalent to:
-        !   drdz = ((hg2L/haL) * drdkL/dzaL + (hg2R/haR) * drdkR/dzaR) / &
-        !          ((hg2L/haL) + (hg2R/haR))
-        ! This is the gradient of density along geopotentials.
+      drdz = (wtL * drdkL + wtR * drdkR) / (dzaL*wtL + dzaR*wtR)
+      ! The expression for drdz above is mathematically equivalent to:
+      !   drdz = ((hg2L/haL) * drdkL/dzaL + (hg2R/haR) * drdkR/dzaR) / &
+      !          ((hg2L/haL) + (hg2R/haR))
+      ! This is the gradient of density along geopotentials.
+      if (present_N2_v) N2_v(i,J,K) = G_Rho0 * drdz * G%mask2dCv(i,J) ! Square of buoyancy freq. [L2 Z-2 T-2 ~> s-2]
+
+      if (use_EOS) then
         drdy = ((wtA * drdjA + wtB * drdjB) / (wtA + wtB) - &
                 drdz * (e(i,j,K)-e(i,j+1,K))) * G%IdyCv(i,J)
 
@@ -415,21 +457,20 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
         ! to be between -1 and 1.
         mag_grad2 = (Z_to_L*drdy)**2 + drdz**2
         if (mag_grad2 > 0.0) then
-          slope_y(i,J,K) = drdy / sqrt(mag_grad2)
+          slope = drdy / sqrt(mag_grad2)
         else ! Just in case mag_grad2 = 0 ever.
-          slope_y(i,J,K) = 0.0
+          slope = 0.0
         endif
 
-        if (present_N2_v) N2_v(i,J,k) = G_Rho0 * drdz * G%mask2dCv(i,J) ! Square of buoyancy freq. [L2 Z-2 T-2 ~> s-2]
 
       else ! With .not.use_EOS, the layers are constant density.
-        slope_y(i,J,K) = (e(i,j,K)-e(i,j+1,K)) * G%IdyCv(i,J)
+        slope = (e(i,j,K)-e(i,j+1,K)) * G%IdyCv(i,J)
       endif
       if (local_open_v_BC) then
         l_seg = OBC%segnum_v(i,J)
         if (l_seg /= OBC_NONE) then
           if (OBC%segment(l_seg)%open) then
-            slope_y(i,J,K) = 0.
+            slope = 0.
             ! This and/or the masking code below is to make slopes match inside
             ! land mask. Might not be necessary except for DEBUG output.
 !           if (OBC%segment(OBC%segnum_v(i,J))%direction == OBC_DIRECTION_N) then
@@ -439,8 +480,12 @@ subroutine calc_isoneutral_slopes(G, GV, US, h, e, tv, dt_kappa_smooth, use_stan
 !           endif
           endif
         endif
-        slope_y(i,J,K) = slope_y(i,J,k) * max(g%mask2dT(i,j),g%mask2dT(i,j+1))
+        slope = slope * max(g%mask2dT(i,j),g%mask2dT(i,j+1))
       endif
+      slope_y(i,J,K) = slope
+      if (present(dzSyN)) dzSyN(i,J,K) = sqrt( G_Rho0 * max(0., wtL * ( dzaL * drdkL ) &
+                                                              + wtR * ( dzaR * drdkR )) / (wtL + wtR) ) & ! dz * N
+                                         * abs(slope) * G%mask2dCv(i,J) ! x-direction contribution to S^2
 
     enddo ! i
   enddo ; enddo ! end of j-loop
@@ -474,7 +519,7 @@ subroutine vert_fill_TS(h, T_in, S_in, kappa_dt, T_f, S_f, G, GV, halo_here, lar
   real :: kap_dt_x2                ! The 2*kappa_dt converted to H units [H2 ~> m2 or kg2 m-4].
   real :: h_neglect                ! A negligible thickness [H ~> m or kg m-2], to allow for zero thicknesses.
   real :: h0                       ! A negligible thickness to allow for zero thickness layers without
-                                   ! completely decouping groups of layers [H ~> m or kg m-2].
+                                   ! completely decoupling groups of layers [H ~> m or kg m-2].
                                    ! Often 0 < h_neglect << h0.
   real :: h_tr                     ! h_tr is h at tracer points with a tiny thickness
                                    ! added to ensure positive definiteness [H ~> m or kg m-2].

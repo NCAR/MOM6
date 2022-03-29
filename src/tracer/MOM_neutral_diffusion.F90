@@ -250,24 +250,24 @@ logical function neutral_diffusion_init(Time, G, GV, US, param_file, diag, EOS, 
 !  call closeParameterBlock(param_file)
   if (CS%continuous_reconstruction) then
     CS%nsurf = 2*GV%ke+2 ! Continuous reconstruction means that every interface has two connections
-    allocate(CS%dRdT(SZI_(G),SZJ_(G),SZK_(GV)+1)) ; CS%dRdT(:,:,:) = 0.
-    allocate(CS%dRdS(SZI_(G),SZJ_(G),SZK_(GV)+1)) ; CS%dRdS(:,:,:) = 0.
+    allocate(CS%dRdT(SZI_(G),SZJ_(G),SZK_(GV)+1), source=0.)
+    allocate(CS%dRdS(SZI_(G),SZJ_(G),SZK_(GV)+1), source=0.)
   else
     CS%nsurf = 4*GV%ke   ! Discontinuous means that every interface has four connections
-    allocate(CS%T_i(SZI_(G),SZJ_(G),SZK_(GV),2))    ; CS%T_i(:,:,:,:) = 0.
-    allocate(CS%S_i(SZI_(G),SZJ_(G),SZK_(GV),2))    ; CS%S_i(:,:,:,:) = 0.
-    allocate(CS%P_i(SZI_(G),SZJ_(G),SZK_(GV),2))    ; CS%P_i(:,:,:,:) = 0.
-    allocate(CS%dRdT_i(SZI_(G),SZJ_(G),SZK_(GV),2)) ; CS%dRdT_i(:,:,:,:) = 0.
-    allocate(CS%dRdS_i(SZI_(G),SZJ_(G),SZK_(GV),2)) ; CS%dRdS_i(:,:,:,:) = 0.
-    allocate(CS%ppoly_coeffs_T(SZI_(G),SZJ_(G),SZK_(GV),CS%deg+1)) ; CS%ppoly_coeffs_T(:,:,:,:) = 0.
-    allocate(CS%ppoly_coeffs_S(SZI_(G),SZJ_(G),SZK_(GV),CS%deg+1)) ; CS%ppoly_coeffs_S(:,:,:,:) = 0.
-    allocate(CS%ns(SZI_(G),SZJ_(G)))    ; CS%ns(:,:) = 0.
+    allocate(CS%T_i(SZI_(G),SZJ_(G),SZK_(GV),2), source=0.)
+    allocate(CS%S_i(SZI_(G),SZJ_(G),SZK_(GV),2), source=0.)
+    allocate(CS%P_i(SZI_(G),SZJ_(G),SZK_(GV),2), source=0.)
+    allocate(CS%dRdT_i(SZI_(G),SZJ_(G),SZK_(GV),2), source=0.)
+    allocate(CS%dRdS_i(SZI_(G),SZJ_(G),SZK_(GV),2), source=0.)
+    allocate(CS%ppoly_coeffs_T(SZI_(G),SZJ_(G),SZK_(GV),CS%deg+1), source=0.)
+    allocate(CS%ppoly_coeffs_S(SZI_(G),SZJ_(G),SZK_(GV),CS%deg+1), source=0.)
+    allocate(CS%ns(SZI_(G),SZJ_(G)), source=0)
   endif
   ! T-points
-  allocate(CS%Tint(SZI_(G),SZJ_(G),SZK_(GV)+1)) ; CS%Tint(:,:,:) = 0.
-  allocate(CS%Sint(SZI_(G),SZJ_(G),SZK_(GV)+1)) ; CS%Sint(:,:,:) = 0.
-  allocate(CS%Pint(SZI_(G),SZJ_(G),SZK_(GV)+1)) ; CS%Pint(:,:,:) = 0.
-  allocate(CS%stable_cell(SZI_(G),SZJ_(G),SZK_(GV))) ; CS%stable_cell(:,:,:) = .true.
+  allocate(CS%Tint(SZI_(G),SZJ_(G),SZK_(GV)+1), source=0.)
+  allocate(CS%Sint(SZI_(G),SZJ_(G),SZK_(GV)+1), source=0.)
+  allocate(CS%Pint(SZI_(G),SZJ_(G),SZK_(GV)+1), source=0.)
+  allocate(CS%stable_cell(SZI_(G),SZJ_(G),SZK_(GV)), source=.true.)
   ! U-points
   allocate(CS%uPoL(G%isd:G%ied,G%jsd:G%jed, CS%nsurf)); CS%uPoL(G%isc-1:G%iec,G%jsc:G%jec,:)   = 0.
   allocate(CS%uPoR(G%isd:G%ied,G%jsd:G%jed, CS%nsurf)); CS%uPoR(G%isc-1:G%iec,G%jsc:G%jec,:)   = 0.
@@ -305,14 +305,15 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, CS, p_surf)
   real, dimension(SZI_(G),SZJ_(G))  :: hbl      ! Boundary layer depth [H ~> m or kg m-2]
   integer :: iMethod
   real, dimension(SZI_(G)) :: ref_pres ! Reference pressure used to calculate alpha/beta [R L2 T-2 ~> Pa]
-  real, dimension(SZI_(G)) :: rho_tmp  ! Routine to calculate drho_dp, returns density which is not used
+  real, dimension(SZI_(G)) :: rho_tmp  ! Routine to calculate drho_dp, returns density which is not used [R ~> kg m-3]
   real :: h_neglect, h_neglect_edge    ! Negligible thicknesses [H ~> m or kg m-2]
   integer, dimension(SZI_(G), SZJ_(G)) :: k_top  ! Index of the first layer within the boundary
   real,    dimension(SZI_(G), SZJ_(G)) :: zeta_top ! Distance from the top of a layer to the intersection of the
                                                    ! top extent of the boundary layer (0 at top, 1 at bottom) [nondim]
   integer, dimension(SZI_(G), SZJ_(G)) :: k_bot    ! Index of the last layer within the boundary
-  real,    dimension(SZI_(G), SZJ_(G)) :: zeta_bot ! Distance of the lower layer to the boundary layer depth
-  real :: pa_to_H                      ! A conversion factor from pressure to H units [H T2 R-1 Z-2 ~> m Pa-1 or s2 m-2]
+  real,    dimension(SZI_(G), SZJ_(G)) :: zeta_bot ! Distance of the lower layer to the boundary layer depth [nondim]
+  real :: pa_to_H                      ! A conversion factor from rescaled pressure to thickness
+                                       ! (H) units [H T2 R-1 Z-2 ~> m Pa-1 or s2 m-1]
 
   pa_to_H = 1. / (GV%H_to_RZ * GV%g_Earth)
 
@@ -334,12 +335,16 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, CS, p_surf)
     ! TODO: add similar code for BOTTOM boundary layer
   endif
 
-  if (.not.CS%remap_answers_2018) then
-    h_neglect = GV%H_subroundoff ; h_neglect_edge = GV%H_subroundoff
-  elseif (GV%Boussinesq) then
-    h_neglect = GV%m_to_H*1.0e-30 ; h_neglect_edge = GV%m_to_H*1.0e-10
-  else
-    h_neglect = GV%kg_m2_to_H*1.0e-30 ; h_neglect_edge = GV%kg_m2_to_H*1.0e-10
+  h_neglect = GV%H_subroundoff ; h_neglect_edge = GV%H_subroundoff
+
+  if (.not. CS%continuous_reconstruction) then
+    if (CS%remap_answers_2018) then
+      if (GV%Boussinesq) then
+        h_neglect = GV%m_to_H*1.0e-30 ; h_neglect_edge = GV%m_to_H*1.0e-10
+      else
+        h_neglect = GV%kg_m2_to_H*1.0e-30 ; h_neglect_edge = GV%kg_m2_to_H*1.0e-10
+      endif
+    endif
   endif
 
   ! If doing along isopycnal diffusion (as opposed to neutral diffusion, set the reference pressure)
@@ -574,10 +579,12 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   real :: Idt  ! The inverse of the time step [T-1 ~> s-1]
   real :: h_neglect, h_neglect_edge
 
-  if (.not.CS%remap_answers_2018) then
-    h_neglect = GV%H_subroundoff ; h_neglect_edge = GV%H_subroundoff
-  else
-    h_neglect = GV%m_to_H*1.0e-30 ; h_neglect_edge = GV%m_to_H*1.0e-10
+  h_neglect = GV%H_subroundoff ; h_neglect_edge = GV%H_subroundoff
+
+  if (.not. CS%continuous_reconstruction) then
+    if (CS%remap_answers_2018) then
+      h_neglect = GV%m_to_H*1.0e-30 ; h_neglect_edge = GV%m_to_H*1.0e-10
+    endif
   endif
 
   nk = GV%ke
@@ -962,9 +969,9 @@ subroutine find_neutral_surface_positions_continuous(nk, Pl, Tl, Sl, dRdTl, dRdS
   real, dimension(nk+1),      intent(in)    :: dRdTr !< Left-column dRho/dT [R degC-1 ~> kg m-3 degC-1]
   real, dimension(nk+1),      intent(in)    :: dRdSr !< Left-column dRho/dS [R ppt-1 ~> kg m-3 ppt-1]
   real, dimension(2*nk+2),    intent(inout) :: PoL   !< Fractional position of neutral surface within
-                                                     !! layer KoL of left column
+                                                     !! layer KoL of left column [nondim]
   real, dimension(2*nk+2),    intent(inout) :: PoR   !< Fractional position of neutral surface within
-                                                     !! layer KoR of right column
+                                                     !! layer KoR of right column [nondim]
   integer, dimension(2*nk+2), intent(inout) :: KoL   !< Index of first left interface above neutral surface
   integer, dimension(2*nk+2), intent(inout) :: KoR   !< Index of first right interface above neutral surface
   real, dimension(2*nk+1),    intent(inout) :: hEff  !< Effective thickness between two neutral surfaces
@@ -979,7 +986,6 @@ subroutine find_neutral_surface_positions_continuous(nk, Pl, Tl, Sl, dRdTl, dRdS
   integer :: k_surface              ! Index of neutral surface
   integer :: kl                     ! Index of left interface
   integer :: kr                     ! Index of right interface
-  real    :: dRdT, dRdS             ! dRho/dT [kg m-3 degC-1] and dRho/dS [kg m-3 ppt-1] for the neutral surface
   logical :: searching_left_column  ! True if searching for the position of a right interface in the left column
   logical :: searching_right_column ! True if searching for the position of a left interface in the right column
   logical :: reached_bottom         ! True if one of the bottom-most interfaces has been used as the target
@@ -1239,7 +1245,7 @@ subroutine find_neutral_surface_positions_discontinuous(CS, nk, &
   integer, optional,              intent(in)    :: k_bot_L   !< k-index for the boundary layer (left) [nondim]
   integer, optional,              intent(in)    :: k_bot_R   !< k-index for the boundary layer (right) [nondim]
   logical, optional,              intent(in)    :: hard_fail_heff !< If true (default) bring down the model if the
-                                                             !! neutral surfaces ever cross [logical]
+                                                             !! neutral surfaces ever cross
   ! Local variables
   integer :: ns                     ! Number of neutral surfaces
   integer :: k_surface              ! Index of neutral surface
@@ -2383,7 +2389,6 @@ logical function ndiff_unit_tests_discontinuous(verbose)
   real, dimension(ns)         :: PoL, PoR
   real, dimension(ns-1)       :: hEff, Flx
   type(neutral_diffusion_CS)  :: CS        !< Neutral diffusion control structure
-  type(EOS_type),     pointer :: EOS       !< Structure for linear equation of state
   type(remapping_CS), pointer :: remap_CS  !< Remapping control structure (PLM)
   real, dimension(nk,2)       :: ppoly_T_l, ppoly_T_r ! Linear reconstruction for T
   real, dimension(nk,2)       :: ppoly_S_l, ppoly_S_r ! Linear reconstruction for S

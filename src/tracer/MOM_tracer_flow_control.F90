@@ -10,6 +10,7 @@ use MOM_forcing_type, only : forcing, optics_type
 use MOM_get_input, only : Get_MOM_input
 use MOM_grid, only : ocean_grid_type
 use MOM_hor_index, only : hor_index_type
+use MOM_CVMix_KPP, only : KPP_CS
 use MOM_open_boundary, only : ocean_OBC_type
 use MOM_restart, only : MOM_restart_CS
 use MOM_sponge, only : sponge_CS
@@ -65,6 +66,8 @@ use boundary_impulse_tracer, only : register_boundary_impulse_tracer, initialize
 use boundary_impulse_tracer, only : boundary_impulse_tracer_column_physics, boundary_impulse_tracer_surface_state
 use boundary_impulse_tracer, only : boundary_impulse_stock, boundary_impulse_tracer_end
 use boundary_impulse_tracer, only : boundary_impulse_tracer_CS
+use nw2_tracers, only : nw2_tracers_CS, register_nw2_tracers, nw2_tracer_column_physics
+use nw2_tracers, only : initialize_nw2_tracers, nw2_tracers_end
 
 implicit none ; private
 
@@ -88,6 +91,7 @@ type, public :: tracer_flow_control_CS ; private
   logical :: use_pseudo_salt_tracer = .false.      !< If true, use the psuedo_salt tracer  package
   logical :: use_boundary_impulse_tracer = .false. !< If true, use the boundary impulse tracer package
   logical :: use_dyed_obc_tracer = .false.         !< If true, use the dyed OBC tracer package
+  logical :: use_nw2_tracers = .false.             !< If true, use the NW2 tracer package
   !>@{ Pointers to the control strucures for the tracer packages
   type(USER_tracer_example_CS), pointer :: USER_tracer_example_CSp => NULL()
   type(DOME_tracer_CS), pointer :: DOME_tracer_CSp => NULL()
@@ -103,6 +107,7 @@ type, public :: tracer_flow_control_CS ; private
   type(pseudo_salt_tracer_CS), pointer :: pseudo_salt_tracer_CSp => NULL()
   type(boundary_impulse_tracer_CS), pointer :: boundary_impulse_tracer_CSp => NULL()
   type(dyed_obc_tracer_CS), pointer :: dyed_obc_tracer_CSp => NULL()
+  type(nw2_tracers_CS), pointer :: nw2_tracers_CSp => NULL()
   !>@}
 end type tracer_flow_control_CS
 
@@ -154,7 +159,7 @@ subroutine call_tracer_register(HI, GV, US, param_file, CS, tr_Reg, restart_CS)
   type(tracer_registry_type),   pointer    :: tr_Reg     !< A pointer that is set to point to the
                                                          !! control structure for the tracer
                                                          !! advection and diffusion module.
-  type(MOM_restart_CS),         pointer    :: restart_CS !< A pointer to the restart control
+  type(MOM_restart_CS), intent(inout) :: restart_CS !< A pointer to the restart control
                                                          !! structure.
 
 
@@ -214,6 +219,9 @@ subroutine call_tracer_register(HI, GV, US, param_file, CS, tr_Reg, restart_CS)
   call get_param(param_file, mdl, "USE_DYED_OBC_TRACER", CS%use_dyed_obc_tracer, &
                  "If true, use the dyed_obc_tracer tracer package.", &
                  default=.false.)
+  call get_param(param_file, mdl, "USE_NW2_TRACERS", CS%use_nw2_tracers, &
+                 "If true, use the NeverWorld2 tracers.", &
+                 default=.false.)
 
 !    Add other user-provided calls to register tracers for restarting here. Each
 !  tracer package registration call returns a logical false if it cannot be run
@@ -255,12 +263,13 @@ subroutine call_tracer_register(HI, GV, US, param_file, CS, tr_Reg, restart_CS)
     register_pseudo_salt_tracer(HI, GV, param_file,  CS%pseudo_salt_tracer_CSp, &
                                 tr_Reg, restart_CS)
   if (CS%use_boundary_impulse_tracer) CS%use_boundary_impulse_tracer = &
-    register_boundary_impulse_tracer(HI, GV, param_file,  CS%boundary_impulse_tracer_CSp, &
+    register_boundary_impulse_tracer(HI, GV, US, param_file,  CS%boundary_impulse_tracer_CSp, &
                                      tr_Reg, restart_CS)
   if (CS%use_dyed_obc_tracer) CS%use_dyed_obc_tracer = &
     register_dyed_obc_tracer(HI, GV, param_file, CS%dyed_obc_tracer_CSp, &
                              tr_Reg, restart_CS)
-
+  if (CS%use_nw2_tracers) CS%use_nw2_tracers = &
+    register_nw2_tracers(HI, GV, US, param_file,  CS%nw2_tracers_CSp, tr_Reg, restart_CS)
 
 end subroutine call_tracer_register
 
@@ -302,7 +311,7 @@ subroutine tracer_flow_control_init(restart, day, G, GV, US, h, param_file, diag
 
 !  Add other user-provided calls here.
   if (CS%use_USER_tracer_example) &
-    call USER_initialize_tracer(restart, day, G, GV, h, diag, OBC, CS%USER_tracer_example_CSp, &
+    call USER_initialize_tracer(restart, day, G, GV, US, h, diag, OBC, CS%USER_tracer_example_CSp, &
                                 sponge_CSp)
   if (CS%use_DOME_tracer) &
     call initialize_DOME_tracer(restart, day, G, GV, US, h, diag, OBC, CS%DOME_tracer_CSp, &
@@ -338,10 +347,12 @@ subroutine tracer_flow_control_init(restart, day, G, GV, US, h, param_file, diag
     call initialize_pseudo_salt_tracer(restart, day, G, GV, h, diag, OBC, CS%pseudo_salt_tracer_CSp, &
                                 sponge_CSp, tv)
   if (CS%use_boundary_impulse_tracer) &
-    call initialize_boundary_impulse_tracer(restart, day, G, GV, h, diag, OBC, CS%boundary_impulse_tracer_CSp, &
+    call initialize_boundary_impulse_tracer(restart, day, G, GV, US, h, diag, OBC, CS%boundary_impulse_tracer_CSp, &
                                 sponge_CSp, tv)
   if (CS%use_dyed_obc_tracer) &
     call initialize_dyed_obc_tracer(restart, day, G, GV, h, diag, OBC, CS%dyed_obc_tracer_CSp)
+  if (CS%use_nw2_tracers) &
+    call initialize_nw2_tracers(restart, day, G, GV, US, h, tv, diag, CS%nw2_tracers_CSp)
 
 end subroutine tracer_flow_control_init
 
@@ -392,7 +403,7 @@ end subroutine call_tracer_set_forcing
 
 !> This subroutine calls all registered tracer column physics subroutines.
 subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, US, tv, optics, CS, &
-                                  debug, evap_CFL_limit, minimum_forcing_depth)
+                                  debug, KPP_CSp, nonLocalTrans, evap_CFL_limit, minimum_forcing_depth)
   type(ocean_grid_type),                 intent(in) :: G      !< The ocean's grid structure.
   type(verticalGrid_type),               intent(in) :: GV     !< The ocean's vertical grid structure.
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h_old !< Layer thickness before entrainment
@@ -420,6 +431,8 @@ subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, 
                                                               !! a previous call to
                                                               !! call_tracer_register.
   logical,                               intent(in) :: debug  !< If true calculate checksums
+  type(KPP_CS),                optional, pointer    :: KPP_CSp  !< KPP control structure
+  real,                        optional, intent(in) :: nonLocalTrans(:,:,:) !< Non-local transport [nondim]
   real,                        optional, intent(in) :: evap_CFL_limit !< Limit on the fraction of
                                                               !! the water that can be fluxed out
                                                               !! of the top layer in a timestep [nondim]
@@ -479,20 +492,25 @@ subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, 
     if (CS%use_CFC_cap) &
       call CFC_cap_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
                                      G, GV, US, CS%CFC_cap_CSp, &
+                                     KPP_CSp=KPP_CSp, &
+                                     nonLocalTrans=nonLocalTrans, &
                                      evap_CFL_limit=evap_CFL_limit, &
                                      minimum_forcing_depth=minimum_forcing_depth)
     if (CS%use_MOM_generic_tracer) then
       if (US%QRZ_T_to_W_m2 /= 1.0) call MOM_error(FATAL, "MOM_generic_tracer_column_physics "//&
             "has not been written to permit dimensionsal rescaling.  Set all 4 of the "//&
             "[QRZT]_RESCALE_POWER parameters to 0.")
-      call MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, Hml, US%T_to_s*dt, &
-                                             G, GV, CS%MOM_generic_tracer_CSp, tv, optics, &
+      call MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, Hml, dt, &
+                                             G, GV, US, CS%MOM_generic_tracer_CSp, tv, optics, &
                                              evap_CFL_limit=evap_CFL_limit, &
                                              minimum_forcing_depth=minimum_forcing_depth)
     endif
     if (CS%use_pseudo_salt_tracer) &
       call pseudo_salt_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%pseudo_salt_tracer_CSp, tv, debug, &
+                                     G, GV, US, CS%pseudo_salt_tracer_CSp, tv, &
+                                     debug, &
+                                     KPP_CSp=KPP_CSp, &
+                                     nonLocalTrans=nonLocalTrans, &
                                      evap_CFL_limit=evap_CFL_limit, &
                                      minimum_forcing_depth=minimum_forcing_depth)
     if (CS%use_boundary_impulse_tracer) &
@@ -505,8 +523,11 @@ subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, 
                                       G, GV, US, CS%dyed_obc_tracer_CSp, &
                                       evap_CFL_limit=evap_CFL_limit, &
                                       minimum_forcing_depth=minimum_forcing_depth)
-
-
+    if (CS%use_nw2_tracers) &
+      call nw2_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
+                                     G, GV, US, tv, CS%nw2_tracers_CSp, &
+                                     evap_CFL_limit=evap_CFL_limit, &
+                                     minimum_forcing_depth=minimum_forcing_depth)
   else ! Apply tracer surface fluxes using ea on the first layer
     if (CS%use_USER_tracer_example) &
       call tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
@@ -537,32 +558,37 @@ subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, 
                                      G, GV, US, CS%OCMIP2_CFC_CSp)
     if (CS%use_CFC_cap) &
       call CFC_cap_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%CFC_cap_CSp)
+                                     G, GV, US, CS%CFC_cap_CSp, &
+                                     KPP_CSp=KPP_CSp, &
+                                     nonLocalTrans=nonLocalTrans)
     if (CS%use_MOM_generic_tracer) then
       if (US%QRZ_T_to_W_m2 /= 1.0) call MOM_error(FATAL, "MOM_generic_tracer_column_physics "//&
             "has not been written to permit dimensionsal rescaling.  Set all 4 of the "//&
             "[QRZT]_RESCALE_POWER parameters to 0.")
-      call MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, Hml, US%T_to_s*dt, &
-                                     G, GV, CS%MOM_generic_tracer_CSp, tv, optics)
+      call MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, Hml, dt, &
+                                     G, GV, US, CS%MOM_generic_tracer_CSp, tv, optics)
     endif
     if (CS%use_pseudo_salt_tracer) &
       call pseudo_salt_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%pseudo_salt_tracer_CSp, tv, debug)
+                                     G, GV, US, CS%pseudo_salt_tracer_CSp, &
+                                     tv, debug, &
+                                     KPP_CSp=KPP_CSp, &
+                                     nonLocalTrans=nonLocalTrans)
     if (CS%use_boundary_impulse_tracer) &
       call boundary_impulse_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
                                      G, GV, US, CS%boundary_impulse_tracer_CSp, tv, debug)
     if (CS%use_dyed_obc_tracer) &
       call dyed_obc_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
                                       G, GV, US, CS%dyed_obc_tracer_CSp)
-
+    if (CS%use_nw2_tracers) call nw2_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
+                                                           G, GV, US, tv, CS%nw2_tracers_CSp)
   endif
-
 
 end subroutine call_tracer_column_fns
 
 !> This subroutine calls all registered tracer packages to enable them to
 !! add to the surface state returned to the coupler. These routines are optional.
-subroutine call_tracer_stocks(h, stock_values, G, GV, CS, stock_names, stock_units, &
+subroutine call_tracer_stocks(h, stock_values, G, GV, US, CS, stock_names, stock_units, &
                               num_stocks, stock_index, got_min_max, global_min, global_max, &
                               xgmin, ygmin, zgmin, xgmax, ygmax, zgmax)
   type(ocean_grid_type),          intent(in)  :: G           !< The ocean's grid structure.
@@ -571,6 +597,7 @@ subroutine call_tracer_stocks(h, stock_values, G, GV, CS, stock_names, stock_uni
                                   intent(in)  :: h           !< Layer thicknesses [H ~> m or kg m-2]
   real, dimension(:),             intent(out) :: stock_values !< The integrated amounts of a tracer
                              !! on the current PE, usually in kg x concentration [kg conc].
+  type(unit_scale_type),          intent(in)  :: US          !< A dimensional unit scaling type
   type(tracer_flow_control_CS),   pointer     :: CS          !< The control structure returned by a
                                                              !! previous call to
                                                              !! call_tracer_register.
@@ -611,7 +638,7 @@ subroutine call_tracer_stocks(h, stock_values, G, GV, CS, stock_names, stock_uni
 
 !  Add other user-provided calls here.
   if (CS%use_USER_tracer_example) then
-    ns = USER_tracer_stock(h, values, G, GV, CS%USER_tracer_example_CSp, &
+    ns = USER_tracer_stock(h, values, G, GV, US, CS%USER_tracer_example_CSp, &
                            names, units, stock_index)
     call store_stocks("tracer_example", ns, names, units, values, index, stock_values, &
                        set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
@@ -623,44 +650,44 @@ subroutine call_tracer_stocks(h, stock_values, G, GV, CS, stock_names, stock_uni
 !                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
 ! endif
   if (CS%use_ideal_age) then
-    ns = ideal_age_stock(h, values, G, GV, CS%ideal_age_tracer_CSp, &
+    ns = ideal_age_stock(h, values, G, GV, US, CS%ideal_age_tracer_CSp, &
                          names, units, stock_index)
     call store_stocks("ideal_age_example", ns, names, units, values, index, &
            stock_values, set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
   endif
   if (CS%use_regional_dyes) then
-    ns = dye_stock(h, values, G, GV, CS%dye_tracer_CSp, &
+    ns = dye_stock(h, values, G, GV, US, CS%dye_tracer_CSp, &
                          names, units, stock_index)
     call store_stocks("regional_dyes", ns, names, units, values, index, &
            stock_values, set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
   endif
   if (CS%use_oil) then
-    ns = oil_stock(h, values, G, GV, CS%oil_tracer_CSp, &
+    ns = oil_stock(h, values, G, GV, US, CS%oil_tracer_CSp, &
                          names, units, stock_index)
     call store_stocks("oil_tracer", ns, names, units, values, index, &
            stock_values, set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
   endif
   if (CS%use_OCMIP2_CFC) then
-    ns = OCMIP2_CFC_stock(h, values, G, GV, CS%OCMIP2_CFC_CSp, names, units, stock_index)
+    ns = OCMIP2_CFC_stock(h, values, G, GV, US, CS%OCMIP2_CFC_CSp, names, units, stock_index)
     call store_stocks("MOM_OCMIP2_CFC", ns, names, units, values, index, stock_values, &
                        set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
   endif
 
   if (CS%use_CFC_cap) then
-    ns = CFC_cap_stock(h, values, G, GV, CS%CFC_cap_CSp, names, units, stock_index)
+    ns = CFC_cap_stock(h, values, G, GV, US, CS%CFC_cap_CSp, names, units, stock_index)
     call store_stocks("MOM_CFC_cap", ns, names, units, values, index, stock_values, &
                        set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
   endif
 
   if (CS%use_advection_test_tracer) then
-    ns = advection_test_stock( h, values, G, GV, CS%advection_test_tracer_CSp, &
+    ns = advection_test_stock( h, values, G, GV, US, CS%advection_test_tracer_CSp, &
                          names, units, stock_index )
     call store_stocks("advection_test_tracer", ns, names, units, values, index, &
            stock_values, set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
   endif
 
   if (CS%use_MOM_generic_tracer) then
-    ns = MOM_generic_tracer_stock(h, values, G, GV, CS%MOM_generic_tracer_CSp, &
+    ns = MOM_generic_tracer_stock(h, values, G, GV, US, CS%MOM_generic_tracer_CSp, &
                                    names, units, stock_index)
     call store_stocks("MOM_generic_tracer", ns, names, units, values, index, stock_values, &
                        set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
@@ -671,14 +698,14 @@ subroutine call_tracer_stocks(h, stock_values, G, GV, CS, stock_names, stock_uni
 
   endif
   if (CS%use_pseudo_salt_tracer) then
-    ns = pseudo_salt_stock(h, values, G, GV, CS%pseudo_salt_tracer_CSp, &
+    ns = pseudo_salt_stock(h, values, G, GV, US, CS%pseudo_salt_tracer_CSp, &
                          names, units, stock_index)
     call store_stocks("pseudo_salt_tracer", ns, names, units, values, index, &
            stock_values, set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
   endif
 
   if (CS%use_boundary_impulse_tracer) then
-    ns = boundary_impulse_stock(h, values, G, GV, CS%boundary_impulse_tracer_CSp, &
+    ns = boundary_impulse_stock(h, values, G, GV, US, CS%boundary_impulse_tracer_CSp, &
                          names, units, stock_index)
     call store_stocks("boundary_impulse_tracer", ns, names, units, values, index, &
            stock_values, set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
@@ -807,6 +834,7 @@ subroutine tracer_flow_control_end(CS)
   if (CS%use_pseudo_salt_tracer) call pseudo_salt_tracer_end(CS%pseudo_salt_tracer_CSp)
   if (CS%use_boundary_impulse_tracer) call boundary_impulse_tracer_end(CS%boundary_impulse_tracer_CSp)
   if (CS%use_dyed_obc_tracer) call dyed_obc_tracer_end(CS%dyed_obc_tracer_CSp)
+  if (CS%use_nw2_tracers) call nw2_tracers_end(CS%nw2_tracers_CSp)
 
   if (associated(CS)) deallocate(CS)
 end subroutine tracer_flow_control_end

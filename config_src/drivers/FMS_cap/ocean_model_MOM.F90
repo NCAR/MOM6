@@ -35,7 +35,7 @@ use MOM_forcing_type, only : copy_back_forcing_fields
 use MOM_forcing_type, only : forcing_diagnostics, mech_forcing_diags
 use MOM_get_input, only : Get_MOM_Input, directories
 use MOM_grid, only : ocean_grid_type
-use MOM_io, only : write_version_number, stdout
+use MOM_io, only : write_version_number, stdout_if_root
 use MOM_marine_ice, only : iceberg_forces, iceberg_fluxes, marine_ice_init, marine_ice_CS
 use MOM_restart, only : MOM_restart_CS, save_restart
 use MOM_string_functions, only : uppercase
@@ -55,7 +55,8 @@ use MOM_verticalGrid, only : verticalGrid_type
 use MOM_ice_shelf, only : initialize_ice_shelf, shelf_calc_flux, ice_shelf_CS
 use MOM_ice_shelf, only : add_shelf_forces, ice_shelf_end, ice_shelf_save_restart
 use MOM_wave_interface, only: wave_parameters_CS, MOM_wave_interface_init
-use MOM_wave_interface, only: MOM_wave_interface_init_lite, Update_Surface_Waves
+use MOM_wave_interface, only: Update_Surface_Waves
+use iso_fortran_env, only : int64
 
 #include <MOM_memory.h>
 
@@ -85,7 +86,7 @@ end interface
 
 !> This type is used for communication with other components via the FMS coupler.
 !! The element names and types can be changed only with great deliberation, hence
-!! the persistnce of things like the cutsy element name "avg_kount".
+!! the persistence of things like the cutesy element name "avg_kount".
 type, public ::  ocean_public_type
   type(domain2d) :: Domain    !< The domain for the surface fields.
   logical :: is_ocean_pe      !< .true. on processors that run the ocean model.
@@ -109,8 +110,8 @@ type, public ::  ocean_public_type
                     !! a global max across ocean and non-ocean processors can be
                     !! used to determine its value.
   real, pointer, dimension(:,:)  :: &
-    t_surf => NULL(), & !< SST on t-cell (degrees Kelvin)
-    s_surf => NULL(), & !< SSS on t-cell (psu)
+    t_surf => NULL(), & !< SST on t-cell [degrees Kelvin]
+    s_surf => NULL(), & !< SSS on t-cell [ppt]
     u_surf => NULL(), & !< i-velocity at the locations indicated by stagger [m s-1].
     v_surf => NULL(), & !< j-velocity at the locations indicated by stagger [m s-1].
     sea_lev => NULL(), & !< Sea level in m after correction for surface pressure,
@@ -153,8 +154,8 @@ type, public :: ocean_state_type ; private
 
   logical :: icebergs_alter_ocean !< If true, the icebergs can change ocean the
                               !! ocean dynamics and forcing fluxes.
-  real :: press_to_z          !< A conversion factor between pressure and ocean
-                              !! depth in m, usually 1/(rho_0*g) [m Pa-1].
+  real :: press_to_z          !< A conversion factor between pressure and ocean depth,
+                              !! usually 1/(rho_0*g) [Z T2 R-1 L-2 ~> m Pa-1].
   real :: C_p                 !< The heat capacity of seawater [J degC-1 kg-1].
   logical :: offline_tracer_mode = .false. !< If false, use the model in prognostic mode
                               !! with the barotropic and baroclinic dynamics, thermodynamics,
@@ -194,8 +195,8 @@ type, public :: ocean_state_type ; private
   type(unit_scale_type), pointer :: &
     US => NULL()              !< A pointer to a structure containing dimensional
                               !! unit scaling factors.
-  type(MOM_control_struct), pointer :: &
-    MOM_CSp => NULL()         !< A pointer to the MOM control structure
+  type(MOM_control_struct) :: MOM_CSp
+                              !< MOM control structure
   type(ice_shelf_CS), pointer :: &
     Ice_shelf_CSp => NULL()   !< A pointer to the control structure for the
                               !! ice shelf model that couples with MOM6.  This
@@ -204,7 +205,7 @@ type, public :: ocean_state_type ; private
     marine_ice_CSp => NULL()  !< A pointer to the control structure for the
                               !! marine ice effects module.
   type(wave_parameters_cs), pointer :: &
-    Waves !< A structure containing pointers to the surface wave fields
+    Waves => NULL()           !< A pointer to the surface wave control structure
   type(surface_forcing_CS), pointer :: &
     forcing_CSp => NULL()     !< A pointer to the MOM forcing control structure
   type(MOM_restart_CS), pointer :: &
@@ -220,7 +221,7 @@ contains
 !! for restarts and reading restart files if appropriate.
 !!
 !!   This subroutine initializes both the ocean state and the ocean surface type.
-!! Because of the way that indicies and domains are handled, Ocean_sfc must have
+!! Because of the way that indices and domains are handled, Ocean_sfc must have
 !! been used in a previous call to initialize_ocean_type.
 subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, wind_stagger, gas_fields_ocn)
   type(ocean_public_type), target, &
@@ -241,16 +242,16 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, wind_stagger, gas
                                               !! tracer fluxes, and can be used to spawn related
                                               !! internal variables in the ice model.
   ! Local variables
-  real :: Rho0        ! The Boussinesq ocean density [kg m-3].
-  real :: G_Earth     ! The gravitational acceleration [m s-2].
-  real :: HFrz        !< If HFrz > 0 (m), melt potential will be computed.
+  real :: Rho0        ! The Boussinesq ocean density [R ~> kg m-3]
+  real :: G_Earth     ! The gravitational acceleration [L2 Z-1 T-2 ~> m s-2]
+  real :: HFrz        !< If HFrz > 0 [Z ~> m], melt potential will be computed.
                       !! The actual depth over which melt potential is computed will
                       !! min(HFrz, OBLD), where OBLD is the boundary layer depth.
                       !! If HFrz <= 0 (default), melt potential will not be computed.
-  logical :: use_melt_pot!< If true, allocate melt_potential array
+  logical :: use_melt_pot !< If true, allocate melt_potential array
 
-! This include declares and sets the variable "version".
-#include "version_variable.h"
+  ! This include declares and sets the variable "version".
+# include "version_variable.h"
   character(len=40)  :: mdl = "ocean_model_init"  ! This module's name.
   character(len=48)  :: stagger ! A string indicating the staggering locations for the
                                 ! surface velocities returned to the coupler.
@@ -275,7 +276,7 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, wind_stagger, gas
   OS%Time = Time_in ; OS%Time_dyn = Time_in
   call initialize_MOM(OS%Time, Time_init, param_file, OS%dirs, OS%MOM_CSp, &
                       OS%restart_CSp, Time_in, offline_tracer_mode=OS%offline_tracer_mode, &
-                      diag_ptr=OS%diag, count_calls=.true.)
+                      diag_ptr=OS%diag, count_calls=.true., waves_CSp=OS%Waves)
   call get_MOM_state_elements(OS%MOM_CSp, G=OS%grid, GV=OS%GV, US=OS%US, C_p=OS%C_p, &
                               C_p_scaled=OS%fluxes%C_p, use_temp=use_temperature)
 
@@ -330,10 +331,10 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, wind_stagger, gas
                  "calculate accelerations and the mass for conservation "//&
                  "properties, or with BOUSSINSEQ false to convert some "//&
                  "parameters from vertical units of m to kg m-2.", &
-                 units="kg m-3", default=1035.0)
+                 units="kg m-3", default=1035.0, scale=OS%US%kg_m3_to_R)
   call get_param(param_file, mdl, "G_EARTH", G_Earth, &
                  "The gravitational acceleration of the Earth.", &
-                 units="m s-2", default = 9.80)
+                 units="m s-2", default=9.80, scale=OS%US%m_s_to_L_T**2*OS%US%Z_to_m)
 
   call get_param(param_file, mdl, "ICE_SHELF",  OS%use_ice_shelf, &
                  "If true, enables the ice shelf model.", default=.false.)
@@ -341,7 +342,7 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, wind_stagger, gas
   call get_param(param_file, mdl, "ICEBERGS_APPLY_RIGID_BOUNDARY",  OS%icebergs_alter_ocean, &
                  "If true, allows icebergs to change boundary condition felt by ocean", default=.false.)
 
-  OS%press_to_z = 1.0/(Rho0*G_Earth)
+  OS%press_to_z = 1.0 / (Rho0*G_Earth)
 
   !   Consider using a run-time flag to determine whether to do the diagnostic
   ! vertical integrals, since the related 3-d sums are not negligible in cost.
@@ -349,9 +350,10 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, wind_stagger, gas
                  "If HFREEZE > 0, melt potential will be computed. The actual depth "//&
                  "over which melt potential is computed will be min(HFREEZE, OBLD), "//&
                  "where OBLD is the boundary layer depth. If HFREEZE <= 0 (default), "//&
-                 "melt potential will not be computed.", units="m", default=-1.0, do_not_log=.true.)
+                 "melt potential will not be computed.", &
+                 units="m", default=-1.0, scale=OS%US%m_to_Z, do_not_log=.true.)
 
-  if (HFrz .gt. 0.0) then
+  if (HFrz > 0.0) then
     use_melt_pot=.true.
   else
     use_melt_pot=.false.
@@ -381,11 +383,9 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, wind_stagger, gas
 
   call get_param(param_file, mdl, "USE_WAVES", OS%Use_Waves, &
        "If true, enables surface wave modules.", default=.false.)
-  if (OS%use_waves) then
-    call MOM_wave_interface_init(OS%Time, OS%grid, OS%GV, OS%US, param_file, OS%Waves, OS%diag)
-  else
-    call MOM_wave_interface_init_lite(param_file)
-  endif
+  ! MOM_wave_interface_init is called regardless of the value of USE_WAVES because
+  ! it also initializes statistical waves.
+  call MOM_wave_interface_init(OS%Time, OS%grid, OS%GV, OS%US, param_file, OS%Waves, OS%diag)
 
   call initialize_ocean_public_type(OS%grid%Domain, Ocean_sfc, OS%diag, &
                                     gas_fields_ocn=gas_fields_ocn)
@@ -656,7 +656,7 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, time_start_upda
 
 ! Translate state into Ocean.
 !  call convert_state_to_ocean_type(OS%sfc_state, Ocean_sfc, OS%grid, OS%US, &
-!                                   Ice_ocean_boundary%p, OS%press_to_z)
+!                                   OS%fluxes%p_surf_full, OS%press_to_z)
   call convert_state_to_ocean_type(OS%sfc_state, Ocean_sfc, OS%grid, OS%US)
   Time1 = OS%Time ; if (do_dyn) Time1 = OS%Time_dyn
   call coupler_type_send_data(Ocean_sfc%fields, Time1)
@@ -767,7 +767,7 @@ subroutine initialize_ocean_public_type(input_domain, Ocean_sfc, diag, gas_field
                                               !! tracer fluxes.
 
   integer :: xsz, ysz, layout(2)
-  ! ice-ocean-boundary fields are always allocated using absolute indicies
+  ! ice-ocean-boundary fields are always allocated using absolute indices
   ! and have no halos.
   integer :: isc, iec, jsc, jec
 
@@ -807,7 +807,7 @@ end subroutine initialize_ocean_public_type
 !! surface state variable.  This may eventually be folded into the MOM
 !! code that calculates the surface state in the first place.
 !! Note the offset in the arrays because the ocean_data_type has no
-!! halo points in its arrays and always uses absolute indicies.
+!! halo points in its arrays and always uses absolute indices.
 subroutine convert_state_to_ocean_type(sfc_state, Ocean_sfc, G, US, patm, press_to_z)
   type(surface),         intent(inout) :: sfc_state !< A structure containing fields that
                                                !! describe the surface state of the ocean.
@@ -817,9 +817,9 @@ subroutine convert_state_to_ocean_type(sfc_state, Ocean_sfc, G, US, patm, press_
                                                !! have their data set here.
   type(ocean_grid_type), intent(inout) :: G    !< The ocean's grid structure
   type(unit_scale_type), intent(in)    :: US   !< A dimensional unit scaling type
-  real,        optional, intent(in)    :: patm(:,:)  !< The pressure at the ocean surface [Pa].
-  real,        optional, intent(in)    :: press_to_z !< A conversion factor between pressure and
-                                               !! ocean depth in m, usually 1/(rho_0*g) [m Pa-1].
+  real,        optional, intent(in)    :: patm(:,:)  !< The pressure at the ocean surface [R L2 T-2 ~> Pa]
+  real,        optional, intent(in)    :: press_to_z !< A conversion factor between pressure and ocean
+                                               !! depth, usually 1/(rho_0*g) [Z T2 R-1 L-2 ~> m Pa-1]
   ! Local variables
   real :: IgR0
   character(len=48)  :: val_str
@@ -861,7 +861,7 @@ subroutine convert_state_to_ocean_type(sfc_state, Ocean_sfc, G, US, patm, press_
 
   if (present(patm)) then
     do j=jsc_bnd,jec_bnd ; do i=isc_bnd,iec_bnd
-      Ocean_sfc%sea_lev(i,j) = US%Z_to_m * sfc_state%sea_lev(i+i0,j+j0) + patm(i,j) * press_to_z
+      Ocean_sfc%sea_lev(i,j) = US%Z_to_m * (sfc_state%sea_lev(i+i0,j+j0) + patm(i,j) * press_to_z)
       Ocean_sfc%area(i,j) = US%L_to_m**2 * G%areaT(i+i0,j+j0)
     enddo ; enddo
   else
@@ -947,7 +947,7 @@ end subroutine ocean_model_init_sfc
 
 !> ocean_model_flux_init is used to initialize properties of the air-sea fluxes
 !! as determined by various run-time parameters.  It can be called from
-!! non-ocean PEs, or PEs that have not yet been initialzed, and it can safely
+!! non-ocean PEs, or PEs that have not yet been initialized, and it can safely
 !! be called multiple times.
 subroutine ocean_model_flux_init(OS, verbosity)
   type(ocean_state_type), optional, pointer :: OS  !< An optional pointer to the ocean state,
@@ -1094,25 +1094,29 @@ subroutine ocean_model_data1D_get(OS, Ocean, name, value)
 
 end subroutine ocean_model_data1D_get
 
-!> Write out FMS-format checsums on fields from the ocean surface state
+!> Write out checksums for fields from the ocean surface state
 subroutine ocean_public_type_chksum(id, timestep, ocn)
 
   character(len=*),        intent(in) :: id  !< An identifying string for this call
   integer,                 intent(in) :: timestep !< The number of elapsed timesteps
   type(ocean_public_type), intent(in) :: ocn !< A structure containing various publicly
                                              !! visible ocean surface fields.
-  integer :: n, m, outunit
+  ! Local variables
+  integer(kind=int64) :: chks ! A checksum for the field
+  logical :: root    ! True only on the root PE
+  integer :: outunit ! The output unit to write to
 
-  outunit = stdout
+  root = is_root_pe()
+  outunit = stdout_if_root()
 
-  write(outunit,*) "BEGIN CHECKSUM(ocean_type):: ", id, timestep
-  write(outunit,100) 'ocean%t_surf   ', field_chksum(ocn%t_surf )
-  write(outunit,100) 'ocean%s_surf   ', field_chksum(ocn%s_surf )
-  write(outunit,100) 'ocean%u_surf   ', field_chksum(ocn%u_surf )
-  write(outunit,100) 'ocean%v_surf   ', field_chksum(ocn%v_surf )
-  write(outunit,100) 'ocean%sea_lev  ', field_chksum(ocn%sea_lev)
-  write(outunit,100) 'ocean%frazil   ', field_chksum(ocn%frazil )
-  write(outunit,100) 'ocean%melt_potential  ', field_chksum(ocn%melt_potential)
+  if (root) write(outunit,*) "BEGIN CHECKSUM(ocean_type):: ", id, timestep
+  chks = field_chksum(ocn%t_surf ) ; if (root) write(outunit,100) 'ocean%t_surf   ', chks
+  chks = field_chksum(ocn%s_surf ) ; if (root) write(outunit,100) 'ocean%s_surf   ', chks
+  chks = field_chksum(ocn%u_surf ) ; if (root) write(outunit,100) 'ocean%u_surf   ', chks
+  chks = field_chksum(ocn%v_surf ) ; if (root) write(outunit,100) 'ocean%v_surf   ', chks
+  chks = field_chksum(ocn%sea_lev) ; if (root) write(outunit,100) 'ocean%sea_lev  ', chks
+  chks = field_chksum(ocn%frazil ) ; if (root) write(outunit,100) 'ocean%frazil   ', chks
+  chks = field_chksum(ocn%melt_potential) ; if (root) write(outunit,100) 'ocean%melt_potential   ', chks
   call coupler_type_write_chksums(ocn%fields, outunit, 'ocean%')
 100 FORMAT("   CHECKSUM::",A20," = ",Z20)
 
@@ -1161,6 +1165,8 @@ subroutine ocean_model_get_UV_surf(OS, Ocean, name, array2D, isc, jsc)
   i0 = is - isc_bnd ; j0 = js - jsc_bnd
 
   sfc_state => OS%sfc_state
+
+  call pass_vector(sfc_state%u, sfc_state%v, G%Domain)
 
   select case(name)
   case('ua')

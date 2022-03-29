@@ -72,7 +72,7 @@ function register_RGC_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS)
   type(RGC_tracer_CS),        pointer    :: CS   !< A pointer that is set to point to the control
                                                  !! structure for this module (in/out).
   type(tracer_registry_type), pointer    :: tr_Reg !< A pointer to the tracer registry.
-  type(MOM_restart_CS),       pointer    :: restart_CS !< A pointer to the restart control structure.
+  type(MOM_restart_CS),    intent(inout) :: restart_CS !< MOM restart control struct
 
   character(len=80)  :: name, longname
 ! This include declares and sets the variable "version".
@@ -125,9 +125,9 @@ function register_RGC_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS)
                  "The length of the sponge layer (km).", &
                  default=10.0)
 
-  allocate(CS%tr(isd:ied,jsd:jed,nz,NTR)) ; CS%tr(:,:,:,:) = 0.0
+  allocate(CS%tr(isd:ied,jsd:jed,nz,NTR), source=0.0)
   if (CS%mask_tracers) then
-    allocate(CS%tr_aux(isd:ied,jsd:jed,nz,NTR)) ; CS%tr_aux(:,:,:,:) = 0.0
+    allocate(CS%tr_aux(isd:ied,jsd:jed,nz,NTR), source=0.0)
   endif
 
   do m=1,NTR
@@ -184,7 +184,7 @@ subroutine initialize_RGC_tracer(restart, day, G, GV, h, diag, OBC, CS, &
                             ! kg(tracer) kg(water)-1 m3 s-1 or kg(tracer) s-1.
   real, pointer :: tr_ptr(:,:,:) => NULL()
   real :: h_neglect         ! A thickness that is so small it is usually lost
-                            ! in roundoff and can be neglected [H ~> m or kg-2].
+                            ! in roundoff and can be neglected [H ~> m or kg m-2].
   integer :: i, j, k, is, ie, js, je, isd, ied, jsd, jed, nz, m
   integer :: IsdB, IedB, JsdB, JedB
   integer :: nzdata

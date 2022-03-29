@@ -71,7 +71,7 @@ function register_ISOMIP_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS)
   type(ISOMIP_tracer_CS),     pointer    :: CS !<A pointer that is set to point to the control
                                                        !! structure for this module (in/out).
   type(tracer_registry_type), pointer    :: tr_Reg !<A pointer to the tracer registry.
-  type(MOM_restart_CS),       pointer    :: restart_CS !<A pointer to the restart control structure.
+  type(MOM_restart_CS),    intent(inout) :: restart_CS !< MOM restart control struct
 
   character(len=80)  :: name, longname
 ! This include declares and sets the variable "version".
@@ -110,7 +110,7 @@ function register_ISOMIP_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS)
                  "The exact location and properties of those sponges are "//&
                  "specified from MOM_initialization.F90.", default=.false.)
 
-  allocate(CS%tr(isd:ied,jsd:jed,nz,NTR)) ; CS%tr(:,:,:,:) = 0.0
+  allocate(CS%tr(isd:ied,jsd:jed,nz,NTR), source=0.0)
 
   do m=1,NTR
     if (m < 10) then ; write(name,'("tr_D",I1.1)') m

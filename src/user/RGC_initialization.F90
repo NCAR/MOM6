@@ -46,7 +46,7 @@ contains
 
 !> Sets up the the inverse restoration time, and the values towards which the interface heights,
 !! velocities and tracers should be restored within the sponges for the RGC test case.
-subroutine RGC_initialize_sponges(G, GV, US, tv, u, v, PF, use_ALE, CSp, ACSp)
+subroutine RGC_initialize_sponges(G, GV, US, tv, u, v, depth_tot, PF, use_ALE, CSp, ACSp)
   type(ocean_grid_type),   intent(in) :: G  !< The ocean's grid structure.
   type(verticalGrid_type), intent(in) :: GV !< The ocean's vertical grid structure.
   type(unit_scale_type),   intent(in) :: US !< A dimensional unit scaling type
@@ -59,6 +59,8 @@ subroutine RGC_initialize_sponges(G, GV, US, tv, u, v, PF, use_ALE, CSp, ACSp)
                  target, intent(in) :: u    !< Array with the u velocity [L T-1 ~> m s-1]
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
                  target, intent(in) :: v    !< Array with the v velocity [L T-1 ~> m s-1]
+  real, dimension(SZI_(G),SZJ_(G)), &
+                         intent(in) :: depth_tot  !< The nominal total depth of the ocean [Z ~> m]
   type(param_file_type), intent(in) :: PF   !< A structure indicating the
                                             !! open file to parse for model
                                             !! parameter values.
@@ -74,7 +76,7 @@ subroutine RGC_initialize_sponges(G, GV, US, tv, u, v, PF, use_ALE, CSp, ACSp)
   real :: RHO(SZI_(G),SZJ_(G),SZK_(GV)) ! A temporary array for RHO
   real :: tmp(SZI_(G),SZJ_(G))        ! A temporary array for tracers.
   real :: h(SZI_(G),SZJ_(G),SZK_(GV)) ! A temporary array for thickness at h points
-  real :: Idamp(SZI_(G),SZJ_(G))    ! The inverse damping rate at h points [T-1 ~> s-1].
+  real :: Idamp(SZI_(G),SZJ_(G))    ! The sponge damping rate at h points [T-1 ~> s-1]
   real :: TNUDG                     ! Nudging time scale [T ~> s]
   real :: pres(SZI_(G))             ! An array of the reference pressure [R L2 T-2 ~> Pa]
   real :: eta(SZI_(G),SZJ_(G),SZK_(GV)+1) ! A temporary array for eta, positive upward [m].
@@ -93,10 +95,11 @@ subroutine RGC_initialize_sponges(G, GV, US, tv, u, v, PF, use_ALE, CSp, ACSp)
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
   iscB = G%iscB ; iecB = G%iecB; jscB = G%jscB ; jecB = G%jecB
 
-  call get_param(PF,mod,"MIN_THICKNESS",min_thickness,'Minimum layer thickness',units='m',default=1.e-3)
+  call get_param(PF, mod,"MIN_THICKNESS", min_thickness, 'Minimum layer thickness', &
+                 units='m', default=1.e-3)
 
-  call get_param(PF, mod, "RGC_TNUDG", TNUDG, 'Nudging time scale for sponge layers (days)', &
-                 default=0.0, scale=86400.0*US%s_to_T)
+  call get_param(PF, mod, "RGC_TNUDG", TNUDG, 'Nudging time scale for sponge layers', &
+                 units='days', default=0.0, scale=86400.0*US%s_to_T)
 
   call get_param(PF, mod, "LENLAT", lenlat, &
                   "The latitudinal or y-direction length of the domain", &
@@ -114,7 +117,7 @@ subroutine RGC_initialize_sponges(G, GV, US, tv, u, v, PF, use_ALE, CSp, ACSp)
                  "Nudge velocities (u and v) towards zero in the sponge layer.", &
                  default=.false., do_not_log=.true.)
 
-  T(:,:,:) = 0.0 ; S(:,:,:) = 0.0 ; Idamp(:,:) = 0.0; RHO(:,:,:) = 0.0
+  T(:,:,:) = 0.0 ; S(:,:,:) = 0.0 ; Idamp(:,:) = 0.0 ; RHO(:,:,:) = 0.0
 
   call get_param(PF, mod, "MINIMUM_DEPTH", min_depth, &
                  "The minimum depth of the ocean.", units="m", default=0.0)
@@ -130,7 +133,7 @@ subroutine RGC_initialize_sponges(G, GV, US, tv, u, v, PF, use_ALE, CSp, ACSp)
   !  and mask2dT is 1.
 
   do i=is,ie ; do j=js,je
-    if ((G%bathyT(i,j) <= min_depth) .or. (G%geoLonT(i,j) <= lensponge)) then
+    if ((depth_tot(i,j) <= min_depth) .or. (G%geoLonT(i,j) <= lensponge)) then
       Idamp(i,j) = 0.0
     elseif (G%geoLonT(i,j) >= (lenlon - lensponge) .AND. G%geoLonT(i,j) <= lenlon) then
       dummy1 = (G%geoLonT(i,j)-(lenlon - lensponge))/(lensponge)
@@ -193,7 +196,7 @@ subroutine RGC_initialize_sponges(G, GV, US, tv, u, v, PF, use_ALE, CSp, ACSp)
     !read eta
     call MOM_read_data(filename, eta_var, eta(:,:,:), G%Domain)
 
-    ! Set the inverse damping rates so that the model will know where to
+    ! Set the sponge damping rates so that the model will know where to
     ! apply the sponges, along with the interface heights.
     call initialize_sponge(Idamp, eta, G, PF, CSp, GV)
 

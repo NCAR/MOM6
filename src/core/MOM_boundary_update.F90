@@ -17,8 +17,9 @@ use MOM_unit_scaling,          only : unit_scale_type
 use MOM_tracer_registry,       only : tracer_registry_type
 use MOM_variables,             only : thermo_var_ptrs
 use MOM_verticalGrid,          only : verticalGrid_type
+use DOME_initialization,       only : register_DOME_OBC
 use tidal_bay_initialization,  only : tidal_bay_set_OBC_data, register_tidal_bay_OBC
-use tidal_bay_initialization,  only : tidal_bay_OBC_end, tidal_bay_OBC_CS
+use tidal_bay_initialization,  only : tidal_bay_OBC_CS
 use Kelvin_initialization,     only : Kelvin_set_OBC_data, register_Kelvin_OBC
 use Kelvin_initialization,     only : Kelvin_OBC_end, Kelvin_OBC_CS
 use shelfwave_initialization,  only : shelfwave_set_OBC_data, register_shelfwave_OBC
@@ -43,7 +44,7 @@ type, public :: update_OBC_CS ; private
   !>@{ Pointers to the control structures for named OBC specifications
   type(file_OBC_CS), pointer :: file_OBC_CSp => NULL()
   type(Kelvin_OBC_CS), pointer :: Kelvin_OBC_CSp => NULL()
-  type(tidal_bay_OBC_CS), pointer :: tidal_bay_OBC_CSp => NULL()
+  type(tidal_bay_OBC_CS) :: tidal_bay_OBC
   type(shelfwave_OBC_CS), pointer :: shelfwave_OBC_CSp => NULL()
   type(dyed_channel_OBC_CS), pointer :: dyed_channel_OBC_CSp => NULL()
   !>@}
@@ -58,12 +59,15 @@ contains
 !> The following subroutines and associated definitions provide the
 !! machinery to register and call the subroutines that initialize
 !! open boundary conditions.
-subroutine call_OBC_register(param_file, CS, OBC)
+subroutine call_OBC_register(param_file, CS, US, OBC, tr_Reg)
   type(param_file_type),     intent(in) :: param_file !< Parameter file to parse
   type(update_OBC_CS),       pointer    :: CS         !< Control structure for OBCs
+  type(unit_scale_type),     intent(in) :: US         !< A dimensional unit scaling type
   type(ocean_OBC_type),      pointer    :: OBC        !< Open boundary structure
+  type(tracer_registry_type), pointer   :: tr_Reg     !< Tracer registry.
 
   ! Local variables
+  character(len=200) :: config
   character(len=40)  :: mdl = "MOM_boundary_update" ! This module's name.
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
@@ -90,21 +94,40 @@ subroutine call_OBC_register(param_file, CS, OBC)
   call get_param(param_file, mdl, "USE_DYED_CHANNEL_OBC", CS%use_dyed_channel, &
                  "If true, use the dyed channel open boundary.", &
                  default=.false.)
+  call get_param(param_file, mdl, "OBC_USER_CONFIG", config, &
+               "A string that sets how the user code is invoked to set open boundary data: \n"//&
+               "   DOME - specified inflow on northern boundary\n"//&
+               "   dyed_channel - supercritical with dye on the inflow boundary\n"//&
+               "   dyed_obcs - circle_obcs with dyes on the open boundaries\n"//&
+               "   Kelvin - barotropic Kelvin wave forcing on the western boundary\n"//&
+               "   shelfwave - Flather with shelf wave forcing on western boundary\n"//&
+               "   supercritical - now only needed here for the allocations\n"//&
+               "   tidal_bay - Flather with tidal forcing on eastern boundary\n"//&
+               "   USER - user specified", default="none", do_not_log=.true.)
 
   if (CS%use_files) CS%use_files = &
-    register_file_OBC(param_file, CS%file_OBC_CSp, &
+    register_file_OBC(param_file, CS%file_OBC_CSp, US, &
                OBC%OBC_Reg)
+
+  if (trim(config) == "DOME") then
+    call register_DOME_OBC(param_file, US, OBC, tr_Reg)
+!  elseif (trim(config) == "tidal_bay") then
+!  elseif (trim(config) == "Kelvin") then
+!  elseif (trim(config) == "shelfwave") then
+!  elseif (trim(config) == "dyed_channel") then
+  endif
+
   if (CS%use_tidal_bay) CS%use_tidal_bay = &
-    register_tidal_bay_OBC(param_file, CS%tidal_bay_OBC_CSp, &
+    register_tidal_bay_OBC(param_file, CS%tidal_bay_OBC, US, &
                OBC%OBC_Reg)
   if (CS%use_Kelvin) CS%use_Kelvin = &
-    register_Kelvin_OBC(param_file, CS%Kelvin_OBC_CSp, &
+    register_Kelvin_OBC(param_file, CS%Kelvin_OBC_CSp, US, &
                OBC%OBC_Reg)
   if (CS%use_shelfwave) CS%use_shelfwave = &
-    register_shelfwave_OBC(param_file, CS%shelfwave_OBC_CSp, &
+    register_shelfwave_OBC(param_file, CS%shelfwave_OBC_CSp, US, &
                OBC%OBC_Reg)
   if (CS%use_dyed_channel) CS%use_dyed_channel = &
-    register_dyed_channel_OBC(param_file, CS%dyed_channel_OBC_CSp, &
+    register_dyed_channel_OBC(param_file, CS%dyed_channel_OBC_CSp, US, &
                OBC%OBC_Reg)
 
 end subroutine call_OBC_register
@@ -124,13 +147,13 @@ subroutine update_OBC_data(OBC, G, GV, US, tv, h, CS, Time)
 ! if (CS%use_files) &
 !     call update_OBC_segment_data(G, GV, OBC, tv, h, Time)
   if (CS%use_tidal_bay) &
-      call tidal_bay_set_OBC_data(OBC, CS%tidal_bay_OBC_CSp, G, GV, h, Time)
+      call tidal_bay_set_OBC_data(OBC, CS%tidal_bay_OBC, G, GV, US, h, Time)
   if (CS%use_Kelvin)  &
       call Kelvin_set_OBC_data(OBC, CS%Kelvin_OBC_CSp, G, GV, US, h, Time)
   if (CS%use_shelfwave) &
-      call shelfwave_set_OBC_data(OBC, CS%shelfwave_OBC_CSp, G, GV, h, Time)
+      call shelfwave_set_OBC_data(OBC, CS%shelfwave_OBC_CSp, G, GV, US, h, Time)
   if (CS%use_dyed_channel) &
-      call dyed_channel_update_flow(OBC, CS%dyed_channel_OBC_CSp, G, GV, Time)
+      call dyed_channel_update_flow(OBC, CS%dyed_channel_OBC_CSp, G, GV, US, Time)
   if (OBC%needs_IO_for_data .or. OBC%add_tide_constituents)  &
       call update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
 
@@ -141,7 +164,6 @@ subroutine OBC_register_end(CS)
   type(update_OBC_CS),       pointer    :: CS !< Control structure for OBCs
 
   if (CS%use_files) call file_OBC_end(CS%file_OBC_CSp)
-  if (CS%use_tidal_bay) call tidal_bay_OBC_end(CS%tidal_bay_OBC_CSp)
   if (CS%use_Kelvin) call Kelvin_OBC_end(CS%Kelvin_OBC_CSp)
 
   if (associated(CS)) deallocate(CS)
@@ -149,7 +171,7 @@ end subroutine OBC_register_end
 
 !> \namespace mom_boundary_update
 !! This module updates the open boundary arrays when time-varying.
-!! It caused a circular dependency with the tidal_bay setup when
+!! It caused a circular dependency with the tidal_bay and other setups when in
 !! MOM_open_boundary.
 !!
 !! A small fragment of the grid is shown below:

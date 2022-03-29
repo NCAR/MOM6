@@ -96,8 +96,8 @@ function tracer_Z_init(tr, h, filename, tr_name, G, GV, US, missing_val, land_va
     return
   endif
 
-  allocate(tr_in(G%isd:G%ied,G%jsd:G%jed,nz_in)) ; tr_in(:,:,:) = 0.0
-  allocate(tr_1d(nz_in)) ; tr_1d(:) = 0.0
+  allocate(tr_in(G%isd:G%ied,G%jsd:G%jed,nz_in), source=0.0)
+  allocate(tr_1d(nz_in), source=0.0)
   call MOM_read_data(filename, tr_name, tr_in(:,:,:), G%Domain)
 
   ! Fill missing values from above?  Use a "close" test to avoid problems
@@ -137,8 +137,8 @@ function tracer_Z_init(tr, h, filename, tr_name, G, GV, US, missing_val, land_va
 
       do i=is,ie ; if (G%mask2dT(i,j)*htot(i) > 0.0) then
         ! Determine the z* heights of the model interfaces.
-        dilate = (G%bathyT(i,j) - 0.0) / htot(i)
-        e(nz+1) = -G%bathyT(i,j)
+        dilate = (G%bathyT(i,j) + G%Z_ref) / htot(i)
+        e(nz+1) = -G%bathyT(i,j) - G%Z_ref
         do k=nz,1,-1 ; e(K) = e(K+1) + dilate * h(i,j,k) ; enddo
 
         ! Create a single-column copy of tr_in.  Efficiency is not an issue here.
@@ -212,8 +212,8 @@ function tracer_Z_init(tr, h, filename, tr_name, G, GV, US, missing_val, land_va
 
       do i=is,ie ; if (G%mask2dT(i,j)*htot(i) > 0.0) then
         ! Determine the z* heights of the model interfaces.
-        dilate = (G%bathyT(i,j) - 0.0) / htot(i)
-        e(nz+1) = -G%bathyT(i,j)
+        dilate = (G%bathyT(i,j) + G%Z_ref) / htot(i)
+        e(nz+1) = -G%bathyT(i,j) - G%Z_ref
         do k=nz,1,-1 ; e(K) = e(K+1) + dilate * h(i,j,k) ; enddo
 
         ! Create a single-column copy of tr_in.  Efficiency is not an issue here.
@@ -426,7 +426,7 @@ subroutine read_Z_edges(filename, tr_name, z_edges, nz_out, has_edges, &
   call read_attribute(filename, "edges", edge_name, varname=dim_names(3), found=has_edges, ncid_in=ncid)
 
   nz_edge = sizes(3) ; if (has_edges) nz_edge = sizes(3)+1
-  allocate(z_edges(nz_edge)) ; z_edges(:) = 0.0
+  allocate(z_edges(nz_edge), source=0.0)
 
   if (nz_out < 1) return
 
@@ -559,13 +559,13 @@ end function find_limited_slope
 !> This subroutine determines the potential temperature and salinity that
 !! is consistent with the target density using provided initial guess
 subroutine determine_temperature(temp, salt, R_tgt, p_ref, niter, land_fill, h, k_start, G, GV, US, &
-                                 eos, h_massless)
+                                 EOS, h_massless)
   type(ocean_grid_type),         intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),       intent(in)    :: GV   !< The ocean's vertical grid structure.
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                                  intent(inout) :: temp !< potential temperature [degC]
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                                 intent(inout) :: salt !< salinity [PSU]
+                                 intent(inout) :: salt !< salinity [ppt]
   real, dimension(SZK_(GV)),     intent(in)    :: R_tgt !< desired potential density [R ~> kg m-3].
   real,                          intent(in)    :: p_ref !< reference pressure [R L2 T-2 ~> Pa].
   integer,                       intent(in)    :: niter !< maximum number of iterations
@@ -575,7 +575,7 @@ subroutine determine_temperature(temp, salt, R_tgt, p_ref, niter, land_fill, h, 
                                  intent(in)    :: h   !< layer thickness, used only to avoid working on
                                                       !! massless layers [H ~> m or kg m-2]
   type(unit_scale_type),         intent(in)    :: US  !< A dimensional unit scaling type
-  type(eos_type),                pointer       :: eos !< seawater equation of state control structure
+  type(EOS_type),                intent(in)    :: EOS !< seawater equation of state control structure
   real,                optional, intent(in)    :: h_massless !< A threshold below which a layer is
                                                       !! determined to be massless [H ~> m or kg m-2]
 
@@ -627,9 +627,9 @@ subroutine determine_temperature(temp, salt, R_tgt, p_ref, niter, land_fill, h, 
     adjust_salt = .true.
     iter_loop: do itt = 1,niter
       do k=1,nz
-        call calculate_density(T(:,k), S(:,k), press, rho(:,k), eos, EOSdom )
+        call calculate_density(T(:,k), S(:,k), press, rho(:,k), EOS, EOSdom )
         call calculate_density_derivs(T(:,k), S(:,k), press, drho_dT(:,k), drho_dS(:,k), &
-                                      eos, EOSdom )
+                                      EOS, EOSdom )
       enddo
       do k=k_start,nz ; do i=is,ie
 !       if (abs(rho(i,k)-R_tgt(k))>tol_rho .and. hin(i,k)>h_massless .and. abs(T(i,k)-land_fill) < epsln) then
@@ -656,9 +656,9 @@ subroutine determine_temperature(temp, salt, R_tgt, p_ref, niter, land_fill, h, 
 
     if (adjust_salt .and. old_fit) then ; do itt = 1,niter
       do k=1,nz
-        call calculate_density(T(:,k), S(:,k), press, rho(:,k), eos, EOSdom )
+        call calculate_density(T(:,k), S(:,k), press, rho(:,k), EOS, EOSdom )
         call calculate_density_derivs(T(:,k), S(:,k), press, drho_dT(:,k), drho_dS(:,k), &
-                                      eos, EOSdom )
+                                      EOS, EOSdom )
       enddo
       do k=k_start,nz ; do i=is,ie
 !       if (abs(rho(i,k)-R_tgt(k))>tol_rho .and. hin(i,k)>h_massless .and. abs(T(i,k)-land_fill) < epsln ) then

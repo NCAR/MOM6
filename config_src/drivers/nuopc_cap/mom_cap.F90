@@ -28,12 +28,12 @@ use MOM_file_parser,          only: get_param, log_version, param_file_type, clo
 use MOM_get_input,            only: get_MOM_input, directories
 use MOM_domains,              only: pass_var
 use MOM_error_handler,        only: MOM_error, FATAL, is_root_pe
-use MOM_ocean_model_nuopc,    only: ice_ocean_boundary_type
 use MOM_grid,                 only: ocean_grid_type, get_global_grid_size
+use MOM_ocean_model_nuopc,    only: ice_ocean_boundary_type
 use MOM_ocean_model_nuopc,    only: ocean_model_restart, ocean_public_type, ocean_state_type
 use MOM_ocean_model_nuopc,    only: ocean_model_init_sfc, ocean_model_flux_init
 use MOM_ocean_model_nuopc,    only: ocean_model_init, update_ocean_model, ocean_model_end
-use MOM_ocean_model_nuopc,    only: get_ocean_grid, get_eps_omesh
+use MOM_ocean_model_nuopc,    only: get_ocean_grid, get_eps_omesh, query_ocean_state
 use MOM_cap_time,             only: AlarmInit
 use MOM_cap_methods,          only: mom_import, mom_export, mom_set_geomtype, mod2med_areacor
 use MOM_cap_methods,          only: med2mod_areacor, state_diagnose
@@ -97,6 +97,7 @@ use NUOPC_Model, only: model_label_DataInitialize => label_DataInitialize
 use NUOPC_Model, only: model_label_SetRunClock    => label_SetRunClock
 use NUOPC_Model, only: model_label_Finalize       => label_Finalize
 use NUOPC_Model, only: SetVM
+
 !$use omp_lib             , only : omp_set_num_threads
 
 implicit none; private
@@ -122,6 +123,8 @@ type fld_list_type
   character(len=64) :: stdname
   character(len=64) :: shortname
   character(len=64) :: transferOffer
+  integer :: ungridded_lbound = 0
+  integer :: ungridded_ubound = 0
 end type fld_list_type
 
 integer,parameter    :: fldsMax = 100
@@ -421,6 +424,8 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
   character(len=64)                      :: logmsg
   logical                                :: isPresent, isPresentDiro, isPresentLogfile, isSet
   logical                                :: existflag
+  logical                                :: use_waves  ! If true, the wave modules are active.
+  character(len=40)                      :: wave_method ! Wave coupling method.
   integer                                :: userRc
   integer                                :: localPet
   integer                                :: localPeCount
@@ -703,19 +708,23 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
   Ice_ocean_boundary%lrunoff         = 0.0
   Ice_ocean_boundary%frunoff         = 0.0
 
-  if (ocean_state%use_waves) then
-    Ice_ocean_boundary%num_stk_bands=ocean_state%Waves%NumBands
-    allocate ( Ice_ocean_boundary% ustk0 (isc:iec,jsc:jec),         &
-               Ice_ocean_boundary% vstk0 (isc:iec,jsc:jec),         &
-               Ice_ocean_boundary% ustkb (isc:iec,jsc:jec,Ice_ocean_boundary%num_stk_bands), &
-               Ice_ocean_boundary% vstkb (isc:iec,jsc:jec,Ice_ocean_boundary%num_stk_bands), &
-               Ice_ocean_boundary%stk_wavenumbers (Ice_ocean_boundary%num_stk_bands))
-    Ice_ocean_boundary%ustk0           = 0.0
-    Ice_ocean_boundary%vstk0           = 0.0
-    Ice_ocean_boundary%stk_wavenumbers = ocean_state%Waves%WaveNum_Cen
-    Ice_ocean_boundary%ustkb           = 0.0
-    Ice_ocean_boundary%vstkb           = 0.0
+  call query_ocean_state(ocean_state, use_waves=use_waves, wave_method=wave_method)
+  if (use_waves) then
+    if (wave_method == "EFACTOR") then
+      allocate( Ice_ocean_boundary%lamult(isc:iec,jsc:jec) )
+      Ice_ocean_boundary%lamult          = 0.0
+    else if (wave_method == "SURFACE_BANDS") then
+      call query_ocean_state(ocean_state, NumWaveBands=Ice_ocean_boundary%num_stk_bands)
+      allocate(Ice_ocean_boundary%ustkb(isc:iec,jsc:jec,Ice_ocean_boundary%num_stk_bands), source=0.0)
+      allocate(Ice_ocean_boundary%vstkb(isc:iec,jsc:jec,Ice_ocean_boundary%num_stk_bands), source=0.0)
+      allocate(Ice_ocean_boundary%stk_wavenumbers(Ice_ocean_boundary%num_stk_bands), source=0.0)
+      call query_ocean_state(ocean_state, WaveNumbers=Ice_ocean_boundary%stk_wavenumbers, unscale=.true.)
+    else
+      call MOM_error(FATAL, "Unsupported WAVE_METHOD encountered in NUOPC cap.")
+    endif
   endif
+  ! Consider adding this:
+  ! if (.not.use_waves) Ice_ocean_boundary%num_stk_bands = 0
 
   ocean_internalstate%ptr%ocean_state_type_ptr => ocean_state
   call ESMF_GridCompSetInternalState(gcomp, ocean_internalstate, rc)
@@ -726,18 +735,6 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
    call fld_list_add(fldsFrOcn_num, fldsFrOcn, trim(scalar_field_name), "will_provide")
   end if
 
-  if (cesm_coupled) then
-    !call fld_list_add(fldsToOcn_num, fldsToOcn, "Sw_lamult"                 , "will provide")
-    !call fld_list_add(fldsToOcn_num, fldsToOcn, "Sw_ustokes"                , "will provide")
-    !call fld_list_add(fldsToOcn_num, fldsToOcn, "Sw_vstokes"                , "will provide")
-    !call fld_list_add(fldsToOcn_num, fldsToOcn, "Sw_hstokes"                , "will provide")
-    !call fld_list_add(fldsToOcn_num, fldsToOcn, "Fioi_melth"                , "will provide")
-    !call fld_list_add(fldsToOcn_num, fldsToOcn, "Fioi_meltw"                , "will provide")
-    !call fld_list_add(fldsFrOcn_num, fldsFrOcn, "So_fswpen"                 , "will provide")
-  else
-    !call fld_list_add(fldsToOcn_num, fldsToOcn, "mass_of_overlying_sea_ice" , "will provide")
-    !call fld_list_add(fldsFrOcn_num, fldsFrOcn, "sea_lev"                   , "will provide")
-  endif
 
   !--------- import fields -------------
   call fld_list_add(fldsToOcn_num, fldsToOcn, "mean_salt_rate"             , "will provide") ! from ice
@@ -762,16 +759,30 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
   !These are not currently used and changing requires a nuopc dictionary change
   !call fld_list_add(fldsToOcn_num, fldsToOcn, "mean_runoff_heat_flx"        , "will provide")
   !call fld_list_add(fldsToOcn_num, fldsToOcn, "mean_calving_heat_flx"       , "will provide")
-  if (ocean_state%use_waves) then
-    if (Ice_ocean_boundary%num_stk_bands > 3) then
-      call MOM_error(FATAL, "Number of Stokes Bands > 3, NUOPC cap not set up for this")
+  if (use_waves) then
+    if (wave_method == "EFACTOR") then
+      call fld_list_add(fldsToOcn_num, fldsToOcn, "Sw_lamult"                 , "will provide")
+    else if (wave_method == "SURFACE_BANDS") then
+      if (cesm_coupled) then
+        call fld_list_add(fldsToOcn_num, fldsToOcn, "Sw_pstokes_x", "will provide", &
+          ungridded_lbound=1, ungridded_ubound=Ice_ocean_boundary%num_stk_bands)
+        call fld_list_add(fldsToOcn_num, fldsToOcn, "Sw_pstokes_y", "will provide", &
+          ungridded_lbound=1, ungridded_ubound=Ice_ocean_boundary%num_stk_bands)
+      else ! below is the old approach of importing partitioned stokes drift components. after the planned ww3 nuopc
+           ! cap unification, this else block should be removed in favor of the more flexible import approach above.
+        if (Ice_ocean_boundary%num_stk_bands > 3) then
+          call MOM_error(FATAL, "Number of Stokes Bands > 3, NUOPC cap not set up for this")
+        endif
+        call fld_list_add(fldsToOcn_num, fldsToOcn, "eastward_partitioned_stokes_drift_1" , "will provide")
+        call fld_list_add(fldsToOcn_num, fldsToOcn, "northward_partitioned_stokes_drift_1", "will provide")
+        call fld_list_add(fldsToOcn_num, fldsToOcn, "eastward_partitioned_stokes_drift_2" , "will provide")
+        call fld_list_add(fldsToOcn_num, fldsToOcn, "northward_partitioned_stokes_drift_2", "will provide")
+        call fld_list_add(fldsToOcn_num, fldsToOcn, "eastward_partitioned_stokes_drift_3" , "will provide")
+        call fld_list_add(fldsToOcn_num, fldsToOcn, "northward_partitioned_stokes_drift_3", "will provide")
+      endif
+    else
+      call MOM_error(FATAL, "Unsupported WAVE_METHOD encountered in NUOPC cap.")
     endif
-    call fld_list_add(fldsToOcn_num, fldsToOcn, "eastward_partitioned_stokes_drift_1" , "will provide")
-    call fld_list_add(fldsToOcn_num, fldsToOcn, "northward_partitioned_stokes_drift_1", "will provide")
-    call fld_list_add(fldsToOcn_num, fldsToOcn, "eastward_partitioned_stokes_drift_2" , "will provide")
-    call fld_list_add(fldsToOcn_num, fldsToOcn, "northward_partitioned_stokes_drift_2", "will provide")
-    call fld_list_add(fldsToOcn_num, fldsToOcn, "eastward_partitioned_stokes_drift_3" , "will provide")
-    call fld_list_add(fldsToOcn_num, fldsToOcn, "northward_partitioned_stokes_drift_3", "will provide")
   endif
 
   !--------- export fields -------------
@@ -1109,7 +1120,7 @@ subroutine InitializeRealize(gcomp, importState, exportState, clock, rc)
            k = k + 1 ! Increment position within gindex
            if (mask(k) /= 0) then
               mesh_areas(k) = dataPtr_mesh_areas(k)
-              model_areas(k) = ocean_grid%AreaT(i,j) / ocean_grid%Rad_Earth**2
+              model_areas(k) = ocean_grid%AreaT(i,j) / ocean_grid%Rad_Earth_L**2
               mod2med_areacor(k) = model_areas(k) / mesh_areas(k)
               med2mod_areacor(k) = mesh_areas(k) / model_areas(k)
            end if
@@ -1522,7 +1533,7 @@ subroutine ModelAdvance(gcomp, rc)
   integer                                :: nc
   type(ESMF_Time)                        :: MyTime
   integer                                :: seconds, day, year, month, hour, minute
-  character(ESMF_MAXSTR)                 :: restartname, cvalue
+  character(ESMF_MAXSTR)                 :: restartname, cvalue, stoch_restartname
   character(240)                         :: msgString
   character(ESMF_MAXSTR)                 :: casename
   integer                                :: iostat
@@ -1644,7 +1655,7 @@ subroutine ModelAdvance(gcomp, rc)
      ! Import data
      !---------------
 
-     call mom_import(ocean_public, ocean_grid, importState, ice_ocean_boundary, rc=rc)
+     call mom_import(ocean_public, ocean_grid, importState, ice_ocean_boundary, cesm_coupled, rc=rc)
      if (ChkErr(rc,__LINE__,u_FILE_u)) return
 
      !---------------
@@ -1736,14 +1747,19 @@ subroutine ModelAdvance(gcomp, rc)
         ! write the final restart without a timestamp
         if (ESMF_AlarmIsRinging(stop_alarm, rc=rc)) then
            write(restartname,'(A)')"MOM.res"
+           write(stoch_restartname,'(A)')"ocn_stoch.res.nc"
         else
            write(restartname,'(A,I4.4,"-",I2.2,"-",I2.2,"-",I2.2,"-",I2.2,"-",I2.2)') &
                 "MOM.res.", year, month, day, hour, minute, seconds
+           write(stoch_restartname,'(A,I4.4,"-",I2.2,"-",I2.2,"-",I2.2,"-",I2.2,"-",I2.2,A)') &
+                "ocn_stoch.res.", year, month, day, hour, minute, seconds,".nc"
         endif
         call ESMF_LogWrite("MOM_cap: Writing restart :  "//trim(restartname), ESMF_LOGMSG_INFO)
 
         ! write restart file(s)
-        call ocean_model_restart(ocean_state, restartname=restartname)
+        call ocean_model_restart(ocean_state, restartname=restartname, &
+                                stoch_restartname=stoch_restartname)
+
      endif
 
      if (is_root_pe()) then
@@ -2089,25 +2105,43 @@ subroutine MOM_RealizeFields(state, nfields, field_defs, tag, grid, mesh, rc)
 
         if (present(grid)) then
 
-           field = ESMF_FieldCreate(grid, ESMF_TYPEKIND_R8, indexflag=ESMF_INDEX_DELOCAL, &
-                name=field_defs(i)%shortname, rc=rc)
-           if (ChkErr(rc,__LINE__,u_FILE_u)) return
+           if (field_defs(i)%ungridded_lbound > 0 .and. field_defs(i)%ungridded_ubound > 0) then
+              call ESMF_LogWrite(trim(subname)//": ERROR ungridded dimensions not supported in MOM6 nuopc cap when "//&
+              "ESMF_GEOMTYPE_GRID is used. Use ESMF_GEOMTYPE_MESH instead.", ESMF_LOGMSG_ERROR)
+               rc = ESMF_FAILURE
+           else
+              field = ESMF_FieldCreate(grid, ESMF_TYPEKIND_R8, indexflag=ESMF_INDEX_DELOCAL, &
+                   name=field_defs(i)%shortname, rc=rc)
+              if (ChkErr(rc,__LINE__,u_FILE_u)) return
 
-           ! initialize fldptr to zero
-           call ESMF_FieldGet(field, farrayPtr=fldptr2d, rc=rc)
-           if (ChkErr(rc,__LINE__,u_FILE_u)) return
-           fldptr2d(:,:) = 0.0
+              ! initialize fldptr to zero
+              call ESMF_FieldGet(field, farrayPtr=fldptr2d, rc=rc)
+              if (ChkErr(rc,__LINE__,u_FILE_u)) return
+              fldptr2d(:,:) = 0.0
+           endif
 
         else if (present(mesh)) then
 
-           field = ESMF_FieldCreate(mesh=mesh, typekind=ESMF_TYPEKIND_R8, meshloc=ESMF_MESHLOC_ELEMENT, &
-                name=field_defs(i)%shortname, rc=rc)
-           if (ChkErr(rc,__LINE__,u_FILE_u)) return
+           if (field_defs(i)%ungridded_lbound > 0 .and. field_defs(i)%ungridded_ubound > 0) then
+             field = ESMF_FieldCreate(mesh=mesh, typekind=ESMF_TYPEKIND_R8, meshloc=ESMF_MESHLOC_ELEMENT, &
+                  name=field_defs(i)%shortname, ungriddedLbound=(/field_defs(i)%ungridded_lbound/), &
+                  ungriddedUbound=(/field_defs(i)%ungridded_ubound/), gridToFieldMap=(/2/), rc=rc)
+             if (ChkErr(rc,__LINE__,u_FILE_u)) return
 
-           ! initialize fldptr to zero
-           call ESMF_FieldGet(field, farrayPtr=fldptr1d, rc=rc)
-           if (ChkErr(rc,__LINE__,u_FILE_u)) return
-           fldptr1d(:) = 0.0
+             ! initialize fldptr to zero
+             call ESMF_FieldGet(field, farrayPtr=fldptr2d, rc=rc)
+             if (ChkErr(rc,__LINE__,u_FILE_u)) return
+             fldptr2d(:,:) = 0.0
+           else
+             field = ESMF_FieldCreate(mesh=mesh, typekind=ESMF_TYPEKIND_R8, meshloc=ESMF_MESHLOC_ELEMENT, &
+                  name=field_defs(i)%shortname, rc=rc)
+             if (ChkErr(rc,__LINE__,u_FILE_u)) return
+
+             ! initialize fldptr to zero
+             call ESMF_FieldGet(field, farrayPtr=fldptr1d, rc=rc)
+             if (ChkErr(rc,__LINE__,u_FILE_u)) return
+             fldptr1d(:) = 0.0
+           endif
 
         endif
 
@@ -2164,12 +2198,14 @@ end subroutine MOM_RealizeFields
 !===============================================================================
 
 !> Set up list of field information
-subroutine fld_list_add(num, fldlist, stdname, transferOffer, shortname)
+subroutine fld_list_add(num, fldlist, stdname, transferOffer, shortname, ungridded_lbound, ungridded_ubound)
   integer,                    intent(inout) :: num
   type(fld_list_type),        intent(inout) :: fldlist(:)
   character(len=*),           intent(in)    :: stdname
   character(len=*),           intent(in)    :: transferOffer
   character(len=*), optional, intent(in)    :: shortname
+  integer, optional,          intent(in)    :: ungridded_lbound
+  integer, optional,          intent(in)    :: ungridded_ubound
 
   ! local variables
   integer :: rc
@@ -2191,6 +2227,10 @@ subroutine fld_list_add(num, fldlist, stdname, transferOffer, shortname)
      fldlist(num)%shortname   = trim(stdname)
   endif
   fldlist(num)%transferOffer  = trim(transferOffer)
+  if (present(ungridded_lbound) .and. present(ungridded_ubound)) then
+    fldlist(num)%ungridded_lbound = ungridded_lbound
+    fldlist(num)%ungridded_ubound = ungridded_ubound
+  end if
 
 end subroutine fld_list_add
 

@@ -11,7 +11,6 @@ use MOM_EOS,              only : calculate_density
 use MOM_EOS,              only : calculate_spec_vol
 use MOM_EOS,              only : calculate_specific_vol_derivs
 use MOM_error_handler,    only : MOM_error, FATAL, WARNING, MOM_mesg
-use MOM_file_parser,      only : get_param, log_version, param_file_type
 use MOM_hor_index,        only : hor_index_type
 use MOM_string_functions, only : uppercase
 use MOM_variables,        only : thermo_var_ptrs
@@ -38,7 +37,7 @@ contains
 !! required for calculating the finite-volume form pressure accelerations in a
 !! Boussinesq model.
 subroutine int_density_dz(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, EOS, US, dpa, &
-                          intz_dpa, intx_dpa, inty_dpa, bathyT, dz_neglect, useMassWghtInterp)
+                          intz_dpa, intx_dpa, inty_dpa, bathyT, dz_neglect, useMassWghtInterp, Z_0p)
   type(hor_index_type), intent(in)  :: HI  !< Ocean horizontal index structures for the arrays
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(in)  :: T   !< Potential temperature referenced to the surface [degC]
@@ -56,7 +55,7 @@ subroutine int_density_dz(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, EOS, US, dpa,
                                            !! used in the equation of state.
   real,                 intent(in)  :: G_e !< The Earth's gravitational acceleration
                                            !! [L2 Z-1 T-2 ~> m s-2] or [m2 Z-1 s-2 ~> m s-2]
-  type(EOS_type),       pointer     :: EOS !< Equation of state structure
+  type(EOS_type),       intent(in)  :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US  !< A dimensional unit scaling type
   real, dimension(SZI_(HI),SZJ_(HI)), &
                       intent(inout) :: dpa !< The change in the pressure anomaly
@@ -78,13 +77,14 @@ subroutine int_density_dz(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, EOS, US, dpa,
   real,       optional, intent(in)  :: dz_neglect !< A minuscule thickness change [Z ~> m]
   logical,    optional, intent(in)  :: useMassWghtInterp !< If true, uses mass weighting to
                                            !! interpolate T/S for top and bottom integrals.
+  real,       optional, intent(in)  :: Z_0p !< The height at which the pressure is 0 [Z ~> m]
 
   if (EOS_quadrature(EOS)) then
     call int_density_dz_generic_pcm(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, EOS, US, dpa, &
-                                    intz_dpa, intx_dpa, inty_dpa, bathyT, dz_neglect, useMassWghtInterp)
+                                    intz_dpa, intx_dpa, inty_dpa, bathyT, dz_neglect, useMassWghtInterp, Z_0p=Z_0p)
   else
     call analytic_int_density_dz(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, EOS, dpa, &
-                                 intz_dpa, intx_dpa, inty_dpa, bathyT, dz_neglect, useMassWghtInterp)
+                                 intz_dpa, intx_dpa, inty_dpa, bathyT, dz_neglect, useMassWghtInterp, Z_0p=Z_0p)
   endif
 
 end subroutine int_density_dz
@@ -93,8 +93,8 @@ end subroutine int_density_dz
 !> Calculates (by numerical quadrature) integrals of pressure anomalies across layers, which
 !! are required for calculating the finite-volume form pressure accelerations in a Boussinesq model.
 subroutine int_density_dz_generic_pcm(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, &
-                                      EOS, US, dpa, intz_dpa, intx_dpa, inty_dpa, &
-                                      bathyT, dz_neglect, useMassWghtInterp, use_inaccurate_form)
+                                      EOS, US, dpa, intz_dpa, intx_dpa, inty_dpa, bathyT, &
+                                      dz_neglect, useMassWghtInterp, use_inaccurate_form, Z_0p)
   type(hor_index_type), intent(in)  :: HI  !< Horizontal index type for input variables.
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(in)  :: T  !< Potential temperature of the layer [degC]
@@ -112,7 +112,7 @@ subroutine int_density_dz_generic_pcm(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, &
                                           !! used in the equation of state.
   real,                 intent(in)  :: G_e !< The Earth's gravitational acceleration
                                           !! [L2 Z-1 T-2 ~> m s-2] or [m2 Z-1 s-2 ~> m s-2]
-  type(EOS_type),       pointer     :: EOS !< Equation of state structure
+  type(EOS_type),       intent(in)  :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US !< A dimensional unit scaling type
   real, dimension(SZI_(HI),SZJ_(HI)), &
                       intent(inout) :: dpa !< The change in the pressure anomaly
@@ -136,6 +136,8 @@ subroutine int_density_dz_generic_pcm(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, &
                                           !! interpolate T/S for top and bottom integrals.
   logical,    optional, intent(in)  :: use_inaccurate_form !< If true, uses an inaccurate form of
                                           !! density anomalies, as was used prior to March 2018.
+  real,       optional, intent(in)  :: Z_0p !< The height at which the pressure is 0 [Z ~> m]
+
   ! Local variables
   real :: T5(5), S5(5) ! Temperatures and salinities at five quadrature points [degC] and [ppt]
   real :: p5(5)      ! Pressures at five quadrature points, never rescaled from Pa [Pa]
@@ -148,6 +150,7 @@ subroutine int_density_dz_generic_pcm(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, &
   real :: rho_scale  ! A scaling factor for densities from kg m-3 to R [R m3 kg-1 ~> 1]
   real :: rho_ref_mks ! The reference density in MKS units, never rescaled from kg m-3 [kg m-3]
   real :: dz         ! The layer thickness [Z ~> m]
+  real :: z0pres     ! The height at which the pressure is zero [Z ~> m]
   real :: hWght      ! A pressure-thickness below topography [Z ~> m]
   real :: hL, hR     ! Pressure-thicknesses of the columns to the left and right [Z ~> m]
   real :: iDenom     ! The inverse of the denominator in the weights [Z-2 ~> m-2]
@@ -173,6 +176,7 @@ subroutine int_density_dz_generic_pcm(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, &
   GxRho = US%RL2_T2_to_Pa * G_e * rho_0
   rho_ref_mks = rho_ref * US%R_to_kg_m3
   I_Rho = 1.0 / rho_0
+  z0pres = 0.0 ; if (present(Z_0p)) z0pres = Z_0p
   use_rho_ref = .true.
   if (present(use_inaccurate_form)) then
     if (use_inaccurate_form) use_rho_ref = .not. use_inaccurate_form
@@ -191,7 +195,7 @@ subroutine int_density_dz_generic_pcm(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, &
     dz = z_t(i,j) - z_b(i,j)
     do n=1,5
       T5(n) = T(i,j) ; S5(n) = S(i,j)
-      p5(n) = -GxRho*(z_t(i,j) - 0.25*real(n-1)*dz)
+      p5(n) = -GxRho*((z_t(i,j) - z0pres) - 0.25*real(n-1)*dz)
     enddo
     if (use_rho_ref) then
       if (rho_scale /= 1.0) then
@@ -245,7 +249,7 @@ subroutine int_density_dz_generic_pcm(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, &
       dz = wt_L*(z_t(i,j) - z_b(i,j)) + wt_R*(z_t(i+1,j) - z_b(i+1,j))
       T5(1) = wtT_L*T(i,j) + wtT_R*T(i+1,j)
       S5(1) = wtT_L*S(i,j) + wtT_R*S(i+1,j)
-      p5(1) = -GxRho*(wt_L*z_t(i,j) + wt_R*z_t(i+1,j))
+      p5(1) = -GxRho*((wt_L*z_t(i,j) + wt_R*z_t(i+1,j)) - z0pres)
       do n=2,5
         T5(n) = T5(1) ; S5(n) = S5(1) ; p5(n) = p5(n-1) + GxRho*0.25*dz
       enddo
@@ -300,7 +304,7 @@ subroutine int_density_dz_generic_pcm(T, S, z_t, z_b, rho_ref, rho_0, G_e, HI, &
       dz = wt_L*(z_t(i,j) - z_b(i,j)) + wt_R*(z_t(i,j+1) - z_b(i,j+1))
       T5(1) = wtT_L*T(i,j) + wtT_R*T(i,j+1)
       S5(1) = wtT_L*S(i,j) + wtT_R*S(i,j+1)
-      p5(1) = -GxRho*(wt_L*z_t(i,j) + wt_R*z_t(i,j+1))
+      p5(1) = -GxRho*((wt_L*z_t(i,j) + wt_R*z_t(i,j+1)) - z0pres)
       do n=2,5
         T5(n) = T5(1) ; S5(n) = S5(1)
         p5(n) = p5(n-1) + GxRho*0.25*dz
@@ -336,7 +340,7 @@ end subroutine int_density_dz_generic_pcm
 subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
                                       rho_0, G_e, dz_subroundoff, bathyT, HI, GV, EOS, US, use_stanley_eos, dpa, &
                                       intz_dpa, intx_dpa, inty_dpa, useMassWghtInterp, &
-                                      use_inaccurate_form)
+                                      use_inaccurate_form, Z_0p)
   integer,              intent(in)  :: k   !< Layer index to calculate integrals for
   type(hor_index_type), intent(in)  :: HI  !< Ocean horizontal index structures for the input arrays
   type(verticalGrid_type), intent(in) :: GV !< Vertical grid structure
@@ -359,7 +363,7 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
   real,                 intent(in)  :: dz_subroundoff !< A minuscule thickness change [Z ~> m]
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(in)  :: bathyT !< The depth of the bathymetry [Z ~> m]
-  type(EOS_type),       pointer     :: EOS !< Equation of state structure
+  type(EOS_type),       intent(in)  :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US !< A dimensional unit scaling type
   logical,              intent(in) :: use_stanley_eos !< If true, turn on Stanley SGS T variance parameterization
   real, dimension(SZI_(HI),SZJ_(HI)), &
@@ -367,7 +371,7 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
   real, dimension(SZI_(HI),SZJ_(HI)), &
               optional, intent(inout) :: intz_dpa !< The integral through the thickness of the layer of
                                            !! the pressure anomaly relative to the anomaly at the
-                                           !! top of the layer [R L2 Z T-2 ~> Pa Z]
+                                           !! top of the layer [R L2 Z T-2 ~> Pa m]
   real, dimension(SZIB_(HI),SZJ_(HI)), &
               optional, intent(inout) :: intx_dpa !< The integral in x of the difference between the
                                            !! pressure anomaly at the top and bottom of the layer
@@ -380,6 +384,8 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
                                            !! interpolate T/S for top and bottom integrals.
   logical,    optional, intent(in)  :: use_inaccurate_form !< If true, uses an inaccurate form of
                                            !! density anomalies, as was used prior to March 2018.
+  real,       optional, intent(in)  :: Z_0p !< The height at which the pressure is 0 [Z ~> m]
+
 ! This subroutine calculates (by numerical quadrature) integrals of
 ! pressure anomalies across layers, which are required for calculating the
 ! finite-volume form pressure accelerations in a Boussinesq model.  The one
@@ -422,12 +428,13 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
   real :: rho_scale  ! A scaling factor for densities from kg m-3 to R [R m3 kg-1 ~> 1]
   real :: rho_ref_mks ! The reference density in MKS units, never rescaled from kg m-3 [kg m-3]
   real :: dz(HI%iscB:HI%iecB+1)   ! Layer thicknesses at tracer points [Z ~> m]
-  real :: dz_x(5,HI%iscB:HI%iecB) ! Layer thicknesses along an x-line of subrid locations [Z ~> m]
-  real :: dz_y(5,HI%isc:HI%iec)   ! Layer thicknesses along a y-line of subrid locations [Z ~> m]
+  real :: dz_x(5,HI%iscB:HI%iecB) ! Layer thicknesses along an x-line of subgrid locations [Z ~> m]
+  real :: dz_y(5,HI%isc:HI%iec)   ! Layer thicknesses along a y-line of subgrid locations [Z ~> m]
   real :: massWeightToggle          ! A non-dimensional toggle factor (0 or 1) [nondim]
   real :: Ttl, Tbl, Ttr, Tbr        ! Temperatures at the velocity cell corners [degC]
   real :: Stl, Sbl, Str, Sbr        ! Salinities at the velocity cell corners [ppt]
-  real :: hWght                     ! A topographically limited thicknes weight [Z ~> m]
+  real :: z0pres                    ! The height at which the pressure is zero [Z ~> m]
+  real :: hWght                     ! A topographically limited thickness weight [Z ~> m]
   real :: hL, hR                    ! Thicknesses to the left and right [Z ~> m]
   real :: iDenom                    ! The denominator of the thickness weight expressions [Z-2 ~> m-2]
   logical :: use_rho_ref ! Pass rho_ref to the equation of state for more accurate calculation
@@ -442,6 +449,7 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
   GxRho = US%RL2_T2_to_Pa * G_e * rho_0
   rho_ref_mks = rho_ref * US%R_to_kg_m3
   I_Rho = 1.0 / rho_0
+  z0pres = 0.0 ; if (present(Z_0p)) z0pres = Z_0p
   massWeightToggle = 0.
   if (present(useMassWghtInterp)) then
     if (useMassWghtInterp) massWeightToggle = 1.
@@ -477,7 +485,7 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
     do i = Isq,Ieq+1
       dz(i) = e(i,j,K) - e(i,j,K+1)
       do n=1,5
-        p5(i*5+n) = -GxRho*(e(i,j,K) - 0.25*real(n-1)*dz(i))
+        p5(i*5+n) = -GxRho*((e(i,j,K) - z0pres) - 0.25*real(n-1)*dz(i))
         ! Salinity and temperature points are linearly interpolated
         S5(i*5+n) = wt_t(n) * S_t(i,j,k) + wt_b(n) * S_b(i,j,k)
         T5(i*5+n) = wt_t(n) * T_t(i,j,k) + wt_b(n) * T_b(i,j,k)
@@ -585,7 +593,7 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
         S15(pos+1) = w_left*Stl + w_right*Str
         S15(pos+5) = w_left*Sbl + w_right*Sbr
 
-        p15(pos+1) = -GxRho*(w_left*e(i,j,K) + w_right*e(i+1,j,K))
+        p15(pos+1) = -GxRho*((w_left*e(i,j,K) + w_right*e(i+1,j,K)) - z0pres)
 
         ! Pressure
         do n=2,5
@@ -696,7 +704,7 @@ subroutine int_density_dz_generic_plm(k, tv, T_t, T_b, S_t, S_b, e, rho_ref, &
         S15(pos+1) = w_left*Stl + w_right*Str
         S15(pos+5) = w_left*Sbl + w_right*Sbr
 
-        p15(pos+1) = -GxRho*(w_left*e(i,j,K) + w_right*e(i,j+1,K))
+        p15(pos+1) = -GxRho*((w_left*e(i,j,K) + w_right*e(i,j+1,K)) - z0pres)
 
         ! Pressure
         do n=2,5
@@ -779,7 +787,7 @@ end subroutine int_density_dz_generic_plm
 !! are parabolic profiles
 subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
                                       rho_ref, rho_0, G_e, dz_subroundoff, bathyT, HI, GV, EOS, US, use_stanley_eos, &
-                                      dpa, intz_dpa, intx_dpa, inty_dpa, useMassWghtInterp)
+                                      dpa, intz_dpa, intx_dpa, inty_dpa, useMassWghtInterp, Z_0p)
   integer,              intent(in)  :: k   !< Layer index to calculate integrals for
   type(hor_index_type), intent(in)  :: HI  !< Ocean horizontal index structures for the input arrays
   type(verticalGrid_type), intent(in) :: GV !< Vertical grid structure
@@ -798,11 +806,11 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
                                            !! subtracted out to reduce the magnitude of each of the integrals.
   real,                 intent(in)  :: rho_0 !< A density [R ~> kg m-3] or [kg m-3], that is used to calculate
                                            !! the pressure (as p~=-z*rho_0*G_e) used in the equation of state.
-  real,                 intent(in)  :: G_e !< The Earth's gravitational acceleration [m s-2]
+  real,                 intent(in)  :: G_e !< The Earth's gravitational acceleration [L2 Z-1 T-2 ~> m s-2]
   real,                 intent(in)  :: dz_subroundoff !< A minuscule thickness change [Z ~> m]
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(in)  :: bathyT !< The depth of the bathymetry [Z ~> m]
-  type(EOS_type),       pointer     :: EOS !< Equation of state structure
+  type(EOS_type),       intent(in)  :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US  !< A dimensional unit scaling type
   logical,              intent(in)  :: use_stanley_eos !< If true, turn on Stanley SGS T variance parameterization
   real, dimension(SZI_(HI),SZJ_(HI)), &
@@ -821,6 +829,7 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
                                            !! divided by the y grid spacing [R L2 T-2 ~> Pa]
   logical,    optional, intent(in)  :: useMassWghtInterp !< If true, uses mass weighting to
                                            !! interpolate T/S for top and bottom integrals.
+  real,       optional, intent(in)  :: Z_0p !< The height at which the pressure is 0 [Z ~> m]
 
 ! This subroutine calculates (by numerical quadrature) integrals of
 ! pressure anomalies across layers, which are required for calculating the
@@ -859,7 +868,8 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
   real :: t6 ! PPM curvature coefficient for T [degC]
   real :: T_top, T_mn, T_bot ! Left edge, cell mean and right edge values used in PPM reconstructions of T
   real :: S_top, S_mn, S_bot ! Left edge, cell mean and right edge values used in PPM reconstructions of S
-  real :: hWght  ! A topographically limited thicknes weight [Z ~> m]
+  real :: z0pres ! The height at which the pressure is zero [Z ~> m]
+  real :: hWght  ! A topographically limited thickness weight [Z ~> m]
   real :: hL, hR ! Thicknesses to the left and right [Z ~> m]
   real :: iDenom ! The denominator of the thickness weight expressions [Z-2 ~> m-2]
   integer :: Isq, Ieq, Jsq, Jeq, i, j, m, n
@@ -872,6 +882,7 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
   GxRho = US%RL2_T2_to_Pa * G_e * rho_0
   rho_ref_mks = rho_ref * US%R_to_kg_m3
   I_Rho = 1.0 / rho_0
+  z0pres = 0.0 ; if (present(Z_0p)) z0pres = Z_0p
   massWeightToggle = 0.
   if (present(useMassWghtInterp)) then
     if (useMassWghtInterp) massWeightToggle = 1.
@@ -909,7 +920,7 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
     endif
     dz = e(i,j,K) - e(i,j,K+1)
     do n=1,5
-      p5(n) = -GxRho*(e(i,j,K) - 0.25*real(n-1)*dz)
+      p5(n) = -GxRho*((e(i,j,K) - z0pres) - 0.25*real(n-1)*dz)
       ! Salinity and temperature points are reconstructed with PPM
       S5(n) = wt_t(n) * S_t(i,j,k) + wt_b(n) * ( S_b(i,j,k) + s6 * wt_t(n) )
       T5(n) = wt_t(n) * T_t(i,j,k) + wt_b(n) * ( T_b(i,j,k) + t6 * wt_t(n) )
@@ -987,7 +998,7 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
 
       ! Pressure
       dz = w_left*(e(i,j,K) - e(i,j,K+1)) + w_right*(e(i+1,j,K) - e(i+1,j,K+1))
-      p5(1) = -GxRho*(w_left*e(i,j,K) + w_right*e(i+1,j,K))
+      p5(1) = -GxRho*((w_left*e(i,j,K) + w_right*e(i+1,j,K)) - z0pres)
       do n=2,5
         p5(n) = p5(n-1) + GxRho*0.25*dz
       enddo
@@ -1074,7 +1085,7 @@ subroutine int_density_dz_generic_ppm(k, tv, T_t, T_b, S_t, S_b, e, &
 
       ! Pressure
       dz = w_left*(e(i,j,K) - e(i,j,K+1)) + w_right*(e(i,j+1,K) - e(i,j+1,K+1))
-      p5(1) = -GxRho*(w_left*e(i,j,K) + w_right*e(i,j+1,K))
+      p5(1) = -GxRho*((w_left*e(i,j,K) + w_right*e(i,j+1,K)) - z0pres)
       do n=2,5
         p5(n) = p5(n-1) + GxRho*0.25*dz
       enddo
@@ -1134,7 +1145,7 @@ subroutine int_specific_vol_dp(T, S, p_t, p_b, alpha_ref, HI, EOS, US, &
                             !! to reduce the magnitude of each of the integrals [R-1 ~> m3 kg-1]
                             !! The calculation is mathematically identical with different values of
                             !! alpha_ref, but this reduces the effects of roundoff.
-  type(EOS_type),       pointer     :: EOS !< Equation of state structure
+  type(EOS_type),       intent(in)  :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US  !< A dimensional unit scaling type
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(inout) :: dza !< The change in the geopotential anomaly across
@@ -1193,7 +1204,7 @@ subroutine int_spec_vol_dp_generic_pcm(T, S, p_t, p_b, alpha_ref, HI, EOS, US, d
                             !! The calculation is mathematically identical with different values of
                             !! alpha_ref, but alpha_ref alters the effects of roundoff, and
                             !! answers do change.
-  type(EOS_type),       pointer     :: EOS !< Equation of state structure
+  type(EOS_type),       intent(in)  :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US !< A dimensional unit scaling type
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(inout) :: dza !< The change in the geopotential anomaly
@@ -1416,7 +1427,7 @@ subroutine int_spec_vol_dp_generic_plm(T_t, T_b, S_t, S_b, p_t, p_b, alpha_ref, 
                                              !! the same units as p_t [R L2 T-2 ~> Pa] or [Pa]
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(in)  :: bathyP !< The pressure at the bathymetry [R L2 T-2 ~> Pa] or [Pa]
-  type(EOS_type),       pointer     :: EOS !< Equation of state structure
+  type(EOS_type),       intent(in)  :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in) :: US !< A dimensional unit scaling type
   real, dimension(SZI_(HI),SZJ_(HI)), &
                         intent(inout) :: dza !< The change in the geopotential anomaly
@@ -1452,9 +1463,12 @@ subroutine int_spec_vol_dp_generic_plm(T_t, T_b, S_t, S_b, p_t, p_b, alpha_ref, 
   real :: p15(15)    ! Pressures at fifteen quadrature points, scaled back to Pa as necessary [Pa]
   real :: a15(15)    ! Specific volumes at fifteen quadrature points [R-1 ~> m3 kg-1] or [m3 kg-1]
   real :: wt_t(5), wt_b(5) ! Weights of top and bottom values at quadrature points [nondim]
-  real :: T_top, T_bot, S_top, S_bot, P_top, P_bot
+  real :: T_top, T_bot ! Horizontally interpolated temperature at the cell top and bottom [degC]
+  real :: S_top, S_bot ! Horizontally interpolated salinity at the cell top and bottom [ppt]
+  real :: P_top, P_bot ! Horizontally interpolated pressure at the cell top and bottom,
+                       ! scaled back to Pa as necessary [Pa]
 
-  real :: alpha_anom ! The depth averaged specific density anomaly [m3 kg-1]
+  real :: alpha_anom ! The depth averaged specific density anomaly [R-1 ~> m3 kg-1] or [m3 kg-1]
   real :: dp         ! The pressure change through a layer [R L2 T-2 ~> Pa]
   real :: dp_90(2:4) ! The pressure change through a layer divided by 90 [R L2 T-2 ~> Pa]
   real :: hWght      ! A pressure-thickness below topography [R L2 T-2 ~> Pa]
@@ -1654,7 +1668,7 @@ subroutine find_depth_of_pressure_in_cell(T_t, T_b, S_t, S_b, z_t, z_b, P_t, P_t
   real,                  intent(in)  :: rho_ref !< Reference density with which calculation
                                             !! are anomalous to [R ~> kg m-3]
   real,                  intent(in)  :: G_e !< Gravitational acceleration [L2 Z-1 T-2 ~> m s-2]
-  type(EOS_type),        pointer     :: EOS !< Equation of state structure
+  type(EOS_type),        intent(in)  :: EOS !< Equation of state structure
   type(unit_scale_type), intent(in)  :: US !< A dimensional unit scaling type
   real,                  intent(out) :: P_b !< Pressure at the bottom of the cell [R L2 T-2 ~> Pa]
   real,                  intent(out) :: z_out !< Absolute depth at which anomalous pressure = p_tgt [Z ~> m]
@@ -1733,7 +1747,7 @@ real function frac_dp_at_pos(T_t, T_b, S_t, S_b, z_t, z_b, rho_ref, G_e, pos, EO
                                      !! reduce the magnitude of each of the integrals.
   real,           intent(in)  :: G_e !< The Earth's gravitational acceleration [L2 Z-1 T-2 ~> m s-2]
   real,           intent(in)  :: pos !< The fractional vertical position, 0 to 1 [nondim]
-  type(EOS_type), pointer     :: EOS !< Equation of state structure
+  type(EOS_type), intent(in)  :: EOS !< Equation of state structure
   real                        :: fract_dp_at_pos !< The change in pressure from the layer top to
                                      !! fractional position pos [R L2 T-2 ~> Pa]
   ! Local variables

@@ -36,6 +36,7 @@ public mixedlayer_restrat_register_restarts
 
 !> Control structure for mom_mixed_layer_restrat
 type, public :: mixedlayer_restrat_CS ; private
+  logical :: initialized = .false. !< True if this control structure has been initialized.
   real    :: ml_restrat_coef       !< A non-dimensional factor by which the instability is enhanced
                                    !! over what would be predicted based on the resolved gradients
                                    !! [nondim].  This increases with grid spacing^2, up to something
@@ -61,9 +62,9 @@ type, public :: mixedlayer_restrat_CS ; private
                                    !! timing of diagnostic output.
   logical :: use_stanley_ml        !< If true, use the Stanley parameterization of SGS T variance
 
-  real, dimension(:,:), pointer :: &
-         MLD_filtered => NULL(), &   !< Time-filtered MLD [H ~> m or kg m-2]
-         MLD_filtered_slow => NULL() !< Slower time-filtered MLD [H ~> m or kg m-2]
+  real, dimension(:,:), allocatable :: &
+         MLD_filtered, &           !< Time-filtered MLD [H ~> m or kg m-2]
+         MLD_filtered_slow         !< Slower time-filtered MLD [H ~> m or kg m-2]
 
   !>@{
   !! Diagnostic identifier
@@ -102,10 +103,10 @@ subroutine mixedlayer_restrat(h, uhtr, vhtr, tv, forces, dt, MLD, VarMix, G, GV,
   real,                                       intent(in)    :: dt     !< Time increment [T ~> s]
   real, dimension(:,:),                       pointer       :: MLD    !< Mixed layer depth provided by the
                                                                       !! PBL scheme [Z ~> m]
-  type(VarMix_CS),                            pointer       :: VarMix !< Container for derived fields
-  type(mixedlayer_restrat_CS),                pointer       :: CS     !< Module control structure
+  type(VarMix_CS),                            intent(in)    :: VarMix !< Variable mixing control struct
+  type(mixedlayer_restrat_CS),                intent(inout) :: CS     !< Module control structure
 
-  if (.not. associated(CS)) call MOM_error(FATAL, "MOM_mixedlayer_restrat: "// &
+  if (.not. CS%initialized) call MOM_error(FATAL, "MOM_mixedlayer_restrat: "// &
          "Module must be initialized before it is used.")
 
   if (GV%nkml>0) then
@@ -132,8 +133,8 @@ subroutine mixedlayer_restrat_general(h, uhtr, vhtr, tv, forces, dt, MLD_in, Var
   real,                                       intent(in)    :: dt     !< Time increment [T ~> s]
   real, dimension(:,:),                       pointer       :: MLD_in !< Mixed layer depth provided by the
                                                                       !! PBL scheme [Z ~> m] (not H)
-  type(VarMix_CS),                            pointer       :: VarMix !< Container for derived fields
-  type(mixedlayer_restrat_CS),                pointer       :: CS     !< Module control structure
+  type(VarMix_CS),                            intent(in)    :: VarMix !< Variable mixing control struct
+  type(mixedlayer_restrat_CS),                intent(inout) :: CS     !< Module control structure
   ! Local variables
   real :: uhml(SZIB_(G),SZJ_(G),SZK_(GV)) ! zonal mixed layer transport [H L2 T-1 ~> m3 s-1 or kg s-1]
   real :: vhml(SZI_(G),SZJB_(G),SZK_(GV)) ! merid mixed layer transport [H L2 T-1 ~> m3 s-1 or kg s-1]
@@ -204,7 +205,8 @@ subroutine mixedlayer_restrat_general(h, uhtr, vhtr, tv, forces, dt, MLD_in, Var
 
   if (.not.associated(tv%eqn_of_state)) call MOM_error(FATAL, "MOM_mixedlayer_restrat: "// &
          "An equation of state must be used with this module.")
-  if (.not.associated(VarMix) .and. CS%front_length>0.) call MOM_error(FATAL, "MOM_mixedlayer_restrat: "// &
+  if (.not. allocated(VarMix%Rd_dx_h) .and. CS%front_length > 0.) &
+    call MOM_error(FATAL, "MOM_mixedlayer_restrat: "// &
          "The resolution argument, Rd/dx, was not associated.")
 
   if (CS%MLE_density_diff > 0.) then ! We need to calculate a mixed layer depth, MLD.
@@ -251,8 +253,6 @@ subroutine mixedlayer_restrat_general(h, uhtr, vhtr, tv, forces, dt, MLD_in, Var
       enddo
     enddo ! j-loop
   elseif (CS%MLE_use_PBL_MLD) then
-    if (.not. associated(MLD_in)) call MOM_error(FATAL, "MOM_mixedlayer_restrat: "// &
-         "Argument MLD_in was not associated!")
     do j = js-1, je+1 ; do i = is-1, ie+1
       MLD_fast(i,j) = (CS%MLE_MLD_stretch * GV%Z_to_H) * MLD_in(i,j)
     enddo ; enddo
@@ -592,7 +592,7 @@ subroutine mixedlayer_restrat_BML(h, uhtr, vhtr, tv, forces, dt, G, GV, US, CS)
   type(thermo_var_ptrs),                      intent(in)    :: tv     !< Thermodynamic variables structure
   type(mech_forcing),                         intent(in)    :: forces !< A structure with the driving mechanical forces
   real,                                       intent(in)    :: dt     !< Time increment [T ~> s]
-  type(mixedlayer_restrat_CS),                pointer       :: CS     !< Module control structure
+  type(mixedlayer_restrat_CS),                intent(inout) :: CS     !< Module control structure
   ! Local variables
   real :: uhml(SZIB_(G),SZJ_(G),SZK_(GV)) ! zonal mixed layer transport [H L2 T-1 ~> m3 s-1 or kg s-1]
   real :: vhml(SZI_(G),SZJB_(G),SZK_(GV)) ! merid mixed layer transport [H L2 T-1 ~> m3 s-1 or kg s-1]
@@ -635,8 +635,9 @@ subroutine mixedlayer_restrat_BML(h, uhtr, vhtr, tv, forces, dt, G, GV, US, CS)
   is  = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = GV%ke
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB ; nkml = GV%nkml
 
-  if (.not. associated(CS)) call MOM_error(FATAL, "MOM_mixedlayer_restrat: "// &
+  if (.not. CS%initialized) call MOM_error(FATAL, "MOM_mixedlayer_restrat: "// &
          "Module must be initialized before it is used.")
+
   if ((nkml<2) .or. (CS%ml_restrat_coef<=0.0)) return
 
   if (CS%use_stanley_ml) call MOM_error(FATAL, &
@@ -825,8 +826,8 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
   type(unit_scale_type),       intent(in)    :: US         !< A dimensional unit scaling type
   type(param_file_type),       intent(in)    :: param_file !< Parameter file to parse
   type(diag_ctrl), target,     intent(inout) :: diag       !< Regulate diagnostics
-  type(mixedlayer_restrat_CS), pointer       :: CS         !< Module control structure
-  type(MOM_restart_CS),        pointer       :: restart_CS !< A pointer to the restart control structure
+  type(mixedlayer_restrat_CS), intent(inout) :: CS         !< Module control structure
+  type(MOM_restart_CS),        intent(in)    :: restart_CS !< MOM restart control struct
 
   ! Local variables
   real :: H_rescale  ! A rescaling factor for thicknesses from the representation in
@@ -847,9 +848,7 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
              "BULKMIXEDLAYER is true.", default=.false.)
   if (.not. mixedlayer_restrat_init) return
 
-  if (.not.associated(CS)) then
-    call MOM_error(FATAL, "mixedlayer_restrat_init called without an associated control structure.")
-  endif
+  CS%initialized = .true.
 
   ! Nonsense values to cause problems when these parameters are not used
   CS%MLE_MLD_decay_time = -9.e9*US%s_to_T
@@ -919,21 +918,21 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
   flux_to_kg_per_s = GV%H_to_kg_m2 * US%L_to_m**2 * US%s_to_T
 
   CS%id_uhml = register_diag_field('ocean_model', 'uhml', diag%axesCuL, Time, &
-      'Zonal Thickness Flux to Restratify Mixed Layer', 'kg s-1', &
-      conversion=flux_to_kg_per_s, y_cell_method='sum', v_extensive=.true.)
+      'Zonal Thickness Flux to Restratify Mixed Layer', &
+      'kg s-1', conversion=flux_to_kg_per_s, y_cell_method='sum', v_extensive=.true.)
   CS%id_vhml = register_diag_field('ocean_model', 'vhml', diag%axesCvL, Time, &
-      'Meridional Thickness Flux to Restratify Mixed Layer', 'kg s-1', &
-      conversion=flux_to_kg_per_s, x_cell_method='sum', v_extensive=.true.)
+      'Meridional Thickness Flux to Restratify Mixed Layer', &
+      'kg s-1', conversion=flux_to_kg_per_s, x_cell_method='sum', v_extensive=.true.)
   CS%id_urestrat_time = register_diag_field('ocean_model', 'MLu_restrat_time', diag%axesCu1, Time, &
       'Mixed Layer Zonal Restratification Timescale', 's', conversion=US%T_to_s)
   CS%id_vrestrat_time = register_diag_field('ocean_model', 'MLv_restrat_time', diag%axesCv1, Time, &
       'Mixed Layer Meridional Restratification Timescale', 's', conversion=US%T_to_s)
   CS%id_MLD = register_diag_field('ocean_model', 'MLD_restrat', diag%axesT1, Time, &
-      'Mixed Layer Depth as used in the mixed-layer restratification parameterization', 'm', &
-      conversion=GV%H_to_m)
+      'Mixed Layer Depth as used in the mixed-layer restratification parameterization', &
+      'm', conversion=GV%H_to_m)
   CS%id_Rml = register_diag_field('ocean_model', 'ML_buoy_restrat', diag%axesT1, Time, &
       'Mixed Layer Buoyancy as used in the mixed-layer restratification parameterization', &
-      'm s2', conversion=US%m_to_Z*(US%L_to_m**2)*(US%s_to_T**2))
+      'm s2', conversion=US%m_to_Z*(US%L_T_to_m_s**2))
   CS%id_uDml = register_diag_field('ocean_model', 'udml_restrat', diag%axesCu1, Time, &
       'Transport stream function amplitude for zonal restratification of mixed layer', &
       'm3 s-1', conversion=GV%H_to_m*(US%L_to_m**2)*US%s_to_T)
@@ -968,7 +967,7 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
   endif
 
   ! If MLD_filtered is being used, we need to update halo regions after a restart
-  if (associated(CS%MLD_filtered)) call pass_var(CS%MLD_filtered, G%domain)
+  if (allocated(CS%MLD_filtered)) call pass_var(CS%MLD_filtered, G%domain)
 
 end function mixedlayer_restrat_init
 
@@ -977,8 +976,8 @@ subroutine mixedlayer_restrat_register_restarts(HI, param_file, CS, restart_CS)
   ! Arguments
   type(hor_index_type),        intent(in)    :: HI         !< Horizontal index structure
   type(param_file_type),       intent(in)    :: param_file !< Parameter file to parse
-  type(mixedlayer_restrat_CS), pointer       :: CS         !< Module control structure
-  type(MOM_restart_CS),        pointer       :: restart_CS !< A pointer to the restart control structure
+  type(mixedlayer_restrat_CS), intent(inout) :: CS         !< Module control structure
+  type(MOM_restart_CS),        intent(inout) :: restart_CS !< MOM restart control struct
   ! Local variables
   type(vardesc) :: vd
   logical :: mixedlayer_restrat_init
@@ -988,25 +987,20 @@ subroutine mixedlayer_restrat_register_restarts(HI, param_file, CS, restart_CS)
              default=.false., do_not_log=.true.)
   if (.not. mixedlayer_restrat_init) return
 
-  ! Allocate the control structure. CS will be later populated by mixedlayer_restrat_init()
-  if (associated(CS)) call MOM_error(FATAL, &
-       "mixedlayer_restrat_register_restarts called with an associated control structure.")
-  allocate(CS)
-
   call get_param(param_file, mdl, "MLE_MLD_DECAY_TIME", CS%MLE_MLD_decay_time, &
                  default=0., do_not_log=.true.)
   call get_param(param_file, mdl, "MLE_MLD_DECAY_TIME2", CS%MLE_MLD_decay_time2, &
                  default=0., do_not_log=.true.)
   if (CS%MLE_MLD_decay_time>0. .or. CS%MLE_MLD_decay_time2>0.) then
     ! CS%MLD_filtered is used to keep a running mean of the PBL's actively mixed MLD.
-    allocate(CS%MLD_filtered(HI%isd:HI%ied,HI%jsd:HI%jed)) ; CS%MLD_filtered(:,:) = 0.
+    allocate(CS%MLD_filtered(HI%isd:HI%ied,HI%jsd:HI%jed), source=0.)
     vd = var_desc("MLD_MLE_filtered","m","Time-filtered MLD for use in MLE", &
                   hor_grid='h', z_grid='1')
     call register_restart_field(CS%MLD_filtered, vd, .false., restart_CS)
   endif
   if (CS%MLE_MLD_decay_time2>0.) then
     ! CS%MLD_filtered_slow is used to keep a running mean of the PBL's seasonal or winter MLD.
-    allocate(CS%MLD_filtered_slow(HI%isd:HI%ied,HI%jsd:HI%jed)) ; CS%MLD_filtered_slow(:,:) = 0.
+    allocate(CS%MLD_filtered_slow(HI%isd:HI%ied,HI%jsd:HI%jed), source=0.)
     vd = var_desc("MLD_MLE_filtered_slow","m","c Slower time-filtered MLD for use in MLE", &
                   hor_grid='h', z_grid='1')
     call register_restart_field(CS%MLD_filtered_slow, vd, .false., restart_CS)

@@ -477,10 +477,10 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
   CS%nk=ke
 
   ! Target resolution (for fixed coordinates)
-  allocate( CS%coordinateResolution(CS%nk) ); CS%coordinateResolution(:) = -1.E30
+  allocate( CS%coordinateResolution(CS%nk), source=-1.E30 )
   if (state_dependent(CS%regridding_scheme)) then
     ! Target values
-    allocate( CS%target_density(CS%nk+1) ); CS%target_density(:) = -1.E30*US%kg_m3_to_R
+    allocate( CS%target_density(CS%nk+1), source=-1.E30*US%kg_m3_to_R )
   endif
 
   if (allocated(dz)) then
@@ -488,7 +488,6 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
       call setCoordinateResolution(dz, CS, scale=1.0)
     elseif (coordinateMode(coord_mode) == REGRIDDING_RHO) then
       call setCoordinateResolution(dz, CS, scale=US%kg_m3_to_R)
-      CS%coord_scale = US%R_to_kg_m3
     elseif (coordinateMode(coord_mode) == REGRIDDING_ADAPTIVE) then
       call setCoordinateResolution(dz, CS, scale=GV%m_to_H)
       CS%coord_scale = GV%H_to_m
@@ -497,6 +496,14 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
       CS%coord_scale = US%Z_to_m
     endif
   endif
+
+  ! set coord_scale for RHO regridding independent of allocation status of dz
+  if (coordinateMode(coord_mode) == REGRIDDING_RHO) then
+    CS%coord_scale = US%R_to_kg_m3
+  endif
+
+  ! ensure CS%ref_pressure is rescaled properly
+  CS%ref_pressure = (US%kg_m3_to_R * US%m_s_to_L_T**2) * CS%ref_pressure
 
   if (allocated(rho_target)) then
     call set_target_densities(CS, US%kg_m3_to_R*rho_target)
@@ -799,7 +806,7 @@ subroutine regridding_main( remapCS, CS, G, GV, h, tv, h_new, dzInterface, frac_
       call build_zstar_grid( CS, G, GV, h, dzInterface, frac_shelf_h )
       call calc_h_new_by_dz(CS, G, GV, h, dzInterface, h_new)
     case ( REGRIDDING_SIGMA_SHELF_ZSTAR)
-      call build_zstar_grid( CS, G, GV, h, dzInterface, frac_shelf_h )
+      call build_zstar_grid( CS, G, GV, h, dzInterface )
       call calc_h_new_by_dz(CS, G, GV, h, dzInterface, h_new)
     case ( REGRIDDING_SIGMA )
       call build_sigma_grid( CS, G, GV, h, dzInterface )
@@ -880,21 +887,20 @@ subroutine check_remapping_grid( G, GV, h, dzInterface, msg )
 
   !$OMP parallel do default(shared)
   do j = G%jsc-1,G%jec+1 ; do i = G%isc-1,G%iec+1
-    if (G%mask2dT(i,j)>0.) call check_grid_column( GV%ke, GV%Z_to_H*G%bathyT(i,j), h(i,j,:), dzInterface(i,j,:), msg )
+    if (G%mask2dT(i,j)>0.) call check_grid_column( GV%ke, h(i,j,:), dzInterface(i,j,:), msg )
   enddo ; enddo
 
 end subroutine check_remapping_grid
 
 !> Check that the total thickness of new and old grids are consistent
-subroutine check_grid_column( nk, depth, h, dzInterface, msg )
+subroutine check_grid_column( nk, h, dzInterface, msg )
   integer,               intent(in) :: nk !< Number of cells
-  real,                  intent(in) :: depth !< Depth of bottom [Z ~> m] or arbitrary units
   real, dimension(nk),   intent(in) :: h  !< Cell thicknesses [Z ~> m] or arbitrary units
   real, dimension(nk+1), intent(in) :: dzInterface !< Change in interface positions (same units as h)
   character(len=*),      intent(in) :: msg !< Message to append to errors
   ! Local variables
   integer :: k
-  real    :: eps, total_h_old, total_h_new, h_new, z_old, z_new
+  real    :: eps, total_h_old, total_h_new, h_new
 
   eps =1. ; eps = epsilon(eps)
 
@@ -904,13 +910,8 @@ subroutine check_grid_column( nk, depth, h, dzInterface, msg )
     total_h_old = total_h_old + h(k)
   enddo
 
-  ! Integrate upwards for the interfaces consistent with the rest of MOM6
-  z_old = - depth
-  if (depth == 0.) z_old = - total_h_old
   total_h_new = 0.
   do k = nk,1,-1
-    z_old = z_old + h(k) ! Old interface position above layer k
-    z_new = z_old + dzInterface(k) ! New interface position based on dzInterface
     h_new = h(k) + ( dzInterface(k) - dzInterface(k+1) ) ! New thickness
     if (h_new<0.) then
       write(0,*) 'k,h,hnew=',k,h(k),h_new
@@ -1082,7 +1083,7 @@ subroutine filtered_grid_motion( CS, nk, z_old, z_new, dz_g )
 
 end subroutine filtered_grid_motion
 
-!> Builds a z*-ccordinate grid with partial steps (Adcroft and Campin, 2004).
+!> Builds a z*-coordinate grid with partial steps (Adcroft and Campin, 2004).
 !! z* is defined as
 !!   z* = (z-eta)/(H+eta)*H  s.t. z*=0 when z=eta and z*=-H when z=-H .
 subroutine build_zstar_grid( CS, G, GV, h, dzInterface, frac_shelf_h)
@@ -1118,8 +1119,8 @@ subroutine build_zstar_grid( CS, G, GV, h, dzInterface, frac_shelf_h)
         cycle
       endif
 
-      ! Local depth (G%bathyT is positive)
-      nominalDepth = G%bathyT(i,j)*GV%Z_to_H
+      ! Local depth (G%bathyT is positive downward)
+      nominalDepth = (G%bathyT(i,j)+G%Z_ref)*GV%Z_to_H
 
       ! Determine water column thickness
       totalThickness = 0.0
@@ -1209,7 +1210,7 @@ subroutine build_sigma_grid( CS, G, GV, h, dzInterface )
       endif
 
       ! The rest of the model defines grids integrating up from the bottom
-      nominalDepth = G%bathyT(i,j)*GV%Z_to_H
+      nominalDepth = (G%bathyT(i,j)+G%Z_ref)*GV%Z_to_H
 
       ! Determine water column height
       totalThickness = 0.0
@@ -1281,8 +1282,8 @@ subroutine build_rho_grid( G, GV, US, h, tv, dzInterface, remapCS, CS, frac_shel
                                                                     !! [H ~> m or kg m-2]
   type(remapping_CS),                           intent(in)    :: remapCS !< The remapping control structure
   type(regridding_CS),                          intent(in)    :: CS !< Regridding control structure
-  real, dimension(SZI_(G),SZJ_(G)), optional,   intent(in)    :: frac_shelf_h  !< Fractional
-                                                                    !! ice shelf coverage [nodim]
+  real, dimension(SZI_(G),SZJ_(G)), optional,   intent(in)    :: frac_shelf_h  !< Fractional ice
+                                                                    !! shelf coverage [nondim]
   ! Local variables
   integer :: nz
   integer :: i, j, k
@@ -1319,8 +1320,8 @@ subroutine build_rho_grid( G, GV, US, h, tv, dzInterface, remapCS, CS, frac_shel
       endif
 
 
-      ! Local depth (G%bathyT is positive)
-      nominalDepth = G%bathyT(i,j)*GV%Z_to_H
+      ! Local depth (G%bathyT is positive downward)
+      nominalDepth = (G%bathyT(i,j)+G%Z_ref)*GV%Z_to_H
 
       ! Determine total water column thickness
       totalThickness = 0.0
@@ -1406,7 +1407,7 @@ end subroutine build_rho_grid
 !! density interpolated from the column profile and a clipping of depth for
 !! each interface to a fixed z* or p* grid.  This should probably be (optionally?)
 !! changed to find the nearest location of the target density.
-!! \remark { Based on Bleck, 2002: An oceanice general circulation model framed in
+!! \remark { Based on Bleck, 2002: An ocean-ice general circulation model framed in
 !! hybrid isopycnic-Cartesian coordinates, Ocean Modelling 37, 55-88.
 !! http://dx.doi.org/10.1016/S1463-5003(01)00012-9 }
 subroutine build_grid_HyCOM1( G, GV, US, h, tv, h_new, dzInterface, CS, frac_shelf_h )
@@ -1418,14 +1419,14 @@ subroutine build_grid_HyCOM1( G, GV, US, h, tv, h_new, dzInterface, CS, frac_she
   type(regridding_CS),                       intent(in)    :: CS !< Regridding control structure
   real, dimension(SZI_(G),SZJ_(G),CS%nk),    intent(inout) :: h_new !< New layer thicknesses [H ~> m or kg m-2]
   real, dimension(SZI_(G),SZJ_(G),CS%nk+1),  intent(inout) :: dzInterface !< Changes in interface position
-  real, dimension(SZI_(G),SZJ_(G)), optional, intent(in)   :: frac_shelf_h !< Fractional
-                                                                    !! ice shelf coverage [nodim]
+  real, dimension(SZI_(G),SZJ_(G)), optional, intent(in)   :: frac_shelf_h !< Fractional ice shelf
+                                                                    !! coverage [nondim]
 
   ! Local variables
   real, dimension(SZK_(GV)+1) :: z_col ! Source interface positions relative to the surface [H ~> m or kg m-2]
   real, dimension(CS%nk+1) :: z_col_new ! New interface positions relative to the surface [H ~> m or kg m-2]
   real, dimension(SZK_(GV)+1) :: dz_col  ! The realized change in z_col [H ~> m or kg m-2]
-  real, dimension(SZK_(GV))   :: p_col   ! Layer center pressure [Pa]
+  real, dimension(SZK_(GV))   :: p_col   ! Layer center pressure [R L2 T-2 ~> Pa]
   integer   :: i, j, k, nki
   real :: depth, nominalDepth
   real :: h_neglect, h_neglect_edge
@@ -1450,7 +1451,7 @@ subroutine build_grid_HyCOM1( G, GV, US, h, tv, h_new, dzInterface, CS, frac_she
   do j = G%jsc-1,G%jec+1 ; do i = G%isc-1,G%iec+1
     if (G%mask2dT(i,j)>0.) then
 
-      nominalDepth = G%bathyT(i,j) * GV%Z_to_H
+      nominalDepth = (G%bathyT(i,j)+G%Z_ref) * GV%Z_to_H
 
       if (ice_shelf) then
         totalThickness = 0.0
@@ -1575,7 +1576,9 @@ subroutine build_grid_SLight(G, GV, US, h, tv, dzInterface, CS)
   real, dimension(SZK_(GV)+1) :: z_col_new ! Interface positions relative to the surface [H ~> m or kg m-2]
   real, dimension(SZK_(GV)+1) :: dz_col  ! The realized change in z_col [H ~> m or kg m-2]
   real, dimension(SZK_(GV))   :: p_col   ! Layer center pressure [R L2 T-2 ~> Pa]
-  real :: depth
+
+  ! Local variables
+  real :: depth   ! Depth of the ocean relative to the mean sea surface height in thickness units [H ~> m or kg m-2]
   integer :: i, j, k, nz
   real :: h_neglect, h_neglect_edge
 
@@ -1596,7 +1599,7 @@ subroutine build_grid_SLight(G, GV, US, h, tv, dzInterface, CS)
   do j = G%jsc-1,G%jec+1 ; do i = G%isc-1,G%iec+1
     if (G%mask2dT(i,j)>0.) then
 
-      depth = G%bathyT(i,j) * GV%Z_to_H
+      depth = (G%bathyT(i,j)+G%Z_ref) * GV%Z_to_H
       z_col(1) = 0. ! Work downward rather than bottom up
       do K=1,nz
         z_col(K+1) = z_col(K) + h(i,j,k)
@@ -1631,8 +1634,8 @@ end subroutine build_grid_SLight
 subroutine adjust_interface_motion( CS, nk, h_old, dz_int )
   type(regridding_CS),      intent(in)    :: CS !< Regridding control structure
   integer,                  intent(in)    :: nk !< Number of layers in h_old
-  real, dimension(nk),      intent(in)    :: h_old !< Minium allowed thickness of h [H ~> m or kg m-2]
-  real, dimension(CS%nk+1), intent(inout) :: dz_int !< Minium allowed thickness of h [H ~> m or kg m-2]
+  real, dimension(nk),      intent(in)    :: h_old !< Minimum allowed thickness of h [H ~> m or kg m-2]
+  real, dimension(CS%nk+1), intent(inout) :: dz_int !< Minimum allowed thickness of h [H ~> m or kg m-2]
   ! Local variables
   integer :: k
   real :: h_new, eps, h_total, h_err
@@ -1710,8 +1713,8 @@ subroutine build_grid_arbitrary( G, GV, h, dzInterface, h_new, CS )
   real      :: total_height
   real      :: delta_h
   real      :: max_depth
-  real      :: eta              ! local elevation
-  real      :: local_depth
+  real      :: eta              ! local elevation [H ~> m or kg m-2]
+  real      :: local_depth      ! The local ocean depth relative to mean sea level in thickness units [H ~> m or kg m-2]
   real      :: x1, y1, x2, y2
   real      :: x, t
 
@@ -1722,7 +1725,7 @@ subroutine build_grid_arbitrary( G, GV, h, dzInterface, h_new, CS )
     do i = G%isc-1,G%iec+1
 
       ! Local depth
-      local_depth = G%bathyT(i,j)*GV%Z_to_H
+      local_depth = (G%bathyT(i,j)+G%Z_ref)*GV%Z_to_H
 
       ! Determine water column height
       total_height = 0.0
@@ -1769,7 +1772,7 @@ subroutine build_grid_arbitrary( G, GV, h, dzInterface, h_new, CS )
         endif
       enddo
 
-      ! Chnage in interface position
+      ! Change in interface position
       x = 0. ! Left boundary at x=0
       dzInterface(i,j,1) = 0.
       do k = 2,nz
@@ -1797,7 +1800,7 @@ subroutine inflate_vanished_layers_old( CS, G, GV, h )
 ! objective is to make sure all layers are at least as thick as the minimum
 ! thickness allowed for regridding purposes (this parameter is set in the
 ! MOM_input file or defaulted to 1.0e-3). When layers are too thin, they
-! are inflated up to the minmum thickness.
+! are inflated up to the minimum thickness.
 !------------------------------------------------------------------------------
 
   ! Arguments
@@ -1901,7 +1904,7 @@ function uniformResolution(nk,coordMode,maxDepth,rhoLight,rhoHeavy)
   ! Arguments
   integer,          intent(in) :: nk !< Number of cells in source grid
   character(len=*), intent(in) :: coordMode !< A string indicating the coordinate mode.
-                                            !! See the documenttion for regrid_consts
+                                            !! See the documentation for regrid_consts
                                             !! for the recognized values.
   real,             intent(in) :: maxDepth  !< The range of the grid values in some modes
   real,             intent(in) :: rhoLight  !< The minimum value of the grid in RHO mode

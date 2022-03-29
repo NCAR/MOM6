@@ -11,7 +11,9 @@ use MOM_domains,       only : MOM_domain_type, get_domain_extent, group_pass_typ
 use MOM_EOS,           only : EOS_type
 use MOM_error_handler, only : MOM_error, FATAL
 use MOM_grid,          only : ocean_grid_type
+use MOM_unit_scaling,  only : unit_scale_type
 use MOM_verticalGrid,  only : verticalGrid_type
+use MOM_tracer_types,  only : tracer_type
 
 implicit none ; private
 
@@ -67,7 +69,7 @@ type, public :: surface
   logical :: T_is_conT = .false. !< If true, the temperature variable SST is actually the
                    !! conservative temperature in [degC].
   logical :: S_is_absS = .false. !< If true, the salinity variable SSS is actually the
-                   !! absolute salinity in [g/kg].
+                   !! absolute salinity in [gSalt kg-1].
   type(coupler_2d_bc_type) :: tr_fields !< A structure that may contain an
                 !! array of named fields describing tracer-related quantities.
        !### NOTE: ALL OF THE ARRAYS IN TR_FIELDS USE THE COUPLER'S INDEXING CONVENTION AND HAVE NO
@@ -95,7 +97,7 @@ type, public :: thermo_var_ptrs
   logical :: T_is_conT = .false. !< If true, the temperature variable tv%T is
                          !! actually the conservative temperature [degC].
   logical :: S_is_absS = .false. !< If true, the salinity variable tv%S is
-                         !! actually the absolute salinity in units of [gSalt/kg].
+                         !! actually the absolute salinity in units of [gSalt kg-1].
   real :: min_salinity = 0.01 !< The minimum value of salinity when BOUND_SALINITY=True [ppt].
                          !! The default is 0.01 for backward compatibility but should be 0.
   ! These arrays are accumulated fluxes for communication with other components.
@@ -123,6 +125,8 @@ type, public :: thermo_var_ptrs
   real, pointer :: varS(:,:,:) => NULL() !< SGS variance of salinity [ppt2].
   real, pointer :: covarTS(:,:,:) => NULL() !< SGS covariance of salinity and potential
                                   !! temperature [degC ppt].
+  type(tracer_type), pointer :: tr_T => NULL()  !< pointer to temp in tracer registry
+  type(tracer_type), pointer :: tr_S => NULL()  !< pointer to salinty in tracer registry
 end type thermo_var_ptrs
 
 !> Pointers to all of the prognostic variables allocated in MOM_variables.F90 and MOM.F90.
@@ -171,6 +175,10 @@ type, public :: accel_diag_ptrs
     PFv => NULL(), &       !< Meridional acceleration due to pressure forces [L T-2 ~> m s-2]
     du_dt_visc => NULL(), &!< Zonal acceleration due to vertical viscosity [L T-2 ~> m s-2]
     dv_dt_visc => NULL(), &!< Meridional acceleration due to vertical viscosity [L T-2 ~> m s-2]
+    du_dt_str => NULL(), & !< Zonal acceleration due to the surface stress (included
+                           !! in du_dt_visc) [L T-2 ~> m s-2]
+    dv_dt_str => NULL(), & !< Meridional acceleration due to the surface stress (included
+                           !! in dv_dt_visc) [L T-2 ~> m s-2]
     du_dt_dia => NULL(), & !< Zonal acceleration due to diapycnal  mixing [L T-2 ~> m s-2]
     dv_dt_dia => NULL(), & !< Meridional acceleration due to diapycnal  mixing [L T-2 ~> m s-2]
     u_accel_bt => NULL(), &!< Pointer to the zonal barotropic-solver acceleration [L T-2 ~> m s-2]
@@ -188,10 +196,15 @@ type, public :: accel_diag_ptrs
   real, pointer :: rv_x_v(:,:,:) => NULL()   !< rv_x_v = rv * v at u [L T-2 ~> m s-2]
   real, pointer :: rv_x_u(:,:,:) => NULL()   !< rv_x_u = rv * u at v [L T-2 ~> m s-2]
 
-  real, pointer :: diag_hfrac_u(:,:,:) => NULL() !< Fractional layer thickness at u points
-  real, pointer :: diag_hfrac_v(:,:,:) => NULL() !< Fractional layer thickness at v points
-  real, pointer :: diag_hu(:,:,:) => NULL() !< layer thickness at u points
-  real, pointer :: diag_hv(:,:,:) => NULL() !< layer thickness at v points
+  real, pointer :: diag_hfrac_u(:,:,:) => NULL() !< Fractional layer thickness at u points [nondim]
+  real, pointer :: diag_hfrac_v(:,:,:) => NULL() !< Fractional layer thickness at v points [nondim]
+  real, pointer :: diag_hu(:,:,:) => NULL() !< layer thickness at u points, modulated by the viscous
+                                            !! remnant and fractional open areas [H ~> m or kg m-2]
+  real, pointer :: diag_hv(:,:,:) => NULL() !< layer thickness at v points, modulated by the viscous
+                                            !! remnant and fractional open areas [H ~> m or kg m-2]
+
+  real, pointer :: visc_rem_u(:,:,:) => NULL() !< viscous remnant at u points [nondim]
+  real, pointer :: visc_rem_v(:,:,:) => NULL() !< viscous remnant at v points [nondim]
 
 end type accel_diag_ptrs
 
@@ -206,7 +219,7 @@ type, public :: cont_diag_ptrs
     vhGM => NULL()    !< Isopycnal height diffusion induced meridional volume fluxes [H L2 T-1 ~> m3 s-1 or kg s-1]
 
 ! Each of the following fields is found at nz+1 interfaces.
-  real, pointer :: diapyc_vel(:,:,:) => NULL() !< The net diapycnal velocity [H s-1 ~> m s-1 or kg m-2 s-1]
+  real, pointer :: diapyc_vel(:,:,:) => NULL() !< The net diapycnal velocity [H T-1 ~> m s-1 or kg m-2 s-1]
 
 end type cont_diag_ptrs
 
@@ -275,10 +288,10 @@ type, public :: BT_cont_type
                                     !! drawing from nearby to the west [H L ~> m2 or kg m-1].
   real, allocatable :: FA_u_WW(:,:) !< The effective open face area for zonal barotropic transport
                                     !! drawing from locations far to the west [H L ~> m2 or kg m-1].
-  real, allocatable :: uBT_WW(:,:)  !< uBT_WW is the barotropic velocity [L T-1 ~> m s-1], beyond which the marginal
-                                    !! open face area is FA_u_WW.  uBT_WW must be non-negative.
-  real, allocatable :: uBT_EE(:,:)  !< uBT_EE is a barotropic velocity [L T-1 ~> m s-1], beyond which the marginal
-                                    !! open face area is FA_u_EE. uBT_EE must be non-positive.
+  real, allocatable :: uBT_WW(:,:)  !< uBT_WW is the barotropic velocity [L T-1 ~> m s-1], beyond which the
+                                    !! marginal open face area is FA_u_WW.  uBT_WW must be non-negative.
+  real, allocatable :: uBT_EE(:,:)  !< uBT_EE is a barotropic velocity [L T-1 ~> m s-1], beyond which the
+                                    !! marginal open face area is FA_u_EE. uBT_EE must be non-positive.
   real, allocatable :: FA_v_NN(:,:) !< The effective open face area for meridional barotropic transport
                                     !! drawing from locations far to the north [H L ~> m2 or kg m-1].
   real, allocatable :: FA_v_N0(:,:) !< The effective open face area for meridional barotropic transport
@@ -287,15 +300,31 @@ type, public :: BT_cont_type
                                     !! drawing from nearby to the south [H L ~> m2 or kg m-1].
   real, allocatable :: FA_v_SS(:,:) !< The effective open face area for meridional barotropic transport
                                     !! drawing from locations far to the south [H L ~> m2 or kg m-1].
-  real, allocatable :: vBT_SS(:,:)  !< vBT_SS is the barotropic velocity, [L T-1 ~> m s-1], beyond which the marginal
-                                    !! open face area is FA_v_SS. vBT_SS must be non-negative.
-  real, allocatable :: vBT_NN(:,:)  !< vBT_NN is the barotropic velocity, [L T-1 ~> m s-1], beyond which the marginal
-                                    !! open face area is FA_v_NN.  vBT_NN must be non-positive.
-  real, allocatable :: h_u(:,:,:)   !< An effective thickness at zonal faces [H ~> m or kg m-2].
-  real, allocatable :: h_v(:,:,:)   !< An effective thickness at meridional faces [H ~> m or kg m-2].
+  real, allocatable :: vBT_SS(:,:)  !< vBT_SS is the barotropic velocity, [L T-1 ~> m s-1], beyond which the
+                                    !! marginal open face area is FA_v_SS. vBT_SS must be non-negative.
+  real, allocatable :: vBT_NN(:,:)  !< vBT_NN is the barotropic velocity, [L T-1 ~> m s-1], beyond which the
+                                    !! marginal open face area is FA_v_NN.  vBT_NN must be non-positive.
+  real, allocatable :: h_u(:,:,:)   !< An effective thickness at zonal faces, taking into account the effects
+                                    !! of vertical viscosity and fractional open areas [H ~> m or kg m-2].
+                                    !! This is primarily used as a non-normalized weight in determining
+                                    !! the depth averaged accelerations for the barotropic solver.
+  real, allocatable :: h_v(:,:,:)   !< An effective thickness at meridional faces, taking into account the effects
+                                    !! of vertical viscosity and fractional open areas [H ~> m or kg m-2].
+                                    !! This is primarily used as a non-normalized weight in determining
+                                    !! the depth averaged accelerations for the barotropic solver.
   type(group_pass_type) :: pass_polarity_BT !< Structure for polarity group halo updates
   type(group_pass_type) :: pass_FA_uv !< Structure for face area group halo updates
 end type BT_cont_type
+
+
+!> pointers to grids modifying cell metric at porous barriers
+type, public :: porous_barrier_ptrs
+  real, pointer, dimension(:,:,:) :: por_face_areaU => NULL() !< fractional open area of U-faces [nondim]
+  real, pointer, dimension(:,:,:) :: por_face_areaV => NULL() !< fractional open area of V-faces [nondim]
+  real, pointer, dimension(:,:,:) :: por_layer_widthU => NULL() !< fractional open width of U-faces [nondim]
+  real, pointer, dimension(:,:,:) :: por_layer_widthV => NULL() !< fractional open width of V-faces [nondim]
+end type porous_barrier_ptrs
+
 
 contains
 
@@ -341,43 +370,43 @@ subroutine allocate_surface_state(sfc_state, G, use_temperature, do_integrals, &
   if (sfc_state%arrays_allocated) return
 
   if (use_temp) then
-    allocate(sfc_state%SST(isd:ied,jsd:jed)) ; sfc_state%SST(:,:) = 0.0
-    allocate(sfc_state%SSS(isd:ied,jsd:jed)) ; sfc_state%SSS(:,:) = 0.0
+    allocate(sfc_state%SST(isd:ied,jsd:jed), source=0.0)
+    allocate(sfc_state%SSS(isd:ied,jsd:jed), source=0.0)
   else
-    allocate(sfc_state%sfc_density(isd:ied,jsd:jed)) ; sfc_state%sfc_density(:,:) = 0.0
+    allocate(sfc_state%sfc_density(isd:ied,jsd:jed), source=0.0)
   endif
   if (use_temp .and. alloc_frazil) then
-    allocate(sfc_state%frazil(isd:ied,jsd:jed)) ; sfc_state%frazil(:,:) = 0.0
+    allocate(sfc_state%frazil(isd:ied,jsd:jed), source=0.0)
   endif
-  allocate(sfc_state%sea_lev(isd:ied,jsd:jed)) ; sfc_state%sea_lev(:,:) = 0.0
-  allocate(sfc_state%Hml(isd:ied,jsd:jed)) ; sfc_state%Hml(:,:) = 0.0
-  allocate(sfc_state%u(IsdB:IedB,jsd:jed)) ; sfc_state%u(:,:) = 0.0
-  allocate(sfc_state%v(isd:ied,JsdB:JedB)) ; sfc_state%v(:,:) = 0.0
+  allocate(sfc_state%sea_lev(isd:ied,jsd:jed), source=0.0)
+  allocate(sfc_state%Hml(isd:ied,jsd:jed), source=0.0)
+  allocate(sfc_state%u(IsdB:IedB,jsd:jed), source=0.0)
+  allocate(sfc_state%v(isd:ied,JsdB:JedB), source=0.0)
 
   if (use_melt_potential) then
-    allocate(sfc_state%melt_potential(isd:ied,jsd:jed)) ; sfc_state%melt_potential(:,:) = 0.0
+    allocate(sfc_state%melt_potential(isd:ied,jsd:jed), source=0.0)
   endif
 
   if (alloc_cfcs) then
-    allocate(sfc_state%sfc_cfc11(isd:ied,jsd:jed)) ; sfc_state%sfc_cfc11(:,:) = 0.0
-    allocate(sfc_state%sfc_cfc12(isd:ied,jsd:jed)) ; sfc_state%sfc_cfc12(:,:) = 0.0
+    allocate(sfc_state%sfc_cfc11(isd:ied,jsd:jed), source=0.0)
+    allocate(sfc_state%sfc_cfc12(isd:ied,jsd:jed), source=0.0)
   endif
 
   if (alloc_integ) then
     ! Allocate structures for the vertically integrated ocean_mass, ocean_heat, and ocean_salt.
-    allocate(sfc_state%ocean_mass(isd:ied,jsd:jed)) ; sfc_state%ocean_mass(:,:) = 0.0
+    allocate(sfc_state%ocean_mass(isd:ied,jsd:jed), source=0.0)
     if (use_temp) then
-      allocate(sfc_state%ocean_heat(isd:ied,jsd:jed)) ; sfc_state%ocean_heat(:,:) = 0.0
-      allocate(sfc_state%ocean_salt(isd:ied,jsd:jed)) ; sfc_state%ocean_salt(:,:) = 0.0
-      allocate(sfc_state%TempxPmE(isd:ied,jsd:jed))   ; sfc_state%TempxPmE(:,:) = 0.0
-      allocate(sfc_state%salt_deficit(isd:ied,jsd:jed))  ; sfc_state%salt_deficit(:,:) = 0.0
-      allocate(sfc_state%internal_heat(isd:ied,jsd:jed)) ; sfc_state%internal_heat(:,:) = 0.0
+      allocate(sfc_state%ocean_heat(isd:ied,jsd:jed), source=0.0)
+      allocate(sfc_state%ocean_salt(isd:ied,jsd:jed), source=0.0)
+      allocate(sfc_state%TempxPmE(isd:ied,jsd:jed), source=0.0)
+      allocate(sfc_state%salt_deficit(isd:ied,jsd:jed), source=0.0)
+      allocate(sfc_state%internal_heat(isd:ied,jsd:jed), source=0.0)
     endif
   endif
 
   if (alloc_iceshelves) then
-    allocate(sfc_state%taux_shelf(IsdB:IedB,jsd:jed)) ; sfc_state%taux_shelf(:,:) = 0.0
-    allocate(sfc_state%tauy_shelf(isd:ied,JsdB:JedB)) ; sfc_state%tauy_shelf(:,:) = 0.0
+    allocate(sfc_state%taux_shelf(IsdB:IedB,jsd:jed), source=0.0)
+    allocate(sfc_state%tauy_shelf(isd:ied,JsdB:JedB), source=0.0)
   endif
 
   if (present(gas_fields_ocn)) &
@@ -502,23 +531,23 @@ subroutine alloc_BT_cont_type(BT_cont, G, GV, alloc_faces)
     "alloc_BT_cont_type called with an associated BT_cont_type pointer.")
 
   allocate(BT_cont)
-  allocate(BT_cont%FA_u_WW(IsdB:IedB,jsd:jed)) ; BT_cont%FA_u_WW(:,:) = 0.0
-  allocate(BT_cont%FA_u_W0(IsdB:IedB,jsd:jed)) ; BT_cont%FA_u_W0(:,:) = 0.0
-  allocate(BT_cont%FA_u_E0(IsdB:IedB,jsd:jed)) ; BT_cont%FA_u_E0(:,:) = 0.0
-  allocate(BT_cont%FA_u_EE(IsdB:IedB,jsd:jed)) ; BT_cont%FA_u_EE(:,:) = 0.0
-  allocate(BT_cont%uBT_WW(IsdB:IedB,jsd:jed))  ; BT_cont%uBT_WW(:,:) = 0.0
-  allocate(BT_cont%uBT_EE(IsdB:IedB,jsd:jed))  ; BT_cont%uBT_EE(:,:) = 0.0
+  allocate(BT_cont%FA_u_WW(IsdB:IedB,jsd:jed), source=0.0)
+  allocate(BT_cont%FA_u_W0(IsdB:IedB,jsd:jed), source=0.0)
+  allocate(BT_cont%FA_u_E0(IsdB:IedB,jsd:jed), source=0.0)
+  allocate(BT_cont%FA_u_EE(IsdB:IedB,jsd:jed), source=0.0)
+  allocate(BT_cont%uBT_WW(IsdB:IedB,jsd:jed), source=0.0)
+  allocate(BT_cont%uBT_EE(IsdB:IedB,jsd:jed), source=0.0)
 
-  allocate(BT_cont%FA_v_SS(isd:ied,JsdB:JedB)) ; BT_cont%FA_v_SS(:,:) = 0.0
-  allocate(BT_cont%FA_v_S0(isd:ied,JsdB:JedB)) ; BT_cont%FA_v_S0(:,:) = 0.0
-  allocate(BT_cont%FA_v_N0(isd:ied,JsdB:JedB)) ; BT_cont%FA_v_N0(:,:) = 0.0
-  allocate(BT_cont%FA_v_NN(isd:ied,JsdB:JedB)) ; BT_cont%FA_v_NN(:,:) = 0.0
-  allocate(BT_cont%vBT_SS(isd:ied,JsdB:JedB))  ; BT_cont%vBT_SS(:,:) = 0.0
-  allocate(BT_cont%vBT_NN(isd:ied,JsdB:JedB))  ; BT_cont%vBT_NN(:,:) = 0.0
+  allocate(BT_cont%FA_v_SS(isd:ied,JsdB:JedB), source=0.0)
+  allocate(BT_cont%FA_v_S0(isd:ied,JsdB:JedB), source=0.0)
+  allocate(BT_cont%FA_v_N0(isd:ied,JsdB:JedB), source=0.0)
+  allocate(BT_cont%FA_v_NN(isd:ied,JsdB:JedB), source=0.0)
+  allocate(BT_cont%vBT_SS(isd:ied,JsdB:JedB), source=0.0)
+  allocate(BT_cont%vBT_NN(isd:ied,JsdB:JedB), source=0.0)
 
   if (present(alloc_faces)) then ; if (alloc_faces) then
-    allocate(BT_cont%h_u(IsdB:IedB,jsd:jed,1:nz)) ; BT_cont%h_u(:,:,:) = 0.0
-    allocate(BT_cont%h_v(isd:ied,JsdB:JedB,1:nz)) ; BT_cont%h_v(:,:,:) = 0.0
+    allocate(BT_cont%h_u(IsdB:IedB,jsd:jed,1:nz), source=0.0)
+    allocate(BT_cont%h_v(isd:ied,JsdB:JedB,1:nz), source=0.0)
   endif ; endif
 
 end subroutine alloc_BT_cont_type
@@ -545,10 +574,11 @@ subroutine dealloc_BT_cont_type(BT_cont)
 end subroutine dealloc_BT_cont_type
 
 !> Diagnostic checksums on various elements of a thermo_var_ptrs type for debugging.
-subroutine MOM_thermovar_chksum(mesg, tv, G)
+subroutine MOM_thermovar_chksum(mesg, tv, G, US)
   character(len=*),      intent(in) :: mesg !< A message that appears in the checksum lines
   type(thermo_var_ptrs), intent(in) :: tv   !< A structure pointing to various thermodynamic variables
   type(ocean_grid_type), intent(in) :: G    !< The ocean's grid structure
+  type(unit_scale_type), intent(in) :: US   !< A dimensional unit scaling type
 
   ! Note that for the chksum calls to be useful for reproducing across PE
   ! counts, there must be no redundant points, so all variables use is..ie
@@ -558,11 +588,11 @@ subroutine MOM_thermovar_chksum(mesg, tv, G)
   if (associated(tv%S)) &
     call hchksum(tv%S, mesg//" tv%S", G%HI)
   if (associated(tv%frazil)) &
-    call hchksum(tv%frazil, mesg//" tv%frazil", G%HI, scale=G%US%Q_to_J_kg*G%US%RZ_to_kg_m2)
+    call hchksum(tv%frazil, mesg//" tv%frazil", G%HI, scale=US%Q_to_J_kg*US%RZ_to_kg_m2)
   if (associated(tv%salt_deficit)) &
-    call hchksum(tv%salt_deficit, mesg//" tv%salt_deficit", G%HI, scale=G%US%RZ_to_kg_m2)
+    call hchksum(tv%salt_deficit, mesg//" tv%salt_deficit", G%HI, scale=US%RZ_to_kg_m2)
   if (associated(tv%TempxPmE)) &
-    call hchksum(tv%TempxPmE, mesg//" tv%TempxPmE", G%HI, scale=G%US%RZ_to_kg_m2)
+    call hchksum(tv%TempxPmE, mesg//" tv%TempxPmE", G%HI, scale=US%RZ_to_kg_m2)
 end subroutine MOM_thermovar_chksum
 
 end module MOM_variables

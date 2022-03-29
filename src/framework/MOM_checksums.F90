@@ -5,14 +5,14 @@ module MOM_checksums
 
 use MOM_array_transform, only : rotate_array, rotate_array_pair, rotate_vector
 use MOM_array_transform, only : allocate_rotated_array
-use MOM_coms, only : PE_here, root_PE, num_PEs, sum_across_PEs
-use MOM_coms, only : min_across_PEs, max_across_PEs
-use MOM_coms, only : reproducing_sum, field_chksum
-use MOM_error_handler, only : MOM_error, FATAL, is_root_pe
-use MOM_file_parser, only : log_version, param_file_type
-use MOM_hor_index, only : hor_index_type, rotate_hor_index
+use MOM_coms,            only : PE_here, root_PE, num_PEs, sum_across_PEs
+use MOM_coms,            only : min_across_PEs, max_across_PEs
+use MOM_coms,            only : reproducing_sum, field_chksum
+use MOM_error_handler,   only : MOM_error, FATAL, is_root_pe
+use MOM_file_parser,     only : log_version, param_file_type
+use MOM_hor_index,       only : hor_index_type, rotate_hor_index
 
-use iso_fortran_env, only: error_unit
+use iso_fortran_env,     only : error_unit, int32, int64
 
 implicit none ; private
 
@@ -110,7 +110,7 @@ subroutine chksum0(scalar, mesg, scale, logunit)
     call chksum_error(FATAL, 'NaN detected: '//trim(mesg))
 
   scaling = 1.0 ; if (present(scale)) scaling = scale
-  iounit = error_unit; if(present(logunit)) iounit = logunit
+  iounit = error_unit ; if (present(logunit)) iounit = logunit
 
   if (calculateStatistics) then
     rs = scaling * scalar
@@ -147,12 +147,11 @@ subroutine zchksum(array, mesg, scale, logunit)
   endif
 
   scaling = 1.0 ; if (present(scale)) scaling = scale
-  iounit = error_unit; if(present(logunit)) iounit = logunit
+  iounit = error_unit ; if (present(logunit)) iounit = logunit
 
   if (calculateStatistics) then
     if (present(scale)) then
-      allocate(rescaled_array(LBOUND(array,1):UBOUND(array,1)))
-      rescaled_array(:) = 0.0
+      allocate(rescaled_array(LBOUND(array,1):UBOUND(array,1)), source=0.0)
       do k=1, size(array, 1)
         rescaled_array(k) = scale * array(k)
       enddo
@@ -353,13 +352,12 @@ subroutine chksum_h_2d(array_m, mesg, HI_m, haloshift, omit_corners, scale, logu
   endif
 
   scaling = 1.0 ; if (present(scale)) scaling = scale
-  iounit = error_unit; if(present(logunit)) iounit = logunit
+  iounit = error_unit ; if (present(logunit)) iounit = logunit
 
   if (calculateStatistics) then
     if (present(scale)) then
       allocate( rescaled_array(LBOUND(array,1):UBOUND(array,1), &
-                               LBOUND(array,2):UBOUND(array,2)) )
-      rescaled_array(:,:) = 0.0
+                               LBOUND(array,2):UBOUND(array,2)), source=0.0 )
       do j=HI%jsc,HI%jec ; do i=HI%isc,HI%iec
         rescaled_array(i,j) = scale*array(i,j)
       enddo ; enddo
@@ -620,15 +618,14 @@ subroutine chksum_B_2d(array_m, mesg, HI_m, haloshift, symmetric, omit_corners, 
   endif
 
   scaling = 1.0 ; if (present(scale)) scaling = scale
-  iounit = error_unit; if(present(logunit)) iounit = logunit
+  iounit = error_unit ; if (present(logunit)) iounit = logunit
   sym_stats = .false. ; if (present(symmetric)) sym_stats = symmetric
   if (present(haloshift)) then ; if (haloshift > 0) sym_stats = .true. ; endif
 
   if (calculateStatistics) then
     if (present(scale)) then
       allocate( rescaled_array(LBOUND(array,1):UBOUND(array,1), &
-                               LBOUND(array,2):UBOUND(array,2)) )
-      rescaled_array(:,:) = 0.0
+                               LBOUND(array,2):UBOUND(array,2)), source=0.0 )
       Is = HI%isc ; if (sym_stats) Is = HI%isc-1
       Js = HI%jsc ; if (sym_stats) Js = HI%jsc-1
       do J=Js,HI%JecB ; do I=Is,HI%IecB
@@ -904,15 +901,14 @@ subroutine chksum_u_2d(array_m, mesg, HI_m, haloshift, symmetric, omit_corners, 
   endif
 
   scaling = 1.0 ; if (present(scale)) scaling = scale
-  iounit = error_unit; if(present(logunit)) iounit = logunit
+  iounit = error_unit ; if (present(logunit)) iounit = logunit
   sym_stats = .false. ; if (present(symmetric)) sym_stats = symmetric
   if (present(haloshift)) then ; if (haloshift > 0) sym_stats = .true. ; endif
 
   if (calculateStatistics) then
     if (present(scale)) then
       allocate( rescaled_array(LBOUND(array,1):UBOUND(array,1), &
-                               LBOUND(array,2):UBOUND(array,2)) )
-      rescaled_array(:,:) = 0.0
+                               LBOUND(array,2):UBOUND(array,2)), source=0.0 )
       Is = HI%isc ; if (sym_stats) Is = HI%isc-1
       do j=HI%jsc,HI%jec ; do I=Is,HI%IecB
         rescaled_array(I,j) = scale*array(I,j)
@@ -1083,15 +1079,14 @@ subroutine chksum_v_2d(array_m, mesg, HI_m, haloshift, symmetric, omit_corners, 
   endif
 
   scaling = 1.0 ; if (present(scale)) scaling = scale
-  iounit = error_unit; if(present(logunit)) iounit = logunit
+  iounit = error_unit ; if (present(logunit)) iounit = logunit
   sym_stats = .false. ; if (present(symmetric)) sym_stats = symmetric
   if (present(haloshift)) then ; if (haloshift > 0) sym_stats = .true. ; endif
 
   if (calculateStatistics) then
     if (present(scale)) then
       allocate( rescaled_array(LBOUND(array,1):UBOUND(array,1), &
-                               LBOUND(array,2):UBOUND(array,2)) )
-      rescaled_array(:,:) = 0.0
+                               LBOUND(array,2):UBOUND(array,2)), source=0.0 )
       Js = HI%jsc ; if (sym_stats) Js = HI%jsc-1
       do J=Js,HI%JecB ; do i=HI%isc,HI%iec
         rescaled_array(i,J) = scale*array(i,J)
@@ -1251,14 +1246,13 @@ subroutine chksum_h_3d(array_m, mesg, HI_m, haloshift, omit_corners, scale, logu
   endif
 
   scaling = 1.0 ; if (present(scale)) scaling = scale
-  iounit = error_unit; if(present(logunit)) iounit = logunit
+  iounit = error_unit ; if (present(logunit)) iounit = logunit
 
   if (calculateStatistics) then
     if (present(scale)) then
       allocate( rescaled_array(LBOUND(array,1):UBOUND(array,1), &
                                LBOUND(array,2):UBOUND(array,2), &
-                               LBOUND(array,3):UBOUND(array,3)) )
-      rescaled_array(:,:,:) = 0.0
+                               LBOUND(array,3):UBOUND(array,3)), source=0.0 )
       do k=1,size(array,3) ; do j=HI%jsc,HI%jec ; do i=HI%isc,HI%iec
         rescaled_array(i,j,k) = scale*array(i,j,k)
       enddo ; enddo ; enddo
@@ -1403,7 +1397,7 @@ subroutine chksum_B_3d(array_m, mesg, HI_m, haloshift, symmetric, omit_corners, 
   endif
 
   scaling = 1.0 ; if (present(scale)) scaling = scale
-  iounit = error_unit; if(present(logunit)) iounit = logunit
+  iounit = error_unit ; if (present(logunit)) iounit = logunit
   sym_stats = .false. ; if (present(symmetric)) sym_stats = symmetric
   if (present(haloshift)) then ; if (haloshift > 0) sym_stats = .true. ; endif
 
@@ -1411,8 +1405,7 @@ subroutine chksum_B_3d(array_m, mesg, HI_m, haloshift, symmetric, omit_corners, 
     if (present(scale)) then
       allocate( rescaled_array(LBOUND(array,1):UBOUND(array,1), &
                                LBOUND(array,2):UBOUND(array,2), &
-                               LBOUND(array,3):UBOUND(array,3)) )
-      rescaled_array(:,:,:) = 0.0
+                               LBOUND(array,3):UBOUND(array,3)), source=0.0 )
       Is = HI%isc ; if (sym_stats) Is = HI%isc-1
       Js = HI%jsc ; if (sym_stats) Js = HI%jsc-1
       do k=1,size(array,3) ; do J=Js,HI%JecB ; do I=Is,HI%IecB
@@ -1583,7 +1576,7 @@ subroutine chksum_u_3d(array_m, mesg, HI_m, haloshift, symmetric, omit_corners, 
   endif
 
   scaling = 1.0 ; if (present(scale)) scaling = scale
-  iounit = error_unit; if(present(logunit)) iounit = logunit
+  iounit = error_unit ; if (present(logunit)) iounit = logunit
   sym_stats = .false. ; if (present(symmetric)) sym_stats = symmetric
   if (present(haloshift)) then ; if (haloshift > 0) sym_stats = .true. ; endif
 
@@ -1591,8 +1584,7 @@ subroutine chksum_u_3d(array_m, mesg, HI_m, haloshift, symmetric, omit_corners, 
     if (present(scale)) then
       allocate( rescaled_array(LBOUND(array,1):UBOUND(array,1), &
                                LBOUND(array,2):UBOUND(array,2), &
-                               LBOUND(array,3):UBOUND(array,3)) )
-      rescaled_array(:,:,:) = 0.0
+                               LBOUND(array,3):UBOUND(array,3)), source=0.0 )
       Is = HI%isc ; if (sym_stats) Is = HI%isc-1
       do k=1,size(array,3) ; do j=HI%jsc,HI%jec ; do I=Is,HI%IecB
         rescaled_array(I,j,k) = scale*array(I,j,k)
@@ -1762,7 +1754,7 @@ subroutine chksum_v_3d(array_m, mesg, HI_m, haloshift, symmetric, omit_corners, 
   endif
 
   scaling = 1.0 ; if (present(scale)) scaling = scale
-  iounit = error_unit; if(present(logunit)) iounit = logunit
+  iounit = error_unit ; if (present(logunit)) iounit = logunit
   sym_stats = .false. ; if (present(symmetric)) sym_stats = symmetric
   if (present(haloshift)) then ; if (haloshift > 0) sym_stats = .true. ; endif
 
@@ -1770,8 +1762,7 @@ subroutine chksum_v_3d(array_m, mesg, HI_m, haloshift, symmetric, omit_corners, 
     if (present(scale)) then
       allocate( rescaled_array(LBOUND(array,1):UBOUND(array,1), &
                                LBOUND(array,2):UBOUND(array,2), &
-                               LBOUND(array,3):UBOUND(array,3)) )
-      rescaled_array(:,:,:) = 0.0
+                               LBOUND(array,3):UBOUND(array,3)), source=0.0 )
       Js = HI%jsc ; if (sym_stats) Js = HI%jsc-1
       do k=1,size(array,3) ; do J=Js,HI%JecB ; do i=HI%isc,HI%iec
         rescaled_array(i,J,k) = scale*array(i,J,k)
@@ -1921,7 +1912,7 @@ subroutine chksum1d(array, mesg, start_i, end_i, compare_PEs)
   enddo
 
   pe_num = pe_here() + 1 - root_pe() ; nPEs = num_pes()
-  allocate(sum_here(nPEs)) ; sum_here(:) = 0.0 ; sum_here(pe_num) = sum
+  allocate(sum_here(nPEs), source=0.0) ; sum_here(pe_num) = sum
   call sum_across_PEs(sum_here,nPEs)
 
   sum1 = sum_bc
@@ -1953,8 +1944,8 @@ end subroutine chksum1d
 !> chksum2d does a checksum of all data in a 2-d array.
 subroutine chksum2d(array, mesg)
 
-  real, dimension(:,:) :: array !< The array to be checksummed
-  character(len=*) :: mesg  !< An identifying message
+  real, dimension(:,:), intent(in) :: array !< The array to be checksummed
+  character(len=*),     intent(in) :: mesg  !< An identifying message
 
   integer :: xs,xe,ys,ye,i,j,sum1,bc
   real :: sum
@@ -1981,8 +1972,8 @@ end subroutine chksum2d
 !> chksum3d does a checksum of all data in a 2-d array.
 subroutine chksum3d(array, mesg)
 
-  real, dimension(:,:,:) :: array !< The array to be checksummed
-  character(len=*) :: mesg  !< An identifying message
+  real, dimension(:,:,:), intent(in) :: array !< The array to be checksummed
+  character(len=*),       intent(in) :: mesg  !< An identifying message
 
   integer :: xs,xe,ys,ye,zs,ze,i,j,k, bc,sum1
   real :: sum
@@ -2092,7 +2083,7 @@ function rotated_field_chksum_real_0d(field, pelist, mask_val, turns) &
   integer, optional, intent(in) :: pelist(:)  !< PE list of ranks to checksum
   real,    optional, intent(in) :: mask_val   !< FMS mask value
   integer, optional, intent(in) :: turns      !< Number of quarter turns
-  integer :: chksum                           !< checksum of scalar
+  integer(kind=int64) :: chksum               !< checksum of scalar
 
   if (present(turns)) call MOM_error(FATAL, "Rotation not supported for 0d fields.")
 
@@ -2107,7 +2098,7 @@ function rotated_field_chksum_real_1d(field, pelist, mask_val, turns) &
   integer,  optional, intent(in) :: pelist(:) !< PE list of ranks to checksum
   real,     optional, intent(in) :: mask_val  !< FMS mask value
   integer,  optional, intent(in) :: turns     !< Number of quarter turns
-  integer :: chksum                           !< checksum of array
+  integer(kind=int64) :: chksum               !< checksum of array
 
   if (present(turns)) call MOM_error(FATAL, "Rotation not supported for 1d fields.")
 
@@ -2122,7 +2113,7 @@ function rotated_field_chksum_real_2d(field, pelist, mask_val, turns) &
   integer,        optional, intent(in) :: pelist(:) !< PE list of ranks to checksum
   real,           optional, intent(in) :: mask_val  !< FMS mask value
   integer,        optional, intent(in) :: turns     !< Number of quarter turns
-  integer :: chksum                                 !< checksum of array
+  integer(kind=int64) :: chksum                     !< checksum of array
 
   ! Local variables
   real, allocatable :: field_rot(:,:)  ! A rotated version of field, with the same units
@@ -2149,7 +2140,7 @@ function rotated_field_chksum_real_3d(field, pelist, mask_val, turns) &
   integer,        optional, intent(in) :: pelist(:) !< PE list of ranks to checksum
   real,           optional, intent(in) :: mask_val  !< FMS mask value
   integer,        optional, intent(in) :: turns     !< Number of quarter turns
-  integer :: chksum                                 !< checksum of array
+  integer(kind=int64) :: chksum                     !< checksum of array
 
   ! Local variables
   real, allocatable :: field_rot(:,:,:)  ! A rotated version of field, with the same units
@@ -2176,7 +2167,7 @@ function rotated_field_chksum_real_4d(field, pelist, mask_val, turns) &
   integer,        optional, intent(in) :: pelist(:) !< PE list of ranks to checksum
   real,           optional, intent(in) :: mask_val  !< FMS mask value
   integer,        optional, intent(in) :: turns     !< Number of quarter turns
-  integer :: chksum                                 !< checksum of array
+  integer(kind=int64) :: chksum                     !< checksum of array
 
   ! Local variables
   real, allocatable :: field_rot(:,:,:,:)  ! A rotated version of field, with the same units
