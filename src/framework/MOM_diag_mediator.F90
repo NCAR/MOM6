@@ -1557,7 +1557,8 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
   logical :: staggered_in_x, staggered_in_y
   real, dimension(:,:,:), pointer :: h_diag => NULL()
 
-  if (id_clock_diag_mediator>0) call cpu_clock_begin(id_clock_diag_mediator)
+  call assert(diag_field_id < diag_cs%next_free_diag_id, &
+              'post_data_3d: Unregistered diagnostic id')
 
   ! For intensive variables only, we can choose to use a different diagnostic grid
   ! to map to
@@ -1567,19 +1568,14 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
     h_diag => diag_cs%h
   endif
 
-  ! Iterate over list of diag 'variants', e.g. CMOR aliases, different vertical
-  ! grids, and post each.
-  call assert(diag_field_id < diag_cs%next_free_diag_id, &
-              'post_data_3d: Unregistered diagnostic id')
+  ! update non-native diagnostic grids if they are not in sync with model state
+  ! do this outside of id_clock_diag_mediator clock, to be consistent with
+  ! updates in diag_update_remap_grids
+  if (id_clock_diag_grid_updates>0) call cpu_clock_begin(id_clock_diag_grid_updates)
   diag => diag_cs%diags(diag_field_id)
   do while (associated(diag))
     call assert(associated(diag%axes), 'post_data_3d: axes is not associated')
-
-    staggered_in_x = diag%axes%is_u_point .or. diag%axes%is_q_point
-    staggered_in_y = diag%axes%is_v_point .or. diag%axes%is_q_point
-
     if (.not.diag%axes%is_native) then
-      ! update non-native diagnostic grid if it is not in sync with model state
       if (.not. diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%in_sync_with_state) then
         call diag_remap_update(diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), &
             diag_cs%G, diag_cs%GV, diag_cs%US, h_diag, diag_cs%T, diag_cs%S, diag_cs%eqn_of_state, &
@@ -1587,6 +1583,19 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
         diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%in_sync_with_state = .true.
       endif
     endif
+    diag => diag%next
+  enddo
+  if (id_clock_diag_grid_updates>0) call cpu_clock_end(id_clock_diag_grid_updates)
+
+  if (id_clock_diag_mediator>0) call cpu_clock_begin(id_clock_diag_mediator)
+
+  ! Iterate over list of diag 'variants', e.g. CMOR aliases, different vertical
+  ! grids, and post each.
+  diag => diag_cs%diags(diag_field_id)
+  do while (associated(diag))
+
+    staggered_in_x = diag%axes%is_u_point .or. diag%axes%is_q_point
+    staggered_in_y = diag%axes%is_v_point .or. diag%axes%is_q_point
 
     if (diag%v_extensive .and. .not.diag%axes%is_native) then
       ! The field is vertically integrated and needs to be re-gridded
@@ -1706,6 +1715,28 @@ subroutine post_data_tend(diag_field_id, dt, field_new, h_new, diag_cs, &
   ! If field_tend is provided instead of field_prev, then field_prev is computed from
   ! field_new and field_tend.
 
+  call assert(diag_field_id < diag_cs%next_free_diag_id, &
+              "post_data_tend: Unregistered diagnostic id")
+
+  ! update non-native diagnostic grids if they are not in sync with model state
+  ! do this outside of id_clock_diag_mediator clock, to be consistent with
+  ! updates in diag_update_remap_grids
+  if (id_clock_diag_grid_updates>0) call cpu_clock_begin(id_clock_diag_grid_updates)
+  diag => diag_cs%diags(diag_field_id)
+  do while (associated(diag))
+    call assert(associated(diag%axes), "post_data_tend: axes is not associated")
+    if (.not.diag%axes%is_native) then
+      if (.not. diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%in_sync_with_state) then
+        call diag_remap_update(diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), &
+            diag_cs%G, diag_cs%GV, diag_cs%US, h_new, diag_cs%T, diag_cs%S, diag_cs%eqn_of_state, &
+            diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h)
+        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%in_sync_with_state = .true.
+      endif
+    endif
+    diag => diag%next
+  enddo
+  if (id_clock_diag_grid_updates>0) call cpu_clock_end(id_clock_diag_grid_updates)
+
   if (id_clock_diag_mediator>0) call cpu_clock_begin(id_clock_diag_mediator)
 
   call diag_indices_get("post_data_tend", size(field_new,1), size(field_new,2), diag_cs, &
@@ -1735,24 +1766,10 @@ subroutine post_data_tend(diag_field_id, dt, field_new, h_new, diag_cs, &
 
   ! Iterate over list of diag 'variants', e.g. CMOR aliases, different vertical
   ! grids, and post each.
-  call assert(diag_field_id < diag_cs%next_free_diag_id, &
-              "post_data_tend: Unregistered diagnostic id")
   diag => diag_cs%diags(diag_field_id)
   do while (associated(diag))
-    call assert(associated(diag%axes), "post_data_tend: axes is not associated")
-
     staggered_in_x = diag%axes%is_u_point .or. diag%axes%is_q_point
     staggered_in_y = diag%axes%is_v_point .or. diag%axes%is_q_point
-
-    if (.not.diag%axes%is_native) then
-      ! update non-native diagnostic grid if it is not in sync with model state
-      if (.not. diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%in_sync_with_state) then
-        call diag_remap_update(diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number), &
-            diag_cs%G, diag_cs%GV, diag_cs%US, h_new, diag_cs%T, diag_cs%S, diag_cs%eqn_of_state, &
-            diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%h)
-        diag_cs%diag_remap_cs(diag%axes%vertical_coordinate_number)%in_sync_with_state = .true.
-      endif
-    endif
 
     if (diag%v_extensive .and. .not.diag%axes%is_native) then
       ! The field is vertically integrated and needs to be re-gridded
@@ -3554,15 +3571,22 @@ subroutine diag_push_h(diag_cs, msg)
   integer :: i
 
   call field_stack_push(diag_cs%h_prev, diag_cs%h, msg)
+
+  ! before pushing diagnostic grids, update them if they are not in sync
+  if (id_clock_diag_grid_updates>0) call cpu_clock_begin(id_clock_diag_grid_updates)
   do i=1,diag_cs%num_diag_coords
-    ! before pushing diagnostic grid, update it if it is not in sync
     if (.not. diag_cs%diag_remap_cs(i)%in_sync_with_state) then
       call diag_remap_update(diag_cs%diag_remap_cs(i), diag_cs%G, diag_cs%GV, diag_cs%US, &
           diag_cs%h, diag_cs%T, diag_cs%S, diag_cs%eqn_of_state, diag_cs%diag_remap_cs(i)%h)
       diag_cs%diag_remap_cs(i)%in_sync_with_state = .true.
     endif
+  enddo
+  if (id_clock_diag_grid_updates>0) call cpu_clock_end(id_clock_diag_grid_updates)
+
+  do i=1,diag_cs%num_diag_coords
     call field_stack_push(diag_cs%diag_remap_cs(i)%h_prev, diag_cs%diag_remap_cs(i)%h, msg)
   enddo
+
 end subroutine diag_push_h
 
 !> Drop diagnostic thicknesses from top of respective stacks
