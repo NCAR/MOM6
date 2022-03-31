@@ -1276,16 +1276,26 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
 
   call advect_tracer(h, CS%uhtr, CS%vhtr, CS%OBC, CS%t_dyn_rel_adv, G, GV, US, &
                      CS%tracer_adv_CSp, CS%tracer_Reg, x_first_in=x_first)
+  call cpu_clock_end(id_clock_tracer) ; call cpu_clock_end(id_clock_thermo)
+
+  call cpu_clock_begin(id_clock_other) ; call cpu_clock_begin(id_clock_diagnostics)
   ! all diagnostic grids are now out of sync with respect to h
   call set_diag_in_sync_with_state(CS%diag, .false.)
   call post_transport_diagnostics(G, GV, US, CS%uhtr, CS%vhtr, h, CS%transport_IDs, &
            CS%diag_pre_dyn, CS%diag, CS%t_dyn_rel_adv, CS%tracer_reg)
   call diag_drop_h(CS%diag, "transports")
+  call cpu_clock_end(id_clock_diagnostics) ; call cpu_clock_end(id_clock_other)
 
+  call cpu_clock_begin(id_clock_thermo) ; call cpu_clock_begin(id_clock_tracer)
   call tracer_hordiff(h, CS%t_dyn_rel_adv, CS%MEKE, CS%VarMix, G, GV, US, &
                       CS%tracer_diff_CSp, CS%tracer_Reg, CS%tv)
-  call post_tracer_hordiff_diagnostics(G, GV, CS%tracer_reg, CS%diag_pre_dyn, CS%diag)
+  call cpu_clock_end(id_clock_tracer) ; call cpu_clock_end(id_clock_thermo)
 
+  call cpu_clock_begin(id_clock_other) ; call cpu_clock_begin(id_clock_diagnostics)
+  call post_tracer_hordiff_diagnostics(G, GV, CS%tracer_reg, CS%diag_pre_dyn, CS%diag)
+  call cpu_clock_end(id_clock_diagnostics) ; call cpu_clock_end(id_clock_other)
+
+  call cpu_clock_begin(id_clock_thermo) ; call cpu_clock_begin(id_clock_tracer)
   if (showCallTree) call callTree_waypoint("finished tracer advection/diffusion (step_MOM)")
   call update_segment_tracer_reservoirs(G, GV, CS%uhtr, CS%vhtr, h, CS%OBC, &
                      CS%t_dyn_rel_adv, CS%tracer_Reg)
