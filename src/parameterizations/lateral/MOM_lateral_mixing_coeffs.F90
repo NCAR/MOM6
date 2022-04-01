@@ -1294,7 +1294,7 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
   endif
 
   if (CS%use_stored_slopes) then
-    CS%calculate_Eady_growth_rate=.true.
+    ! CS%calculate_Eady_growth_rate=.true.
     in_use = .true.
     allocate(CS%slope_x(IsdB:IedB,jsd:jed,GV%ke+1), source=0.0)
     allocate(CS%slope_y(isd:ied,JsdB:JedB,GV%ke+1), source=0.0)
