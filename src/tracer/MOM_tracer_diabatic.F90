@@ -419,14 +419,14 @@ end subroutine tracer_vertdiff_Eulerian
 !! NOTE: Please note that in this routine sfc_flux gets set to zero to ensure that the surface
 !! flux of the tracer does not get applied again during a subsequent call to tracer_vertdif
 subroutine applyTracerBoundaryFluxesInOut(G, GV, Tr, dt, fluxes, h, evap_CFL_limit, minimum_forcing_depth, &
-               in_flux_optional, out_flux_optional, update_h_opt)
+               in_flux_optional, out_flux_optional, h_new)
 
   type(ocean_grid_type),                      intent(in   ) :: G  !< Grid structure
   type(verticalGrid_type),                    intent(in   ) :: GV !< ocean vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(inout) :: Tr !< Tracer concentration on T-cell [conc]
   real,                                       intent(in   ) :: dt !< Time-step over which forcing is applied [T ~> s]
   type(forcing),                              intent(in   ) :: fluxes !< Surface fluxes container
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(inout) :: h  !< Layer thickness [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in   ) :: h  !< Layer thickness [H ~> m or kg m-2]
   real,                                       intent(in   ) :: evap_CFL_limit !< Limit on the fraction of the
                                                                   !! water that can be fluxed out of the top
                                                                   !! layer in a timestep [nondim]
@@ -435,11 +435,11 @@ subroutine applyTracerBoundaryFluxesInOut(G, GV, Tr, dt, fluxes, h, evap_CFL_lim
   real, dimension(SZI_(G),SZJ_(G)), optional, intent(in   ) :: in_flux_optional !< The total time-integrated
                                                                   !! amount of tracer that enters with freshwater
                                                                   !! [conc H ~> conc m or conc kg m-2]
-  real, dimension(SZI_(G),SZJ_(G)), optional, intent(in) :: out_flux_optional !< The total time-integrated
+  real, dimension(SZI_(G),SZJ_(G)), optional, intent(in   ) :: out_flux_optional !< The total time-integrated
                                                                   !! amount of tracer that leaves with freshwater
                                                                   !! [conc H ~> conc m or conc kg m-2]
-  logical,                          optional, intent(in) :: update_h_opt  !< Optional flag to determine whether
-                                                                  !! h should be updated
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), optional, &
+                                              intent(out  ) :: h_new !< Updated layer thickness [H ~> m or kg m-2]
 
   integer, parameter :: maxGroundings = 5
   integer :: numberOfGroundings, iGround(maxGroundings), jGround(maxGroundings)
@@ -464,7 +464,6 @@ subroutine applyTracerBoundaryFluxesInOut(G, GV, Tr, dt, fluxes, h, evap_CFL_lim
                                ! the freshwater [conc H ~> conc m or conc kg m-2]
   real :: hGrounding(maxGroundings) ! The remaining fresh water flux that was not able to be
                                ! supplied from a column that grounded out [H ~> m or kg m-2]
-  logical :: update_h
   integer :: i, j, is, ie, js, je, k, nz, n, nsw
   character(len=45) :: mesg
 
@@ -485,17 +484,11 @@ subroutine applyTracerBoundaryFluxesInOut(G, GV, Tr, dt, fluxes, h, evap_CFL_lim
     enddo ; enddo
   endif
 
-  if (present(update_h_opt)) then
-    update_h = update_h_opt
-  else
-    update_h = .true.
-  endif
-
   numberOfGroundings = 0
 
 !$OMP parallel do default(none) shared(is,ie,js,je,nz,h,Tr,G,GV,fluxes,dt,    &
 !$OMP                                  IforcingDepthScale,minimum_forcing_depth, &
-!$OMP                                  numberOfGroundings,iGround,jGround,update_h, &
+!$OMP                                  numberOfGroundings,iGround,jGround,h_new, &
 !$OMP                                  in_flux,out_flux,hGrounding,evap_CFL_limit) &
 !$OMP                          private(h2d,Tr2d,netMassIn,netMassOut,      &
 !$OMP                                  in_flux_1d,out_flux_1d,fractionOfForcing,     &
@@ -616,9 +609,9 @@ subroutine applyTracerBoundaryFluxesInOut(G, GV, Tr, dt, fluxes, h, evap_CFL_lim
       Tr(i,j,k) = Tr2d(i,k)
     enddo ; enddo
 
-    if (update_h) then
+    if (present(h_new)) then
       do k=1,nz ; do i=is,ie
-        h(i,j,k) = h2d(i,k)
+        h_new(i,j,k) = h2d(i,k)
       enddo ; enddo
     endif
 

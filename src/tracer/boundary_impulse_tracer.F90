@@ -15,8 +15,13 @@ use MOM_open_boundary, only : ocean_OBC_type
 use MOM_restart, only : register_restart_field, query_initialized, MOM_restart_CS
 use MOM_sponge, only : set_up_sponge_field, sponge_CS
 use MOM_time_manager, only : time_type
-use MOM_tracer_registry, only : register_tracer, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
+use MOM_tracer_registry, only : register_tracer
+use MOM_tracer_types, only : tracer_registry_type, col_act_apply_KPP_NLT
+use MOM_tracer_types, only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types, only : col_act_apply_boundary_fluxes
+use MOM_tracer_types, only : col_act_tridiag_solve
+use MOM_tracer_types, only : col_act_post_tridiag_solve_sources
 use MOM_tracer_Z_init, only : tracer_Z_init
 use MOM_unit_scaling, only : unit_scale_type
 use MOM_variables, only : surface, thermo_var_ptrs
@@ -205,14 +210,15 @@ subroutine initialize_boundary_impulse_tracer(restart, day, G, GV, US, h, diag, 
 end subroutine initialize_boundary_impulse_tracer
 
 !> Apply source or sink at boundary and do vertical diffusion
-subroutine boundary_impulse_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, CS, &
-                     tv, debug, evap_CFL_limit, minimum_forcing_depth)
+subroutine boundary_impulse_tracer_column_physics(action, h, ea, eb, fluxes, dt, G, &
+                                                  GV, US, CS, tv, debug, evap_CFL_limit, &
+                                                  minimum_forcing_depth)
+  integer,                 intent(in) :: action !< action to be performed with this invocation
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
+                           intent(in) :: h    !< Layer thickness at time level appropriate
+                                              !! for action [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: ea   !< an array to which the amount of fluid entrained
                                               !! from the layer above during this call will be
@@ -239,47 +245,48 @@ subroutine boundary_impulse_tracer_column_physics(h_old, h_new, ea, eb, fluxes, 
 ! tracer physics or chemistry to the tracers from this file.
 ! This is a simple example of a set of advected passive tracers.
 
-! The arguments to this subroutine are redundant in that
-!     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
-
   ! Local variables
   real :: Isecs_per_year = 1.0 / (365.0*86400.0)
   real :: year, h_total, scale, htot, Ih_limit
   integer :: secs, days
   integer :: i, j, k, is, ie, js, je, nz, m, k_max
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_work ! Used so that h can be modified
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
   if (.not.associated(CS)) return
   if (CS%ntr < 1) return
 
-  ! This uses applyTracerBoundaryFluxesInOut, usually in ALE mode
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    do k=1,nz ;do j=js,je ; do i=is,ie
-      h_work(i,j,k) = h_old(i,j,k)
-    enddo ; enddo ; enddo
-    call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,1), dt, fluxes, h_work, &
-                                        evap_CFL_limit, minimum_forcing_depth)
-    call tracer_vertdiff(h_work, ea, eb, dt, CS%tr(:,:,:,1), G, GV)
-  else
-    call tracer_vertdiff(h_old, ea, eb, dt, CS%tr(:,:,:,1), G, GV)
-  endif
+  select case ( action )
+    case ( col_act_apply_KPP_NLT )
+      ! KPP NLT not applicable to this tracer module
 
-  ! Set surface conditions
-  do m=1,1
-    if (CS%remaining_source_time>0.0) then
-      do k=1,CS%nkml ; do j=js,je ; do i=is,ie
-        CS%tr(i,j,k,m) = 1.0
-      enddo ; enddo ; enddo
-      CS%remaining_source_time = CS%remaining_source_time-dt
-    else
-      do k=1,CS%nkml ; do j=js,je ; do i=is,ie
-        CS%tr(i,j,k,m) = 0.0
-      enddo ; enddo ; enddo
-    endif
+    case ( col_act_pre_tridiag_solve_sources )
+      ! there are no pre-tridiag solve sources in this tracer module
 
-  enddo
+    case ( col_act_apply_boundary_fluxes )
+      call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,1), dt, fluxes, h, &
+                                          evap_CFL_limit, minimum_forcing_depth)
+
+    case ( col_act_tridiag_solve )
+      call tracer_vertdiff(h, ea, eb, dt, CS%tr(:,:,:,1), G, GV)
+
+    case ( col_act_post_tridiag_solve_sources )
+      ! Set surface conditions
+      do m=1,1
+        if (CS%remaining_source_time>0.0) then
+          do k=1,CS%nkml ; do j=js,je ; do i=is,ie
+            CS%tr(i,j,k,m) = 1.0
+          enddo ; enddo ; enddo
+          CS%remaining_source_time = CS%remaining_source_time-dt
+        else
+          do k=1,CS%nkml ; do j=js,je ; do i=is,ie
+            CS%tr(i,j,k,m) = 0.0
+          enddo ; enddo ; enddo
+        endif
+
+    enddo
+
+  end select
 
 end subroutine boundary_impulse_tracer_column_physics
 

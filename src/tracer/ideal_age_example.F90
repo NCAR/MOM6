@@ -15,8 +15,13 @@ use MOM_open_boundary, only : ocean_OBC_type
 use MOM_restart, only : query_initialized, MOM_restart_CS
 use MOM_sponge, only : set_up_sponge_field, sponge_CS
 use MOM_time_manager, only : time_type, time_type_to_real
-use MOM_tracer_registry, only : register_tracer, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
+use MOM_tracer_registry, only : register_tracer
+use MOM_tracer_types, only : tracer_registry_type, col_act_apply_KPP_NLT
+use MOM_tracer_types, only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types, only : col_act_apply_boundary_fluxes
+use MOM_tracer_types, only : col_act_tridiag_solve
+use MOM_tracer_types, only : col_act_post_tridiag_solve_sources
 use MOM_tracer_Z_init, only : tracer_Z_init
 use MOM_unit_scaling, only : unit_scale_type
 use MOM_variables, only : surface
@@ -279,14 +284,14 @@ subroutine initialize_ideal_age_tracer(restart, day, G, GV, US, h, diag, OBC, CS
 end subroutine initialize_ideal_age_tracer
 
 !> Applies diapycnal diffusion, aging and regeneration at the surface to the ideal age tracers
-subroutine ideal_age_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, CS, &
-              evap_CFL_limit, minimum_forcing_depth)
+subroutine ideal_age_tracer_column_physics(action, h, ea, eb, fluxes, dt, G, GV, US, &
+                                           CS, evap_CFL_limit, minimum_forcing_depth)
+  integer,                 intent(in) :: action !< action to be performed with this invocation
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
+                           intent(in) :: h    !< Layer thickness at time level appropriate
+                                              !! for action [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: ea   !< an array to which the amount of fluid entrained
                                               !! from the layer above during this call will be
@@ -309,10 +314,7 @@ subroutine ideal_age_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, 
 ! tracer physics or chemistry to the tracers from this file.
 ! This is a simple example of a set of advected passive tracers.
 
-! The arguments to this subroutine are redundant in that
-!     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
   ! Local variables
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_work ! Used so that h can be modified
   real :: sfc_val  ! The surface value for the tracers.
   real :: Isecs_per_year  ! The inverse of the amount of time in a year [T-1 ~> s-1]
   real :: year            ! The time in years.
@@ -322,48 +324,54 @@ subroutine ideal_age_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, 
   if (.not.associated(CS)) return
   if (CS%ntr < 1) return
 
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    do m=1,CS%ntr
-      do k=1,nz ;do j=js,je ; do i=is,ie
-        h_work(i,j,k) = h_old(i,j,k)
-      enddo ; enddo ; enddo
-      call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m), dt, fluxes, h_work, &
-                                          evap_CFL_limit, minimum_forcing_depth)
-      call tracer_vertdiff(h_work, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
-    enddo
-  else
-    do m=1,CS%ntr
-      call tracer_vertdiff(h_old, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
-    enddo
-  endif
+  select case ( action )
+    case ( col_act_apply_KPP_NLT )
+      ! KPP NLT not applicable to this tracer module
 
-  Isecs_per_year = 1.0 / (365.0*86400.0*US%s_to_T)
-  !   Set the surface value of tracer 1 to increase exponentially
-  ! with a 30 year time scale.
-  year = US%s_to_T*time_type_to_real(CS%Time) * Isecs_per_year
+    case ( col_act_pre_tridiag_solve_sources )
+      ! there are no pre-tridiag solve sources in this tracer module
 
-  do m=1,CS%ntr
-    if (CS%sfc_growth_rate(m) == 0.0) then
-      sfc_val = CS%young_val(m)
-    else
-      sfc_val = CS%young_val(m) * &
-          exp((year-CS%tracer_start_year(m)) * CS%sfc_growth_rate(m))
-    endif
-    do k=1,CS%nkml ; do j=js,je ; do i=is,ie
-      if (G%mask2dT(i,j) > 0.5) then
-        CS%tr(i,j,k,m) = sfc_val
-      else
-        CS%tr(i,j,k,m) = CS%land_val(m)
-      endif
-    enddo ; enddo ; enddo
-  enddo
-  do m=1,CS%ntr ; if (CS%tracer_ages(m) .and. &
-                      (year>=CS%tracer_start_year(m))) then
+    case ( col_act_apply_boundary_fluxes )
+      do m=1,CS%ntr
+        call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m), dt, fluxes, h, &
+                                            evap_CFL_limit, minimum_forcing_depth)
+      enddo
+
+    case ( col_act_tridiag_solve )
+      do m=1,CS%ntr
+        call tracer_vertdiff(h, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
+      enddo
+
+    case ( col_act_post_tridiag_solve_sources )
+      Isecs_per_year = 1.0 / (365.0*86400.0*US%s_to_T)
+      !   Set the surface value of tracer 1 to increase exponentially
+      ! with a 30 year time scale.
+      year = US%s_to_T*time_type_to_real(CS%Time) * Isecs_per_year
+
+      do m=1,CS%ntr
+        if (CS%sfc_growth_rate(m) == 0.0) then
+          sfc_val = CS%young_val(m)
+        else
+          sfc_val = CS%young_val(m) * &
+              exp((year-CS%tracer_start_year(m)) * CS%sfc_growth_rate(m))
+        endif
+        do k=1,CS%nkml ; do j=js,je ; do i=is,ie
+          if (G%mask2dT(i,j) > 0.5) then
+            CS%tr(i,j,k,m) = sfc_val
+          else
+            CS%tr(i,j,k,m) = CS%land_val(m)
+          endif
+        enddo ; enddo ; enddo
+      enddo
+      do m=1,CS%ntr ; if (CS%tracer_ages(m) .and. &
+                          (year>=CS%tracer_start_year(m))) then
 !$OMP parallel do default(none) shared(is,ie,js,je,CS,nz,G,dt,Isecs_per_year,m)
-    do k=CS%nkml+1,nz ; do j=js,je ; do i=is,ie
-      CS%tr(i,j,k,m) = CS%tr(i,j,k,m) + G%mask2dT(i,j)*dt*Isecs_per_year
-    enddo ; enddo ; enddo
-  endif ; enddo
+        do k=CS%nkml+1,nz ; do j=js,je ; do i=is,ie
+          CS%tr(i,j,k,m) = CS%tr(i,j,k,m) + G%mask2dT(i,j)*dt*Isecs_per_year
+        enddo ; enddo ; enddo
+      endif ; enddo
+
+  end select
 
 end subroutine ideal_age_tracer_column_physics
 

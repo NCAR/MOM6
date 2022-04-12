@@ -23,8 +23,13 @@ use MOM_open_boundary, only : ocean_OBC_type
 use MOM_restart, only : MOM_restart_CS
 use MOM_ALE_sponge, only : set_up_ALE_sponge_field, ALE_sponge_CS
 use MOM_time_manager, only : time_type
-use MOM_tracer_registry, only : register_tracer, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
+use MOM_tracer_registry, only : register_tracer
+use MOM_tracer_types, only : tracer_registry_type, col_act_apply_KPP_NLT
+use MOM_tracer_types, only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types, only : col_act_apply_boundary_fluxes
+use MOM_tracer_types, only : col_act_tridiag_solve
+use MOM_tracer_types, only : col_act_post_tridiag_solve_sources
 use MOM_unit_scaling, only : unit_scale_type
 use MOM_variables, only : surface
 use MOM_verticalGrid, only : verticalGrid_type
@@ -242,14 +247,14 @@ end subroutine initialize_ISOMIP_tracer
 
 !> This subroutine applies diapycnal diffusion, including the surface boundary
 !! conditions and any other column tracer physics or chemistry to the tracers from this file.
-subroutine ISOMIP_tracer_column_physics(h_old, h_new,  ea,  eb, fluxes, dt, G, GV, US, CS, &
+subroutine ISOMIP_tracer_column_physics(action, h, ea, eb, fluxes, dt, G, GV, US, CS, &
                                         evap_CFL_limit, minimum_forcing_depth)
+  integer,                 intent(in) :: action !< action to be performed with this invocation
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
+                           intent(in) :: h    !< Layer thickness at time level appropriate
+                                              !! for action [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: ea   !< an array to which the amount of fluid entrained
                                               !! from the layer above during this call will be
@@ -269,11 +274,7 @@ subroutine ISOMIP_tracer_column_physics(h_old, h_new,  ea,  eb, fluxes, dt, G, G
   real,          optional, intent(in) :: minimum_forcing_depth !< The smallest depth over which
                                               !! fluxes can be applied [H ~> m or kg m-2]
 
-! The arguments to this subroutine are redundant in that
-!     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
-
   ! Local variables
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_work ! Used so that h can be modified [H ~> m or kg m-2]
   real :: melt(SZI_(G),SZJ_(G)) ! melt water (positive for melting, negative for freezing) [R Z T-1 ~> kg m-2 s-1]
   real :: mmax                ! The global maximum melting rate [R Z T-1 ~> kg m-2 s-1]
   character(len=256) :: mesg  ! The text of an error message
@@ -282,38 +283,44 @@ subroutine ISOMIP_tracer_column_physics(h_old, h_new,  ea,  eb, fluxes, dt, G, G
 
   if (.not.associated(CS)) return
 
-  melt(:,:) = fluxes%iceshelf_melt(:,:)
+  select case ( action )
+    case ( col_act_apply_KPP_NLT )
+      ! KPP NLT not applicable to this tracer module
 
-  ! max. melt
-  mmax = MAXVAL(melt(is:ie,js:je))
-  call max_across_PEs(mmax)
-  ! write(mesg,*) 'max melt = ', mmax
-  ! call MOM_mesg(mesg, 5)
-  ! dye melt water (m=1), dye = 1 if melt=max(melt)
-  do m=1,NTR
-    do j=js,je ; do i=is,ie
-      if (melt(i,j) > 0.0) then ! melting
-        CS%tr(i,j,1:2,m) = melt(i,j)/mmax ! inject dye in the ML
-      else ! freezing
-        CS%tr(i,j,1:2,m) = 0.0
-      endif
-    enddo ; enddo
-  enddo
+    case ( col_act_pre_tridiag_solve_sources )
+      melt(:,:) = fluxes%iceshelf_melt(:,:)
 
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    do m=1,NTR
-      do k=1,nz ;do j=js,je ; do i=is,ie
-        h_work(i,j,k) = h_old(i,j,k)
-      enddo ; enddo ; enddo
-      call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m), dt, fluxes, h_work, &
-                                          evap_CFL_limit, minimum_forcing_depth)
-      call tracer_vertdiff(h_work, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
-    enddo
-  else
-    do m=1,NTR
-      call tracer_vertdiff(h_old, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
-    enddo
-  endif
+      ! max. melt
+      mmax = MAXVAL(melt(is:ie,js:je))
+      call max_across_PEs(mmax)
+      ! write(mesg,*) 'max melt = ', mmax
+      ! call MOM_mesg(mesg, 5)
+      ! dye melt water (m=1), dye = 1 if melt=max(melt)
+      do m=1,NTR
+        do j=js,je ; do i=is,ie
+          if (melt(i,j) > 0.0) then ! melting
+            CS%tr(i,j,1:2,m) = melt(i,j)/mmax ! inject dye in the ML
+          else ! freezing
+            CS%tr(i,j,1:2,m) = 0.0
+          endif
+        enddo ; enddo
+      enddo
+
+    case ( col_act_apply_boundary_fluxes )
+      do m=1,NTR
+        call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m), dt, fluxes, h, &
+                                            evap_CFL_limit, minimum_forcing_depth)
+      enddo
+
+    case ( col_act_tridiag_solve )
+      do m=1,NTR
+        call tracer_vertdiff(h, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
+      enddo
+
+    case ( col_act_post_tridiag_solve_sources )
+      ! there are no post-tridiag solve sources in this tracer module
+
+  end select
 
 end subroutine ISOMIP_tracer_column_physics
 

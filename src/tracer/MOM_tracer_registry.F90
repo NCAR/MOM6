@@ -268,6 +268,8 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
 
   ! Local variables
   character(len=24)  :: name     ! A variable's name in a NetCDF file.
+  character(len=72)  :: diag_name! Constructed name of diagnostic.
+  character(len=72)  :: diag_longname! Constructed long name of diagnostic.
   character(len=24)  :: shortnm  ! A shortened version of a variable's name for
                                  ! creating additional diagnostics.
   character(len=72)  :: longname ! The long name of that tracer variable.
@@ -307,14 +309,17 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
   allocate(Reg%comp_adv_tend(Reg%ntr), source=.false.)
   allocate(Reg%comp_lbd_tend(Reg%ntr), source=.false.)
   allocate(Reg%comp_neu_diff_tend(Reg%ntr), source=.false.)
+  allocate(Reg%comp_frazil_tend(Reg%ntr), source=.false.)
+  allocate(Reg%comp_KPP_NLT_tend(Reg%ntr), source=.false.)
+  allocate(Reg%comp_bndry_forc_tend(Reg%ntr), source=.false.)
+  allocate(Reg%comp_diabatic_diff_tend(Reg%ntr), source=.false.)
 
   do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
     Tr => Reg%Tr(m)
 
     comp_multiprocess_tend = .false.
     comp_process_tend = Tr%comp_process_tend ! A process tendency outside of those
-        ! registered in this subroutine might be requested, e.g., diabatic
-        ! processes, tracer source terms.
+        ! registered in this subroutine might be requested, e.g., tracer source terms.
 
 !    call query_vardesc(Tr%vd, name, units=units, longname=longname, &
 !                       cmor_field_name=cmorname, cmor_longname=cmor_longname, &
@@ -597,6 +602,197 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
       endif
     endif
 
+    ! frazil formation tendencies
+    ! Even though frazil formation only directly changes temperature, other
+    ! tracer values are changed on temperature dependent vertical coordinates,
+    ! e.g., rho.
+    if (shortnm == 'T') then
+      diag_name = 'frazil_temp_tendency'
+      diag_longname = 'Temperature tendency due to frazil formation'
+    elseif (shortnm == 'S') then
+      diag_name = 'frazil_saln_tendency'
+      diag_longname = 'Salinity tendency due to frazil formation'
+    else
+      diag_name = 'frazil_'//trim(shortnm)//'_tendency'
+      diag_longname = trim(shortnm)//' tendency due to frazil formation'
+    endif
+    Tr%id_frazil_conc = register_diag_field('ocean_model', diag_name, &
+        diag%axesTL, Time, diag_longname, trim(units)//' s-1', conversion=US%s_to_T)
+
+    if (shortnm == 'T') then
+      diag_name = 'frazil_heat_tendency'
+      diag_longname = 'Heat tendency due to frazil formation'
+    elseif (shortnm == 'S') then
+      diag_name = 'frazil_salt_tendency'
+      diag_longname = 'Salt tendency due to frazil formation'
+    else
+      diag_name = 'frazil_'//trim(shortnm)//'_content_tendency'
+      diag_longname = trim(shortnm)//' content tendency due to frazil formation'
+    endif
+    Tr%id_frazil_cont = register_diag_field('ocean_model', diag_name, &
+        diag%axesTL, Time, diag_longname, conv_units, conversion=Tr%conv_scale*US%s_to_T, &
+        v_extensive=.true.)
+
+    diag_name = trim(diag_name) // '_2d'
+    if (shortnm == 'T') then
+      diag_longname = 'Depth integrated heat tendency due to frazil formation'
+    elseif (shortnm == 'S') then
+      diag_longname = 'Depth integrated salt tendency due to frazil formation'
+    else
+      diag_longname = 'Depth integrated '//trim(shortnm)// &
+          ' content tendency due to frazil formation'
+    endif
+    Tr%id_frazil_cont_2d = register_diag_field('ocean_model', diag_name, &
+        diag%axesTL, Time, diag_longname, conv_units, conversion=Tr%conv_scale*US%s_to_T)
+
+    if ((Tr%id_frazil_conc > 0) .or. (Tr%id_frazil_cont > 0) &
+        .or. (Tr%id_frazil_cont_2d > 0)) then
+      Reg%comp_frazil_tend(m) = .true.
+      comp_process_tend = .true.
+    endif
+
+    ! KPP nonlocal term diagnostics
+    if (use_KPP) then
+      Tr%id_net_surfflux = register_diag_field('ocean_model', Tr%net_surfflux_name, diag%axesT1, Time, &
+          Tr%net_surfflux_longname, trim(units)//' m s-1', conversion=GV%H_to_m*US%s_to_T)
+      Tr%id_NLT_tendency = register_diag_field('ocean_model', "KPP_NLT_d"//trim(shortnm)//"dt", &
+          diag%axesTL, Time, &
+          trim(longname)//' tendency due to non-local transport of '//trim(lowercase(flux_longname))//&
+          ', as calculated by [CVMix] KPP', trim(units)//' s-1', conversion=US%s_to_T)
+      Tr%id_NLT_budget = register_diag_field('ocean_model', Tr%NLT_budget_name, &
+          diag%axesTL, Time, &
+          trim(flux_longname)//' content change due to non-local transport, as calculated by [CVMix] KPP', &
+          conv_units, conversion=Tr%conv_scale*US%s_to_T, v_extensive=.true.)
+
+      if ((Tr%id_NLT_tendency > 0) .or. (Tr%id_NLT_budget > 0)) then
+        Reg%comp_KPP_NLT_tend(m) = .true.
+        comp_process_tend = .true.
+      endif
+    endif
+
+    ! boundary forcing tendencies
+    if (use_ALE) then
+      if (shortnm == 'T') then
+        diag_name = 'boundary_forcing_temp_tendency'
+        diag_longname = 'Boundary forcing temperature tendency'
+      elseif (shortnm == 'S') then
+        diag_name = 'boundary_forcing_saln_tendency'
+        diag_longname = 'Boundary forcing saln tendency'
+      else
+        diag_name = 'boundary_forcing_'//trim(shortnm)//'_tendency'
+        diag_longname = 'boundary forcing '//trim(shortnm)//' tendency'
+      endif
+      Tr%id_bndry_forc_conc = register_diag_field('ocean_model', diag_name, &
+          diag%axesTL, Time, diag_longname, trim(units)//' s-1', conversion=US%s_to_T)
+
+      if (shortnm == 'T') then
+        diag_name = 'boundary_forcing_heat_tendency'
+        diag_longname = 'Boundary forcing heat tendency'
+      elseif (shortnm == 'S') then
+        diag_name = 'boundary_forcing_salt_tendency'
+        diag_longname = 'Boundary forcing salt tendency'
+      else
+        diag_name = 'boundary_forcing_'//trim(shortnm)//'_content_tendency'
+        diag_longname = 'boundary forcing '//trim(shortnm)//' content tendency'
+      endif
+      Tr%id_bndry_forc_cont = register_diag_field('ocean_model', diag_name, &
+          diag%axesTL, Time, diag_longname, conv_units, conversion=Tr%conv_scale*US%s_to_T, &
+          v_extensive=.true.)
+
+      diag_name = trim(diag_name) // '_2d'
+      if (shortnm == 'T') then
+        diag_longname = 'Depth integrated boundary forcing of ocean heat'
+      elseif (shortnm == 'S') then
+        diag_longname = 'Depth integrated boundary forcing of ocean salt'
+      else
+        diag_longname = 'Depth integrated boundary forcing of ocean ' // trim(shortnm)
+      endif
+      Tr%id_bndry_forc_cont_2d = register_diag_field('ocean_model', diag_name, &
+          diag%axesTL, Time, diag_longname, conv_units, conversion=Tr%conv_scale*US%s_to_T)
+
+      if ((Tr%id_bndry_forc_conc > 0) .or. (Tr%id_bndry_forc_cont > 0) &
+          .or. (Tr%id_bndry_forc_cont_2d > 0)) then
+        Reg%comp_bndry_forc_tend(m) = .true.
+        comp_process_tend = .true.
+      endif
+    endif
+
+    ! diabatic diffusion tendencies
+    if (shortnm == 'T') then
+      diag_name = 'diabatic_diff_temp_tendency'
+      diag_longname = 'Diabatic diffusion temperature tendency'
+    elseif (shortnm == 'S') then
+      diag_name = 'diabatic_diff_saln_tendency'
+      diag_longname = 'Diabatic diffusion salinity tendency'
+    else
+      diag_name = 'diabatic_diff_'//trim(shortnm)//'_tendency'
+      diag_longname = 'Diabatic diffusion '//trim(shortnm)//' tendency'
+    endif
+    Tr%id_diabatic_diff_conc = register_diag_field('ocean_model', diag_name, &
+        diag%axesTL, Time, diag_longname, trim(units)//' s-1', conversion=US%s_to_T)
+
+    if (shortnm == 'T') then
+      diag_name = 'diabatic_heat_tendency'
+      diag_longname = 'Diabatic diffusion heat tendency'
+      Tr%id_diabatic_diff_cont = register_diag_field('ocean_model', diag_name,              &
+          diag%axesTL, Time, diag_longname, conv_units, conversion=Tr%conv_scale*US%s_to_T, &
+          cmor_field_name='opottempdiff',                                                   &
+          cmor_standard_name='tendency_of_sea_water_potential_temperature_expressed_as_'//  &
+                             'heat_content_due_to_parameterized_dianeutral_mixing',         &
+          cmor_long_name='Tendency of sea water potential temperature expressed as '//      &
+                         'heat content due to parameterized dianeutral mixing',             &
+          v_extensive=.true.)
+    elseif (shortnm == 'S') then
+      diag_name = 'diabatic_salt_tendency'
+      diag_longname = 'Diabatic diffusion of salt tendency'
+      Tr%id_diabatic_diff_cont = register_diag_field('ocean_model', diag_name,              &
+          diag%axesTL, Time, diag_longname, conv_units, conversion=Tr%conv_scale*US%s_to_T, &
+          cmor_field_name='osaltdiff',                                                      &
+          cmor_standard_name='tendency_of_sea_water_salinity_expressed_as_salt_content_'//  &
+                             'due_to_parameterized_dianeutral_mixing',                      &
+          cmor_long_name='Tendency of sea water salinity expressed as salt content '//      &
+                         'due to parameterized dianeutral mixing',                          &
+          v_extensive=.true.)
+    else
+      diag_name = 'diabatic_diff_'//trim(shortnm)//'_content_tendency'
+      diag_longname = 'Diabatic diffusion '//trim(shortnm)//' content tendency'
+      Tr%id_diabatic_diff_cont = register_diag_field('ocean_model', diag_name,              &
+          diag%axesTL, Time, diag_longname, conv_units, conversion=Tr%conv_scale*US%s_to_T, &
+          v_extensive=.true.)
+    endif
+
+    diag_name = trim(diag_name) // '_2d'
+    if (shortnm == 'T') then
+      diag_longname = 'Depth integrated diabatic diffusion heat tendency'
+      Tr%id_diabatic_diff_cont_2d = register_diag_field('ocean_model', diag_name, &
+          diag%axesTL, Time, diag_longname, conv_units, conversion=Tr%conv_scale*US%s_to_T, &
+          cmor_field_name='opottempdiff_2d',                                                &
+          cmor_standard_name='tendency_of_sea_water_potential_temperature_expressed_as_'//  &
+                             'heat_content_due_to_parameterized_dianeutral_mixing_'//       &
+                             'depth_integrated',                                            &
+          cmor_long_name='Tendency of sea water potential temperature expressed as '//&
+                         'heat content due to parameterized dianeutral mixing depth integrated')
+    elseif (shortnm == 'S') then
+      diag_longname = 'Depth integrated diabatic diffusion salt tendency'
+      Tr%id_diabatic_diff_cont_2d = register_diag_field('ocean_model', diag_name, &
+          diag%axesTL, Time, diag_longname, conv_units, conversion=Tr%conv_scale*US%s_to_T, &
+          cmor_field_name='osaltdiff_2d',                                                   &
+          cmor_standard_name='tendency_of_sea_water_salinity_expressed_as_salt_content_'//  &
+                             'due_to_parameterized_dianeutral_mixing_depth_integrated',     &
+          cmor_long_name='Tendency of sea water salinity expressed as salt content '//      &
+                         'due to parameterized dianeutral mixing depth integrated')
+    else
+      diag_longname = 'Depth integrated diabatic diffusion ' // trim(shortnm) // ' tendency'
+      Tr%id_diabatic_diff_cont_2d = register_diag_field('ocean_model', diag_name, &
+          diag%axesTL, Time, diag_longname, conv_units, conversion=Tr%conv_scale*US%s_to_T)
+    endif
+
+    if ((Tr%id_diabatic_diff_conc > 0) .or. (Tr%id_diabatic_diff_cont > 0) &
+        .or. (Tr%id_diabatic_diff_cont_2d > 0)) then
+      Reg%comp_diabatic_diff_tend(m) = .true.
+      comp_process_tend = .true.
+    endif
+
     ! set up t_prev stack
     t_prev_max_size = 0
     if (Reg%comp_net_tend(m))   t_prev_max_size = t_prev_max_size + 1
@@ -623,20 +819,6 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
         ! Augment the total number of tracers, including the squared tracers.
         Reg%ntr = Reg%ntr + 1
       endif
-    endif
-
-    ! KPP nonlocal term diagnostics
-    if (use_KPP) then
-      Tr%id_net_surfflux = register_diag_field('ocean_model', Tr%net_surfflux_name, diag%axesT1, Time, &
-          Tr%net_surfflux_longname, trim(units)//' m s-1', conversion=GV%H_to_m*US%s_to_T)
-      Tr%id_NLT_tendency = register_diag_field('ocean_model', "KPP_NLT_d"//trim(shortnm)//"dt", &
-          diag%axesTL, Time, &
-          trim(longname)//' tendency due to non-local transport of '//trim(lowercase(flux_longname))//&
-          ', as calculated by [CVMix] KPP', trim(units)//' s-1', conversion=US%s_to_T)
-      Tr%id_NLT_budget = register_diag_field('ocean_model', Tr%NLT_budget_name, &
-          diag%axesTL, Time, &
-          trim(flux_longname)//' content change due to non-local transport, as calculated by [CVMix] KPP', &
-          conv_units, conversion=Tr%conv_scale*US%s_to_T, v_extensive=.true.)
     endif
 
   else ! if (Reg%Tr(m)%registry_diags) then
@@ -677,18 +859,20 @@ end subroutine prep_tracer_tend
 subroutine diagnose_tracer_tend_field_stack(G, GV, dt, t_prev, tracer_new, h_new, &
                                             diag_cs, id_conc_tend, id_cont_tend, id_cont_tend_2d, &
                                             id_cont_new, id_cont_new_2d)
-  type(ocean_grid_type),                     intent(in) :: G                !< ocean grid structure
-  type(verticalGrid_type),                   intent(in) :: GV               !< ocean vertical grid structure
-  real,                                      intent(in) :: dt               !< time step [T ~> s]
-  type(field_stack_type),                 intent(inout) :: t_prev           !< stack of previous tracer concentration values [conc]
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: tracer_new       !< tracer values after process
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h_new            !< layer thicknesses after process
-  type(diag_ctrl),                target, intent(inout) :: diag_cs          !< Structure used to regulate diagnostic output
-  integer,                                   intent(in) :: id_conc_tend     !< diagnostic id for concentration tendency
-  integer,                                   intent(in) :: id_cont_tend     !< diagnostic id for content tendency
-  integer,                                   intent(in) :: id_cont_tend_2d  !< diagnostic id for 2d content tendency
-  integer,                         optional, intent(in) :: id_cont_new      !< diagnostic id for content after process
-  integer,                         optional, intent(in) :: id_cont_new_2d   !< diagnostic id for 2d content after process
+  type(ocean_grid_type),      intent(in) :: G                !< ocean grid structure
+  type(verticalGrid_type),    intent(in) :: GV               !< ocean vertical grid structure
+  real,                       intent(in) :: dt               !< time step [T ~> s]
+  type(field_stack_type),  intent(inout) :: t_prev           !< stack of previous tracer concentration values [conc]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                              intent(in) :: tracer_new       !< tracer values after process
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                              intent(in) :: h_new            !< layer thicknesses after process
+  type(diag_ctrl), target, intent(inout) :: diag_cs          !< Structure used to regulate diagnostic output
+  integer,                    intent(in) :: id_conc_tend     !< diagnostic id for concentration tendency
+  integer,                    intent(in) :: id_cont_tend     !< diagnostic id for content tendency
+  integer,                    intent(in) :: id_cont_tend_2d  !< diagnostic id for 2d content tendency
+  integer,          optional, intent(in) :: id_cont_new      !< diagnostic id for content after process
+  integer,          optional, intent(in) :: id_cont_new_2d   !< diagnostic id for 2d content after process
 
   ! Local variables
   real, dimension(:,:,:), pointer :: t_prev_ptr
@@ -708,18 +892,21 @@ end subroutine diagnose_tracer_tend_field_stack
 subroutine diagnose_tracer_tend_field(G, GV, dt, t_prev_vals, tracer_new, h_new, &
                                       diag_cs, id_conc_tend, id_cont_tend, id_cont_tend_2d, &
                                       id_cont_new, id_cont_new_2d)
-  type(ocean_grid_type),                     intent(in) :: G                !< ocean grid structure
-  type(verticalGrid_type),                   intent(in) :: GV               !< ocean vertical grid structure
-  real,                                      intent(in) :: dt               !< time step [T ~> s]
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: t_prev_vals      !< previous tracer concentration values [conc]
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: tracer_new       !< tracer values after process
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h_new            !< layer thicknesses after process
-  type(diag_ctrl),                target, intent(inout) :: diag_cs          !< Structure used to regulate diagnostic output
-  integer,                                   intent(in) :: id_conc_tend     !< diagnostic id for concentration tendency
-  integer,                                   intent(in) :: id_cont_tend     !< diagnostic id for content tendency
-  integer,                                   intent(in) :: id_cont_tend_2d  !< diagnostic id for 2d content tendency
-  integer,                         optional, intent(in) :: id_cont_new      !< diagnostic id for content after process
-  integer,                         optional, intent(in) :: id_cont_new_2d   !< diagnostic id for 2d content after process
+  type(ocean_grid_type),      intent(in) :: G                !< ocean grid structure
+  type(verticalGrid_type),    intent(in) :: GV               !< ocean vertical grid structure
+  real,                       intent(in) :: dt               !< time step [T ~> s]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                              intent(in) :: t_prev_vals      !< previous tracer concentration values [conc]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                              intent(in) :: tracer_new       !< tracer values after process
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                              intent(in) :: h_new            !< layer thicknesses after process
+  type(diag_ctrl), target, intent(inout) :: diag_cs          !< Structure used to regulate diagnostic output
+  integer,                    intent(in) :: id_conc_tend     !< diagnostic id for concentration tendency
+  integer,                    intent(in) :: id_cont_tend     !< diagnostic id for content tendency
+  integer,                    intent(in) :: id_cont_tend_2d  !< diagnostic id for 2d content tendency
+  integer,          optional, intent(in) :: id_cont_new      !< diagnostic id for content after process
+  integer,          optional, intent(in) :: id_cont_new_2d   !< diagnostic id for 2d content after process
 
   ! Local variables
   real, dimension(:,:,:), pointer :: h_prev_ptr ! points to previous thicknesses
@@ -988,9 +1175,9 @@ subroutine tracer_name_lookup(Reg, tr_ptr, name)
   type(tracer_type), pointer             :: tr_ptr  !< target or pointer to the tracer array
   character(len=32), intent(in)          :: name    !< tracer name
 
-  integer n
-  do n=1,Reg%ntr
-    if (lowercase(Reg%Tr(n)%name) == lowercase(name)) tr_ptr => Reg%Tr(n)
+  integer m
+  do m=1,Reg%ntr
+    if (lowercase(Reg%Tr(m)%name) == lowercase(name)) tr_ptr => Reg%Tr(m)
   enddo
 
 end subroutine tracer_name_lookup

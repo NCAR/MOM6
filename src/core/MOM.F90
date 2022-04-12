@@ -908,7 +908,7 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
       call enable_averages(CS%t_dyn_rel_diag, Time_local, CS%diag)
       call calculate_diagnostic_fields(u, v, h, CS%uh, CS%vh, CS%tv, CS%ADp, &
           CS%CDp, p_surf, CS%t_dyn_rel_diag, CS%diag_pre_sync, G, GV, US, CS%diagnostics_CSp)
-      call post_tracer_diagnostics_at_sync(CS%Tracer_reg, h, CS%diag, G, GV, CS%t_dyn_rel_diag)
+      call post_tracer_diagnostics_at_sync(CS%tracer_Reg, h, CS%diag, G, GV, CS%t_dyn_rel_diag)
       call diag_drop_h(CS%diag, "sync")
       call diag_push_h(CS%diag, "sync")
       call diag_copy_diag_to_storage(CS%diag_pre_sync, h, CS%diag)
@@ -1282,7 +1282,7 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
   ! all diagnostic grids are now out of sync with respect to h
   call set_diag_in_sync_with_state(CS%diag, .false.)
   call post_transport_diagnostics(G, GV, US, CS%uhtr, CS%vhtr, h, CS%transport_IDs, &
-           CS%diag_pre_dyn, CS%diag, CS%t_dyn_rel_adv, CS%tracer_reg)
+           CS%diag_pre_dyn, CS%diag, CS%t_dyn_rel_adv, CS%tracer_Reg)
   call diag_drop_h(CS%diag, "transports")
   call cpu_clock_end(id_clock_diagnostics) ; call cpu_clock_end(id_clock_other)
 
@@ -1292,7 +1292,7 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
   call cpu_clock_end(id_clock_tracer) ; call cpu_clock_end(id_clock_thermo)
 
   call cpu_clock_begin(id_clock_other) ; call cpu_clock_begin(id_clock_diagnostics)
-  call post_tracer_hordiff_diagnostics(G, GV, CS%tracer_reg, CS%diag_pre_dyn, CS%diag)
+  call post_tracer_hordiff_diagnostics(G, GV, CS%tracer_Reg, CS%diag_pre_dyn, CS%diag)
   call cpu_clock_end(id_clock_diagnostics) ; call cpu_clock_end(id_clock_other)
 
   call cpu_clock_begin(id_clock_thermo) ; call cpu_clock_begin(id_clock_tracer)
@@ -1425,7 +1425,7 @@ subroutine step_MOM_thermo(CS, G, GV, US, u, v, h, tv, fluxes, dtdia, &
 
     call cpu_clock_begin(id_clock_diabatic)
 
-    call diabatic(u, v, h, tv, CS%Hml, fluxes, CS%visc, CS%ADp, CS%CDp, dtdia, &
+    call diabatic(u, v, h, tv, CS%tracer_Reg, CS%Hml, fluxes, CS%visc, CS%ADp, CS%CDp, dtdia, &
                   Time_end_thermo, G, GV, US, CS%diabatic_CSp, CS%stoch_CS, CS%OBC, Waves)
     fluxes%fluxes_used = .true.
 
@@ -2482,7 +2482,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
     !
     ! XXX: This call on OBC_in allocates the tracer fields on the unrotated
     !   grid, but also incorrectly stores a pointer to a tracer_type for the
-    !   rotated registry (e.g. segment%tr_reg%Tr(n)%Tr) from CS%tracer_reg.
+    !   rotated registry (e.g. segment%tr_reg%Tr(n)%Tr) from CS%tracer_Reg.
     !
     !   While incorrect and potentially dangerous, it does not seem that this
     !   pointer is used during initialization, so we leave it for now.

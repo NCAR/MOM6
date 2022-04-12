@@ -24,8 +24,13 @@ use MOM_restart, only :  MOM_restart_CS
 use MOM_ALE_sponge, only : set_up_ALE_sponge_field, ALE_sponge_CS, get_ALE_sponge_nz_data
 use MOM_sponge, only : set_up_sponge_field, sponge_CS
 use MOM_time_manager, only : time_type
-use MOM_tracer_registry, only : register_tracer, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
+use MOM_tracer_registry, only : register_tracer
+use MOM_tracer_types, only : tracer_registry_type, col_act_apply_KPP_NLT
+use MOM_tracer_types, only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types, only : col_act_apply_boundary_fluxes
+use MOM_tracer_types, only : col_act_tridiag_solve
+use MOM_tracer_types, only : col_act_post_tridiag_solve_sources
 use MOM_unit_scaling, only : unit_scale_type
 use MOM_variables, only : surface
 use MOM_open_boundary, only : ocean_OBC_type
@@ -271,14 +276,14 @@ end subroutine initialize_RGC_tracer
 !> This subroutine applies diapycnal diffusion and any other column
 !! tracer physics or chemistry to the tracers from this file.
 !! This is a simple example of a set of advected passive tracers.
-subroutine RGC_tracer_column_physics(h_old, h_new,  ea,  eb, fluxes, dt, G, GV, US, CS, &
+subroutine RGC_tracer_column_physics(action, h, ea, eb, fluxes, dt, G, GV, US, CS, &
                               evap_CFL_limit, minimum_forcing_depth)
-  type(ocean_grid_type),                 intent(in) :: G !< The ocean's grid structure.
-  type(verticalGrid_type),               intent(in) :: GV !< The ocean's vertical grid structure.
+  integer,                 intent(in) :: action !< action to be performed with this invocation
+  type(ocean_grid_type),   intent(in) :: G !< The ocean's grid structure.
+  type(verticalGrid_type), intent(in) :: GV !< The ocean's vertical grid structure.
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
+                           intent(in) :: h    !< Layer thickness at time level appropriate
+                                              !! for action [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: ea   !< an array to which the amount of fluid entrained
                                               !! from the layer above during this call will be
@@ -297,41 +302,43 @@ subroutine RGC_tracer_column_physics(h_old, h_new,  ea,  eb, fluxes, dt, G, GV, 
   real,          optional, intent(in) :: minimum_forcing_depth !< The smallest depth over which fluxes
                                                !! can be applied [H ~> m or kg m-2].
 
-! The arguments to this subroutine are redundant in that
-!     h_new[k] = h_old[k] + ea[k] - eb[k-1] + eb[k] - ea[k+1]
-
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_work ! Used so that h can be modified [H ~> m or kg m-2]
+  ! Local variables
   real :: in_flux(SZI_(G),SZJ_(G),2)  ! total amount of tracer to be injected
 
-  integer :: i, j, k, is, ie, js, je, nz, m
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+  integer :: i, j, k, is, ie, js, je, m
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
 
   if (.not.associated(CS)) return
 
-  in_flux(:,:,:) = 0.0
-  m=1
-  do j=js,je ; do i=is,ie
-    ! set tracer to 1.0 in the surface of the continental shelf
-    if (G%geoLonT(i,j) <= (CS%CSL)) then
-      CS%tr(i,j,1,m) = 1.0 !first layer
-    endif
-  enddo ; enddo
+  select case ( action )
+    case ( col_act_apply_KPP_NLT )
+      ! KPP NLT not applicable to this tracer module
 
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    do m=1,NTR
-      do k=1,nz ;do j=js,je ; do i=is,ie
-        h_work(i,j,k) = h_old(i,j,k)
-      enddo ; enddo ; enddo;
-      call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m) , dt, fluxes, h_work, &
-                                          evap_CFL_limit, minimum_forcing_depth, in_flux(:,:,m))
+    case ( col_act_pre_tridiag_solve_sources )
+      m=1
+      do j=js,je ; do i=is,ie
+        ! set tracer to 1.0 in the surface of the continental shelf
+        if (G%geoLonT(i,j) <= (CS%CSL)) then
+          CS%tr(i,j,1,m) = 1.0 !first layer
+        endif
+      enddo ; enddo
 
-      call tracer_vertdiff(h_work, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
-    enddo
-  else
-    do m=1,NTR
-      call tracer_vertdiff(h_old, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
-    enddo
-  endif
+    case ( col_act_apply_boundary_fluxes )
+      do m=1,NTR
+        in_flux(:,:,m) = 0.0
+        call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m), dt, fluxes, h, &
+                                            evap_CFL_limit, minimum_forcing_depth, in_flux(:,:,m))
+      enddo
+
+    case ( col_act_tridiag_solve )
+      do m=1,NTR
+        call tracer_vertdiff(h, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
+      enddo
+
+    case ( col_act_post_tridiag_solve_sources )
+      ! there are no post-tridiag solve sources in this tracer module
+
+  end select
 
 end subroutine RGC_tracer_column_physics
 

@@ -17,8 +17,13 @@ use MOM_open_boundary,   only : ocean_OBC_type
 use MOM_restart,         only : query_initialized, MOM_restart_CS
 use MOM_sponge,          only : set_up_sponge_field, sponge_CS
 use MOM_time_manager,    only : time_type
-use MOM_tracer_registry, only : register_tracer, tracer_registry_type, tracer_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
+use MOM_tracer_registry, only : register_tracer
+use MOM_tracer_types,    only : tracer_registry_type, tracer_type, col_act_apply_KPP_NLT
+use MOM_tracer_types,    only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types,    only : col_act_apply_boundary_fluxes
+use MOM_tracer_types,    only : col_act_tridiag_solve
+use MOM_tracer_types,    only : col_act_post_tridiag_solve_sources
 use MOM_tracer_Z_init,   only : tracer_Z_init
 use MOM_unit_scaling,    only : unit_scale_type
 use MOM_variables,       only : surface, thermo_var_ptrs
@@ -158,14 +163,15 @@ subroutine initialize_pseudo_salt_tracer(restart, day, G, GV, h, diag, OBC, CS, 
 end subroutine initialize_pseudo_salt_tracer
 
 !> Apply sources, sinks and diapycnal diffusion to the tracers in this package.
-subroutine pseudo_salt_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, CS, tv, debug, &
-              KPP_CSp, nonLocalTrans, evap_CFL_limit, minimum_forcing_depth)
+subroutine pseudo_salt_tracer_column_physics(action, h, ea, eb, fluxes, dt, G, GV, US, &
+                                             CS, tv, debug, KPP_CSp, nonLocalTrans, &
+                                             evap_CFL_limit, minimum_forcing_depth)
+  integer,                 intent(in) :: action !< action to be performed with this invocation
   type(ocean_grid_type),   intent(in) :: G     !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV    !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2]
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2]
+                           intent(in) :: h     !< Layer thickness at time level appropriate
+                                               !! for action [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: ea    !< The amount of fluid entrained from the layer above
                                                !! during this call [H ~> m or kg m-2]
@@ -190,9 +196,6 @@ subroutine pseudo_salt_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G
   !   This subroutine applies diapycnal diffusion and any other column
   ! tracer physics or chemistry to the tracers from this file.
 
-  ! The arguments to this subroutine are redundant in that
-  !     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
-
   ! Local variables
   real :: net_salt(SZI_(G),SZJ_(G)) ! Net salt flux into the ocean integrated over
                               ! a timestep [ppt H ~> ppt m or ppt kg m-2]
@@ -201,7 +204,6 @@ subroutine pseudo_salt_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G
                               ! away [H ~> m or kg m-2]
   real :: Ih_limit            ! Inverse of FluxRescaleDepth or 0 for no limiting [H-1 ~> m-1 or m2 kg-1]
   real :: scale               ! Scale scales away fluxes if depth < FluxRescaleDepth [nondim]
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_work ! Used so that h can be modified [H ~> m or kg m-2]
   integer :: i, j, k, is, ie, js, je, nz
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
@@ -209,56 +211,56 @@ subroutine pseudo_salt_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G
   if (.not.associated(CS)) return
   if (.not.associated(CS%ps)) return
 
-  if (debug) then
-    call hchksum(tv%S,"salt pre pseudo-salt vertdiff", G%HI)
-    call hchksum(CS%ps,"pseudo_salt pre pseudo-salt vertdiff", G%HI)
-  endif
+  select case ( action )
+    case ( col_act_apply_KPP_NLT )
 
-  ! Compute KPP nonlocal term if necessary
-  if (present(KPP_CSp)) then
-    if (associated(KPP_CSp) .and. present(nonLocalTrans)) &
-      call KPP_NonLocalTransport(KPP_CSp, G, GV, h_old, nonLocalTrans, fluxes%KPP_salt_flux(:,:), &
+      call KPP_NonLocalTransport(KPP_CSp, G, GV, h, nonLocalTrans, fluxes%KPP_salt_flux(:,:), &
                                  dt, CS%tr_ptr, CS%ps(:,:,:))
-  endif
 
-  ! This uses applyTracerBoundaryFluxesInOut, usually in ALE mode
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    ! This option uses applyTracerBoundaryFluxesInOut, usually in ALE mode
+    case ( col_act_pre_tridiag_solve_sources )
+      ! there are no pre-tridiag solve sources in this tracer module
 
-    ! Determine the time-integrated salt flux, including limiting for small total ocean depths.
-    net_Salt(:,:) = 0.0
-    FluxRescaleDepth = max( GV%Angstrom_H, 1.e-30*GV%m_to_H )
-    Ih_limit  = 0.0 ; if (FluxRescaleDepth > 0.0) Ih_limit  = 1.0 / FluxRescaleDepth
-    do j=js,je
-      do i=is,ie ; htot(i) = h_old(i,j,1) ; enddo
-      do k=2,nz ; do i=is,ie ; htot(i) = htot(i) + h_old(i,j,k) ; enddo ; enddo
-      do i=is,ie
-        scale = 1.0 ; if ((Ih_limit > 0.0) .and. (htot(i)*Ih_limit < 1.0)) scale = htot(i)*Ih_limit
-        net_salt(i,j) = (scale * dt * (1000.0 * fluxes%salt_flux(i,j))) * GV%RZ_to_H
+    case ( col_act_apply_boundary_fluxes )
+      ! Determine the time-integrated salt flux, including limiting for small total ocean depths.
+      net_salt(:,:) = 0.0
+      FluxRescaleDepth = max( GV%Angstrom_H, 1.e-30*GV%m_to_H )
+      Ih_limit  = 0.0 ; if (FluxRescaleDepth > 0.0) Ih_limit  = 1.0 / FluxRescaleDepth
+      do j=js,je
+        do i=is,ie ; htot(i) = h(i,j,1) ; enddo
+        do k=2,nz ; do i=is,ie ; htot(i) = htot(i) + h(i,j,k) ; enddo ; enddo
+        do i=is,ie
+          scale = 1.0 ; if ((Ih_limit > 0.0) .and. (htot(i)*Ih_limit < 1.0)) scale = htot(i)*Ih_limit
+          net_salt(i,j) = (scale * dt * (1000.0 * fluxes%salt_flux(i,j))) * GV%RZ_to_H
+        enddo
       enddo
-    enddo
 
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      h_work(i,j,k) = h_old(i,j,k)
-    enddo ; enddo ; enddo
-    call applyTracerBoundaryFluxesInOut(G, GV, CS%ps, dt, fluxes, h_work, evap_CFL_limit, &
-                                        minimum_forcing_depth, out_flux_optional=net_salt)
-    call tracer_vertdiff(h_work, ea, eb, dt, CS%ps, G, GV)
-  else
-    call tracer_vertdiff(h_old, ea, eb, dt, CS%ps, G, GV)
-  endif
+      call applyTracerBoundaryFluxesInOut(G, GV, CS%ps, dt, fluxes, h, evap_CFL_limit, &
+                                          minimum_forcing_depth, out_flux_optional=net_salt)
 
-  if (debug) then
-    call hchksum(tv%S, "salt post pseudo-salt vertdiff", G%HI)
-    call hchksum(CS%ps, "pseudo_salt post pseudo-salt vertdiff", G%HI)
-  endif
+    case ( col_act_tridiag_solve )
 
-  if (allocated(CS%diff)) then
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      CS%diff(i,j,k) = CS%ps(i,j,k) - tv%S(i,j,k)
-    enddo ; enddo ; enddo
-    if (CS%id_psd>0) call post_data(CS%id_psd, CS%diff, CS%diag)
-  endif
+      if (debug) then
+        call hchksum(tv%S,"salt pre pseudo-salt vertdiff", G%HI)
+        call hchksum(CS%ps,"pseudo_salt pre pseudo-salt vertdiff", G%HI)
+      endif
+
+      call tracer_vertdiff(h, ea, eb, dt, CS%ps, G, GV)
+
+      if (debug) then
+        call hchksum(tv%S, "salt post pseudo-salt vertdiff", G%HI)
+        call hchksum(CS%ps, "pseudo_salt post pseudo-salt vertdiff", G%HI)
+      endif
+
+    case ( col_act_post_tridiag_solve_sources )
+
+      if (allocated(CS%diff)) then
+        do k=1,nz ; do j=js,je ; do i=is,ie
+          CS%diff(i,j,k) = CS%ps(i,j,k) - tv%S(i,j,k)
+        enddo ; enddo ; enddo
+        if (CS%id_psd>0) call post_data(CS%id_psd, CS%diff, CS%diag)
+      endif
+
+  end select
 
 end subroutine pseudo_salt_tracer_column_physics
 

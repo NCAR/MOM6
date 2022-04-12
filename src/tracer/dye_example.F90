@@ -15,8 +15,13 @@ use MOM_open_boundary,      only : ocean_OBC_type
 use MOM_restart,            only : query_initialized, MOM_restart_CS
 use MOM_sponge,             only : set_up_sponge_field, sponge_CS
 use MOM_time_manager,       only : time_type
-use MOM_tracer_registry,    only : register_tracer, tracer_registry_type
 use MOM_tracer_diabatic,    only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
+use MOM_tracer_registry,    only : register_tracer
+use MOM_tracer_types,       only : tracer_registry_type, col_act_apply_KPP_NLT
+use MOM_tracer_types,       only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types,       only : col_act_apply_boundary_fluxes
+use MOM_tracer_types,       only : col_act_tridiag_solve
+use MOM_tracer_types,       only : col_act_post_tridiag_solve_sources
 use MOM_tracer_Z_init,      only : tracer_Z_init
 use MOM_unit_scaling,       only : unit_scale_type
 use MOM_variables,          only : surface
@@ -240,16 +245,14 @@ end subroutine initialize_dye_tracer
 !> This subroutine applies diapycnal diffusion and any other column
 !! tracer physics or chemistry to the tracers from this file.
 !! This is a simple example of a set of advected passive tracers.
-!! The arguments to this subroutine are redundant in that
-!!     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
-subroutine dye_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, CS, &
+subroutine dye_tracer_column_physics(action, h, ea, eb, fluxes, dt, G, GV, US, CS, &
               evap_CFL_limit, minimum_forcing_depth)
+  integer,                 intent(in) :: action !< action to be performed with this invocation
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
+                           intent(in) :: h    !< Layer thickness at time level appropriate
+                                              !! for action [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: ea   !< an array to which the amount of fluid entrained
                                               !! from the layer above during this call will be
@@ -269,56 +272,61 @@ subroutine dye_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US
   real,          optional, intent(in) :: minimum_forcing_depth !< The smallest depth over which
                                               !! fluxes can be applied [H ~> m or kg m-2]
 
-! Local variables
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_work ! Used so that h can be modified
+  ! Local variables
   real :: sfc_val  ! The surface value for the tracers.
   real :: Isecs_per_year  ! The number of seconds in a year.
   real :: year            ! The time in years.
   real    :: z_bot    ! Height of the bottom of the layer relative to the sea surface [Z ~> m]
   real    :: z_center ! Height of the center of the layer relative to the sea surface [Z ~> m]
   integer :: secs, days   ! Integer components of the time type.
-  integer :: i, j, k, is, ie, js, je, nz, m
+  integer :: i, j, k, nz, m
 
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+  nz = GV%ke
 
   if (.not.associated(CS)) return
   if (CS%ntr < 1) return
 
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    do m=1,CS%ntr
-      do k=1,nz ;do j=js,je ; do i=is,ie
-        h_work(i,j,k) = h_old(i,j,k)
-      enddo ; enddo ; enddo
-      call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m), dt, fluxes, h_work, &
-                                          evap_CFL_limit, minimum_forcing_depth)
-      call tracer_vertdiff(h_work, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
-    enddo
-  else
-    do m=1,CS%ntr
-      call tracer_vertdiff(h_old, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
-    enddo
-  endif
+  select case ( action )
+    case ( col_act_apply_KPP_NLT )
+      ! KPP NLT not applicable to this tracer module
 
-  do m=1,CS%ntr
-    do j=G%jsd,G%jed ; do i=G%isd,G%ied
-      ! A dye is set dependent on the center of the cell being inside the rectangular box.
-      if (CS%dye_source_minlon(m)<G%geoLonT(i,j) .and. &
-          CS%dye_source_maxlon(m)>=G%geoLonT(i,j) .and. &
-          CS%dye_source_minlat(m)<G%geoLatT(i,j) .and. &
-          CS%dye_source_maxlat(m)>=G%geoLatT(i,j) .and. &
-          G%mask2dT(i,j) > 0.0 ) then
-        z_bot = 0.0
-        do k=1,nz
-          z_bot = z_bot - h_new(i,j,k)*GV%H_to_Z
-          z_center = z_bot + 0.5*h_new(i,j,k)*GV%H_to_Z
-          if ( z_center > -CS%dye_source_maxdepth(m) .and. &
-               z_center < -CS%dye_source_mindepth(m) ) then
-            CS%tr(i,j,k,m) = 1.0
+    case ( col_act_pre_tridiag_solve_sources )
+      ! there are no pre-tridiag solve sources in this tracer module
+
+    case ( col_act_apply_boundary_fluxes )
+      do m=1,CS%ntr
+        call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m), dt, fluxes, h, &
+                                            evap_CFL_limit, minimum_forcing_depth)
+      enddo
+
+    case ( col_act_tridiag_solve )
+      do m=1,CS%ntr
+        call tracer_vertdiff(h, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
+      enddo
+
+    case ( col_act_post_tridiag_solve_sources )
+      do m=1,CS%ntr
+        do j=G%jsd,G%jed ; do i=G%isd,G%ied
+          ! A dye is set dependent on the center of the cell being inside the rectangular box.
+          if (CS%dye_source_minlon(m)<G%geoLonT(i,j) .and. &
+              CS%dye_source_maxlon(m)>=G%geoLonT(i,j) .and. &
+              CS%dye_source_minlat(m)<G%geoLatT(i,j) .and. &
+              CS%dye_source_maxlat(m)>=G%geoLatT(i,j) .and. &
+              G%mask2dT(i,j) > 0.0 ) then
+            z_bot = 0.0
+            do k=1,nz
+              z_bot = z_bot - h(i,j,k)*GV%H_to_Z
+              z_center = z_bot + 0.5*h(i,j,k)*GV%H_to_Z
+              if ( z_center > -CS%dye_source_maxdepth(m) .and. &
+                   z_center < -CS%dye_source_mindepth(m) ) then
+                CS%tr(i,j,k,m) = 1.0
+              endif
+            enddo
           endif
-        enddo
-      endif
-    enddo ; enddo
-  enddo
+        enddo ; enddo
+      enddo
+
+  end select
 
 end subroutine dye_tracer_column_physics
 

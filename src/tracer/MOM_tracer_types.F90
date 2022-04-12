@@ -64,7 +64,7 @@ type, public :: tracer_type
   character(len=48)               :: net_surfflux_name = ""   !< Name to use for net_surfflux KPP diagnostic
   character(len=48)               :: NLT_budget_name = ""     !< Name to use for NLT_budget KPP diagnostic
   character(len=128)              :: net_surfflux_longname = ""   !< Long name to use for net_surfflux KPP diagnostic
-  integer :: ind_tr_squared = -1 !< The tracer registry index for the square of this tracer
+  integer :: ind_tr_squared = -2 !< The tracer registry index for the square of this tracer
 
   !### THESE CAPABILITIES HAVE NOT YET BEEN IMPLEMENTED.
   ! logical :: advect_tr = .true.       !< If true, this tracer should be advected
@@ -86,7 +86,10 @@ type, public :: tracer_type
   integer :: id_remap_conc = -1, id_remap_cont = -1, id_remap_cont_2d = -1
   integer :: id_tendency = -1, id_trxh_tendency = -1, id_trxh_tendency_2d = -1
   integer :: id_tr_vardec = -1
+  integer :: id_frazil_conc = -1, id_frazil_cont = -1, id_frazil_cont_2d = -1
   integer :: id_net_surfflux = -1, id_NLT_tendency = -1, id_NLT_budget = -1
+  integer :: id_bndry_forc_conc = -1, id_bndry_forc_cont = -1, id_bndry_forc_cont_2d = -1
+  integer :: id_diabatic_diff_conc = -1, id_diabatic_diff_cont = -1, id_diabatic_diff_cont_2d = -1
   !>@}
 end type tracer_type
 
@@ -103,8 +106,22 @@ type, public :: tracer_registry_type
   logical, allocatable     :: comp_remap_tend(:)    !< are remap tendencies being computed, per tracer
   logical, allocatable     :: comp_adv_tend(:)      !< are advective tendencies being computed, per tracer
   logical, allocatable     :: comp_lbd_tend(:)      !< are lbdtendencies being computed, per tracer
-  logical, allocatable     :: comp_neu_diff_tend(:) !< are neutral diffusivetendencies being computed, per tracer
+  logical, allocatable     :: comp_neu_diff_tend(:) !< are neutral diffusive tendencies being computed, per tracer
+  logical, allocatable     :: comp_frazil_tend(:)   !< are frazil formation tendencies being compued, per tracer
+  logical, allocatable     :: comp_KPP_NLT_tend(:)  !< are KPP NLT tendencies being compued, per tracer
+  logical, allocatable     :: comp_bndry_forc_tend(:) !< are boundary forcing tendencies being compued, per tracer
+  logical, allocatable     :: comp_diabatic_diff_tend(:) !< are boundary forcing tendencies being compued, per tracer
 end type tracer_registry_type
 
+! Values to specify actions for tracer_column_physics calls.
+! The actual values are arbitrary.
+
+integer, parameter, public :: col_act_apply_KPP_NLT = 1              !< apply KPP non-local transport term
+integer, parameter, public :: col_act_pre_tridiag_solve_sources = 2  !< apply source terms prior to
+                                                                     !! tridiagonal solve
+integer, parameter, public :: col_act_apply_boundary_fluxes = 3      !< apply boundary fluxes
+integer, parameter, public :: col_act_tridiag_solve = 4              !< perform tridiagonal solve
+integer, parameter, public :: col_act_post_tridiag_solve_sources = 5 !< apply source terms after to
+                                                                     !! tridiagonal solve
 
 end module MOM_tracer_types

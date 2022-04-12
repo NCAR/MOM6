@@ -44,9 +44,14 @@ module MOM_generic_tracer
   use MOM_sponge, only : set_up_sponge_field, sponge_CS
   use MOM_time_manager, only : time_type, set_time
   use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
-  use MOM_tracer_registry, only : register_tracer, tracer_registry_type
-  use MOM_tracer_Z_init, only : tracer_Z_init
   use MOM_tracer_initialization_from_Z, only : MOM_initialize_tracer_from_Z
+  use MOM_tracer_registry, only : register_tracer
+  use MOM_tracer_types, only : tracer_registry_type, col_act_apply_KPP_NLT
+  use MOM_tracer_types, only : col_act_pre_tridiag_solve_sources
+  use MOM_tracer_types, only : col_act_apply_boundary_fluxes
+  use MOM_tracer_types, only : col_act_tridiag_solve
+  use MOM_tracer_types, only : col_act_post_tridiag_solve_sources
+  use MOM_tracer_Z_init, only : tracer_Z_init
   use MOM_unit_scaling, only : unit_scale_type
   use MOM_variables, only : surface, thermo_var_ptrs
   use MOM_verticalGrid, only : verticalGrid_type
@@ -391,14 +396,15 @@ contains
   !! tracer physics or chemistry to the tracers from this file.
   !! CFCs are relatively simple, as they are passive tracers. with only a surface
   !! flux as a source.
-  subroutine MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, Hml, dt, G, GV, US, CS, tv, optics, &
-        evap_CFL_limit, minimum_forcing_depth)
+  subroutine MOM_generic_tracer_column_physics(action, h, ea, eb, fluxes, Hml, dt, G, &
+                                               GV, US, CS, tv, optics, evap_CFL_limit, &
+                                               minimum_forcing_depth)
+  integer,                   intent(in) :: action !< action to be performed with this invocation
     type(ocean_grid_type),   intent(in) :: G     !< The ocean's grid structure
     type(verticalGrid_type), intent(in) :: GV    !< The ocean's vertical grid structure
     real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                             intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-    real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                             intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
+                             intent(in) :: h     !< Layer thickness at time level appropriate
+                                                 !! for action [H ~> m or kg m-2].
     real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                              intent(in) :: ea    !< The amount of fluid entrained from the layer
                                                  !! above during this call [H ~> m or kg m-2].
@@ -418,8 +424,6 @@ contains
     real,          optional, intent(in) :: minimum_forcing_depth !< The smallest depth over which fluxes
                                                  !!  can be applied [H ~> m or kg m-2]
                                                  !   Stored previously in diabatic CS.
-    ! The arguments to this subroutine are redundant in that
-    !     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
 
     ! Local variables
     character(len=128), parameter :: sub_name = 'MOM_generic_tracer_column_physics'
@@ -433,7 +437,6 @@ contains
     real :: sosga
 
     real, dimension(G%isd:G%ied,G%jsd:G%jed,GV%ke) :: rho_dzt, dzt
-    real, dimension(SZI_(G),SZJ_(G),SZK_(GV))      :: h_work
     integer :: i, j, k, isc, iec, jsc, jec, nk
 
     isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; nk = GV%ke
@@ -442,124 +445,128 @@ contains
     if (.NOT. associated(CS%g_tracer_list)) call MOM_error(FATAL,&
          trim(sub_name)//": No tracer in the list.")
 
+    select case ( action )
+      case ( col_act_apply_KPP_NLT )
+        ! KPP NLT not applicable to this tracer module
+
+      case ( col_act_pre_tridiag_solve_sources )
+
 #ifdef _USE_MOM6_DIAG
-    call g_tracer_set_csdiag(CS%diag)
+        call g_tracer_set_csdiag(CS%diag)
 #endif
 
-    !
-    !Extract the tracer surface fields from coupler and update tracer fields from sources
-    !
-    !call generic_tracer_coupler_get(fluxes%tr_fluxes)
-    !Niki: This is moved out to ocean_model_MOM.F90 because if dt_therm>dt_cpld we need to average
-    !      the fluxes without coming into this subroutine.
-    !      MOM5 has to modified to conform.
+        !
+        !Extract the tracer surface fields from coupler and update tracer fields from sources
+        !
+        !call generic_tracer_coupler_get(fluxes%tr_fluxes)
+        !Niki: This is moved out to ocean_model_MOM.F90 because if dt_therm>dt_cpld we need to average
+        !      the fluxes without coming into this subroutine.
+        !      MOM5 has to modified to conform.
 
-    !
-    !Add contribution of river to surface flux
-    !
-    g_tracer=>CS%g_tracer_list
-    do
-       if (_ALLOCATED(g_tracer%trunoff)) then
-          call g_tracer_get_alias(g_tracer,g_tracer_name)
-          call g_tracer_get_pointer(g_tracer,g_tracer_name,'stf',   stf_array)
-          call g_tracer_get_pointer(g_tracer,g_tracer_name,'trunoff',trunoff_array)
-          call g_tracer_get_pointer(g_tracer,g_tracer_name,'runoff_tracer_flux',runoff_tracer_flux_array)
-          !nnz: Why is fluxes%river = 0?
-          runoff_tracer_flux_array(:,:) = trunoff_array(:,:) * &
-                   US%RZ_T_to_kg_m2s*fluxes%lrunoff(:,:)
-          stf_array = stf_array + runoff_tracer_flux_array
-       endif
+        !
+        !Add contribution of river to surface flux
+        !
+        g_tracer=>CS%g_tracer_list
+        do
+           if (_ALLOCATED(g_tracer%trunoff)) then
+              call g_tracer_get_alias(g_tracer,g_tracer_name)
+              call g_tracer_get_pointer(g_tracer,g_tracer_name,'stf',   stf_array)
+              call g_tracer_get_pointer(g_tracer,g_tracer_name,'trunoff',trunoff_array)
+              call g_tracer_get_pointer(g_tracer,g_tracer_name,'runoff_tracer_flux',runoff_tracer_flux_array)
+              !nnz: Why is fluxes%river = 0?
+              runoff_tracer_flux_array(:,:) = trunoff_array(:,:) * &
+                       US%RZ_T_to_kg_m2s*fluxes%lrunoff(:,:)
+              stf_array = stf_array + runoff_tracer_flux_array
+           endif
 
-       !traverse the linked list till hit NULL
-       call g_tracer_get_next(g_tracer, g_tracer_next)
-       if (.NOT. associated(g_tracer_next)) exit
-       g_tracer=>g_tracer_next
+           !traverse the linked list till hit NULL
+           call g_tracer_get_next(g_tracer, g_tracer_next)
+           if (.NOT. associated(g_tracer_next)) exit
+           g_tracer=>g_tracer_next
 
-    enddo
+        enddo
 
-    !
-    !Prepare input arrays for source update
-    !
+        !
+        !Prepare input arrays for source update
+        !
 
-    rho_dzt(:,:,:) = GV%H_to_kg_m2 * GV%Angstrom_H
-    do k = 1, nk ; do j = jsc, jec ; do i = isc, iec  !{
-      rho_dzt(i,j,k) = GV%H_to_kg_m2 * h_old(i,j,k)
-    enddo ; enddo ; enddo !}
+        rho_dzt(:,:,:) = GV%H_to_kg_m2 * GV%Angstrom_H
+        do k = 1, nk ; do j = jsc, jec ; do i = isc, iec  !{
+          rho_dzt(i,j,k) = GV%H_to_kg_m2 * h(i,j,k)
+        enddo ; enddo ; enddo !}
 
-    dzt(:,:,:) = 1.0
-    do k = 1, nk ; do j = jsc, jec ; do i = isc, iec  !{
-      dzt(i,j,k) = GV%H_to_m * h_old(i,j,k)
-    enddo ; enddo ; enddo !}
-    dz_ml(:,:) = 0.0
-    do j=jsc,jec ; do i=isc,iec
-      surface_field(i,j) = tv%S(i,j,1)
-      dz_ml(i,j) = US%Z_to_m * Hml(i,j)
-    enddo ; enddo
-    sosga = global_area_mean(surface_field, G)
+        dzt(:,:,:) = 1.0
+        do k = 1, nk ; do j = jsc, jec ; do i = isc, iec  !{
+          dzt(i,j,k) = GV%H_to_m * h(i,j,k)
+        enddo ; enddo ; enddo !}
+        dz_ml(:,:) = 0.0
+        do j=jsc,jec ; do i=isc,iec
+          surface_field(i,j) = tv%S(i,j,1)
+          dz_ml(i,j) = US%Z_to_m * Hml(i,j)
+        enddo ; enddo
+        sosga = global_area_mean(surface_field, G)
 
-    !
-    !Calculate tendencies (i.e., field changes at dt) from the sources / sinks
-    !
-    if ((G%US%L_to_m == 1.0) .and. (G%US%s_to_T == 1.0) .and. (G%US%Z_to_m == 1.0) .and. &
-        (G%US%Q_to_J_kg == 1.0) .and. (G%US%RZ_to_kg_m2 == 1.0)) then
-      ! Avoid unnecessary copies when no unit conversion is needed.
-      call generic_tracer_source(tv%T, tv%S, rho_dzt, dzt, dz_ml, G%isd, G%jsd, 1, dt, &
-               G%areaT, get_diag_time_end(CS%diag), &
-               optics%nbands, optics%max_wavelength_band, optics%sw_pen_band, optics%opacity_band, &
-               internal_heat=tv%internal_heat, frunoff=fluxes%frunoff, sosga=sosga)
-    else
-      call generic_tracer_source(tv%T, tv%S, rho_dzt, dzt, dz_ml, G%isd, G%jsd, 1, dt, &
-               G%US%L_to_m**2*G%areaT(:,:), get_diag_time_end(CS%diag), &
-               optics%nbands, optics%max_wavelength_band, &
-               sw_pen_band=G%US%QRZ_T_to_W_m2*optics%sw_pen_band(:,:,:), &
-               opacity_band=G%US%m_to_Z*optics%opacity_band(:,:,:,:), &
-               internal_heat=G%US%RZ_to_kg_m2*tv%internal_heat(:,:), &
-               frunoff=G%US%RZ_T_to_kg_m2s*fluxes%frunoff(:,:), sosga=sosga)
-    endif
-
-    ! This uses applyTracerBoundaryFluxesInOut to handle the change in tracer due to freshwater fluxes
-    ! usually in ALE mode
-    if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-      g_tracer=>CS%g_tracer_list
-      do
-        if (g_tracer_is_prog(g_tracer)) then
-          do k=1,nk ;do j=jsc,jec ; do i=isc,iec
-            h_work(i,j,k) = h_old(i,j,k)
-          enddo ; enddo ; enddo
-          call applyTracerBoundaryFluxesInOut(G, GV, g_tracer%field(:,:,:,1), dt, &
-                            fluxes, h_work, evap_CFL_limit, minimum_forcing_depth)
+        !
+        !Calculate tendencies (i.e., field changes at dt) from the sources / sinks
+        !
+        if ((G%US%L_to_m == 1.0) .and. (G%US%s_to_T == 1.0) .and. (G%US%Z_to_m == 1.0) .and. &
+            (G%US%Q_to_J_kg == 1.0) .and. (G%US%RZ_to_kg_m2 == 1.0)) then
+          ! Avoid unnecessary copies when no unit conversion is needed.
+          call generic_tracer_source(tv%T, tv%S, rho_dzt, dzt, dz_ml, G%isd, G%jsd, 1, dt, &
+                   G%areaT, get_diag_time_end(CS%diag), &
+                   optics%nbands, optics%max_wavelength_band, optics%sw_pen_band, optics%opacity_band, &
+                   internal_heat=tv%internal_heat, frunoff=fluxes%frunoff, sosga=sosga)
+        else
+          call generic_tracer_source(tv%T, tv%S, rho_dzt, dzt, dz_ml, G%isd, G%jsd, 1, dt, &
+                   G%US%L_to_m**2*G%areaT(:,:), get_diag_time_end(CS%diag), &
+                   optics%nbands, optics%max_wavelength_band, &
+                   sw_pen_band=G%US%QRZ_T_to_W_m2*optics%sw_pen_band(:,:,:), &
+                   opacity_band=G%US%m_to_Z*optics%opacity_band(:,:,:,:), &
+                   internal_heat=G%US%RZ_to_kg_m2*tv%internal_heat(:,:), &
+                   frunoff=G%US%RZ_T_to_kg_m2s*fluxes%frunoff(:,:), sosga=sosga)
         endif
 
-         !traverse the linked list till hit NULL
-         call g_tracer_get_next(g_tracer, g_tracer_next)
-        if (.NOT. associated(g_tracer_next)) exit
-        g_tracer=>g_tracer_next
-      enddo
-    endif
+      case ( col_act_apply_boundary_fluxes )
 
-    !
-    !Update Tr(n)%field from explicit vertical diffusion
-    !
-    ! Use a tridiagonal solver to determine the concentrations after the
-    ! surface source is applied and diapycnal advection and diffusion occurs.
-    if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-      ! Last arg is tau which is always 1 for MOM6
-      call generic_tracer_vertdiff_G(h_work, ea, eb, US%T_to_s*dt, GV%kg_m2_to_H, GV%m_to_H, 1)
-    else
-      ! Last arg is tau which is always 1 for MOM6
-      call generic_tracer_vertdiff_G(h_old, ea, eb, US%T_to_s*dt, GV%kg_m2_to_H, GV%m_to_H, 1)
-    endif
+        ! This uses applyTracerBoundaryFluxesInOut to handle the change in tracer due to freshwater fluxes
+        ! usually in ALE mode
+        g_tracer=>CS%g_tracer_list
+        do
+          if (g_tracer_is_prog(g_tracer)) then
+            call applyTracerBoundaryFluxesInOut(G, GV, g_tracer%field(:,:,:,1), dt, &
+                              fluxes, h, evap_CFL_limit, minimum_forcing_depth)
+          endif
 
-    ! Update bottom fields after vertical processes
+           !traverse the linked list till hit NULL
+           call g_tracer_get_next(g_tracer, g_tracer_next)
+          if (.NOT. associated(g_tracer_next)) exit
+          g_tracer=>g_tracer_next
+        enddo
 
-    ! Second arg is tau which is always 1 for MOM6
-    call generic_tracer_update_from_bottom(US%T_to_s*dt, 1, get_diag_time_end(CS%diag))
+      case ( col_act_tridiag_solve )
 
-    !Output diagnostics via diag_manager for all generic tracers and their fluxes
-    call g_tracer_send_diag(CS%g_tracer_list, get_diag_time_end(CS%diag), tau=1)
+        !
+        !Update Tr(n)%field from explicit vertical diffusion
+        !
+        ! Use a tridiagonal solver to determine the concentrations after the
+        ! surface source is applied and diapycnal advection and diffusion occurs.
+        ! Last arg is tau which is always 1 for MOM6
+        call generic_tracer_vertdiff_G(h, ea, eb, US%T_to_s*dt, GV%kg_m2_to_H, GV%m_to_H, 1)
+
+      case ( col_act_post_tridiag_solve_sources )
+
+        ! Update bottom fields after vertical processes
+
+        ! Second arg is tau which is always 1 for MOM6
+        call generic_tracer_update_from_bottom(US%T_to_s*dt, 1, get_diag_time_end(CS%diag))
+
+        !Output diagnostics via diag_manager for all generic tracers and their fluxes
+        call g_tracer_send_diag(CS%g_tracer_list, get_diag_time_end(CS%diag), tau=1)
 #ifdef _USE_MOM6_DIAG
-    call g_tracer_set_csdiag(CS%diag)
+        call g_tracer_set_csdiag(CS%diag)
 #endif
+
+      end select
 
   end subroutine MOM_generic_tracer_column_physics
 

@@ -15,8 +15,13 @@ use MOM_open_boundary, only : ocean_OBC_type
 use MOM_restart, only : query_initialized, MOM_restart_CS
 use MOM_sponge, only : set_up_sponge_field, sponge_CS
 use MOM_time_manager, only : time_type, time_type_to_real
-use MOM_tracer_registry, only : register_tracer, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
+use MOM_tracer_registry, only : register_tracer
+use MOM_tracer_types, only : tracer_registry_type, col_act_apply_KPP_NLT
+use MOM_tracer_types, only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types, only : col_act_apply_boundary_fluxes
+use MOM_tracer_types, only : col_act_tridiag_solve
+use MOM_tracer_types, only : col_act_post_tridiag_solve_sources
 use MOM_tracer_Z_init, only : tracer_Z_init
 use MOM_unit_scaling, only : unit_scale_type
 use MOM_variables, only : surface, thermo_var_ptrs
@@ -290,14 +295,14 @@ subroutine initialize_oil_tracer(restart, day, G, GV, US, h, diag, OBC, CS, &
 end subroutine initialize_oil_tracer
 
 !> Apply sources, sinks, diapycnal mixing and rising motions to the oil tracers
-subroutine oil_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, CS, tv, &
+subroutine oil_tracer_column_physics(action, h, ea, eb, fluxes, dt, G, GV, US, CS, tv, &
               evap_CFL_limit, minimum_forcing_depth)
+  integer,                 intent(in) :: action !< action to be performed with this invocation
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
+                           intent(in) :: h    !< Layer thickness at time level appropriate
+                                              !! for action [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: ea   !< an array to which the amount of fluid entrained
                                               !! from the layer above during this call will be
@@ -321,11 +326,7 @@ subroutine oil_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US
 ! tracer physics or chemistry to the tracers from this file.
 ! This is a simple example of a set of advected passive tracers.
 
-! The arguments to this subroutine are redundant in that
-!     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
-
   ! Local variables
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_work ! Used so that h can be modified [H ~> m or kg m-2]
   real :: Isecs_per_year = 1.0 / (365.0*86400.0) ! Conversion factor from seconds to year [year s-1]
   real :: vol_scale ! A conversion factor for volumes into m3 [m3 H-1 L-2 ~> 1 or m3 kg-1]
   real :: year      ! Time in fractional years [years]
@@ -338,65 +339,71 @@ subroutine oil_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US
   if (.not.associated(CS)) return
   if (CS%ntr < 1) return
 
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    do m=1,CS%ntr
-      do k=1,nz ;do j=js,je ; do i=is,ie
-        h_work(i,j,k) = h_old(i,j,k)
-      enddo ; enddo ; enddo
-      call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m), dt, fluxes, h_work, &
-                                          evap_CFL_limit, minimum_forcing_depth)
-      call tracer_vertdiff(h_work, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
-    enddo
-  else
-    do m=1,CS%ntr
-      call tracer_vertdiff(h_old, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
-    enddo
-  endif
+  select case ( action )
+    case ( col_act_apply_KPP_NLT )
+      ! KPP NLT not applicable to this tracer module
 
-  year = time_type_to_real(CS%Time) * Isecs_per_year
+    case ( col_act_pre_tridiag_solve_sources )
+      ! there are no pre-tridiag solve sources in this tracer module
 
-  ! Decay tracer (limit decay rate to 1/dt - just in case)
-  do m=2,CS%ntr
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      !CS%tr(i,j,k,m) = CS%tr(i,j,k,m) - dt*CS%oil_decay_rate(m)*CS%tr(i,j,k,m) ! Simple
-      !CS%tr(i,j,k,m) = CS%tr(i,j,k,m) - min(dt*CS%oil_decay_rate(m),1.)*CS%tr(i,j,k,m) ! Safer
-      if (CS%oil_decay_rate(m)>0.) then
-        CS%tr(i,j,k,m) = G%mask2dT(i,j)*max(1. - dt*CS%oil_decay_rate(m),0.)*CS%tr(i,j,k,m) ! Safest
-      elseif (CS%oil_decay_rate(m)<0.) then
-        decay_timescale = (12.*(3.0**(-(tv%T(i,j,k)-20.)/10.))) * (86400.*US%s_to_T) ! Timescale [s ~> T]
-        ldecay = 1. / decay_timescale ! Rate [T-1 ~> s-1]
-        CS%tr(i,j,k,m) = G%mask2dT(i,j)*max(1. - dt*ldecay,0.)*CS%tr(i,j,k,m)
-      endif
-    enddo ; enddo ; enddo
-  enddo
+    case ( col_act_apply_boundary_fluxes )
+      do m=1,CS%ntr
+        call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m), dt, fluxes, h, &
+                                            evap_CFL_limit, minimum_forcing_depth)
+      enddo
 
-  ! Add oil at the source location
-  if (year>=CS%oil_start_year .and. year<=CS%oil_end_year .and. &
-      CS%oil_source_i>-999 .and. CS%oil_source_j>-999) then
-    i=CS%oil_source_i ; j=CS%oil_source_j
-    k_max=nz ; h_total=0.
-    vol_scale = GV%H_to_m * US%L_to_m**2
-    do k=nz, 2, -1
-      h_total = h_total + h_new(i,j,k)
-      if (h_total<10.) k_max=k-1 ! Find bottom most interface that is 10 m above bottom
-    enddo
-    do m=1,CS%ntr
-      k=CS%oil_source_k(m)
-      if (k>0) then
-        k=min(k,k_max) ! Only insert k or first layer with interface 10 m above bottom
-        CS%tr(i,j,k,m) = CS%tr(i,j,k,m) + CS%oil_source_rate*dt / &
-                (vol_scale * (h_new(i,j,k)+GV%H_subroundoff) * G%areaT(i,j) )
-      elseif (k<0) then
-        h_total=GV%H_subroundoff
-        do k=1, nz
-          h_total = h_total + h_new(i,j,k)
+    case ( col_act_tridiag_solve )
+      do m=1,CS%ntr
+        call tracer_vertdiff(h, ea, eb, dt, CS%tr(:,:,:,m), G, GV)
+      enddo
+
+    case ( col_act_post_tridiag_solve_sources )
+      year = time_type_to_real(CS%Time) * Isecs_per_year
+
+      ! Decay tracer (limit decay rate to 1/dt - just in case)
+      do m=2,CS%ntr
+        do k=1,nz ; do j=js,je ; do i=is,ie
+          !CS%tr(i,j,k,m) = CS%tr(i,j,k,m) - dt*CS%oil_decay_rate(m)*CS%tr(i,j,k,m) ! Simple
+          !CS%tr(i,j,k,m) = CS%tr(i,j,k,m) - min(dt*CS%oil_decay_rate(m),1.)*CS%tr(i,j,k,m) ! Safer
+          if (CS%oil_decay_rate(m)>0.) then
+            CS%tr(i,j,k,m) = G%mask2dT(i,j)*max(1. - dt*CS%oil_decay_rate(m),0.)*CS%tr(i,j,k,m) ! Safest
+          elseif (CS%oil_decay_rate(m)<0.) then
+            decay_timescale = (12.*(3.0**(-(tv%T(i,j,k)-20.)/10.))) * (86400.*US%s_to_T) ! Timescale [s ~> T]
+            ldecay = 1. / decay_timescale ! Rate [T-1 ~> s-1]
+            CS%tr(i,j,k,m) = G%mask2dT(i,j)*max(1. - dt*ldecay,0.)*CS%tr(i,j,k,m)
+          endif
+        enddo ; enddo ; enddo
+      enddo
+
+      ! Add oil at the source location
+      if (year>=CS%oil_start_year .and. year<=CS%oil_end_year .and. &
+          CS%oil_source_i>-999 .and. CS%oil_source_j>-999) then
+        i=CS%oil_source_i ; j=CS%oil_source_j
+        k_max=nz ; h_total=0.
+        vol_scale = GV%H_to_m * US%L_to_m**2
+        do k=nz, 2, -1
+          h_total = h_total + h(i,j,k)
+          if (h_total<10.) k_max=k-1 ! Find bottom most interface that is 10 m above bottom
         enddo
-        do k=1, nz
-          CS%tr(i,j,k,m) = CS%tr(i,j,k,m) + CS%oil_source_rate*dt / (vol_scale * h_total * G%areaT(i,j) )
+        do m=1,CS%ntr
+          k=CS%oil_source_k(m)
+          if (k>0) then
+            k=min(k,k_max) ! Only insert k or first layer with interface 10 m above bottom
+            CS%tr(i,j,k,m) = CS%tr(i,j,k,m) + CS%oil_source_rate*dt / &
+                    (vol_scale * (h(i,j,k)+GV%H_subroundoff) * G%areaT(i,j) )
+          elseif (k<0) then
+            h_total=GV%H_subroundoff
+            do k=1, nz
+              h_total = h_total + h(i,j,k)
+            enddo
+            do k=1, nz
+              CS%tr(i,j,k,m) = CS%tr(i,j,k,m) + CS%oil_source_rate*dt / (vol_scale * h_total * G%areaT(i,j) )
+            enddo
+          endif
         enddo
       endif
-    enddo
-  endif
+
+  end select
 
 end subroutine oil_tracer_column_physics
 

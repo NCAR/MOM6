@@ -15,7 +15,12 @@ use MOM_open_boundary, only : ocean_OBC_type
 use MOM_restart, only : MOM_restart_CS
 use MOM_sponge, only : set_up_sponge_field, sponge_CS
 use MOM_time_manager, only : time_type
-use MOM_tracer_registry, only : register_tracer, tracer_registry_type
+use MOM_tracer_registry, only : register_tracer
+use MOM_tracer_types, only : tracer_registry_type, col_act_apply_KPP_NLT
+use MOM_tracer_types, only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types, only : col_act_apply_boundary_fluxes
+use MOM_tracer_types, only : col_act_tridiag_solve
+use MOM_tracer_types, only : col_act_post_tridiag_solve_sources
 use MOM_unit_scaling, only : unit_scale_type
 use MOM_variables, only : surface
 use MOM_verticalGrid, only : verticalGrid_type
@@ -257,15 +262,13 @@ end subroutine USER_initialize_tracer
 !> This subroutine applies diapycnal diffusion and any other column
 !! tracer physics or chemistry to the tracers from this file.
 !! This is a simple example of a set of advected passive tracers.
-!! The arguments to this subroutine are redundant in that
-!!     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
-subroutine tracer_column_physics(h_old, h_new,  ea,  eb, fluxes, dt, G, GV, US, CS)
+subroutine tracer_column_physics(action, h,  ea,  eb, fluxes, dt, G, GV, US, CS)
+  integer,                 intent(in) :: action !< action to be performed with this invocation
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
+                           intent(in) :: h    !< Layer thickness at time level appropriate
+                                              !! for action [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: ea   !< an array to which the amount of fluid entrained
                                               !! from the layer above during this call will be
@@ -281,7 +284,7 @@ subroutine tracer_column_physics(h_old, h_new,  ea,  eb, fluxes, dt, G, GV, US, 
   type(USER_tracer_example_CS), pointer :: CS !< The control structure returned by a previous
                                               !! call to USER_register_tracer_example.
 
-! Local variables
+  ! Local variables
   real :: hold0(SZI_(G))       ! The original topmost layer thickness,
                                ! with surface mass fluxes added back [H ~> m or kg m-2].
   real :: b1(SZI_(G))          ! b1 is a variable used by the tridiagonal solver [H ~> m or kg m-2].
@@ -316,42 +319,58 @@ subroutine tracer_column_physics(h_old, h_new,  ea,  eb, fluxes, dt, G, GV, US, 
   if (.not.associated(CS)) return
   h_neglect = GV%H_subroundoff
 
-  do j=js,je
-    do i=is,ie
+  select case ( action )
+    case ( col_act_apply_KPP_NLT )
+      ! KPP NLT not applicable to this tracer module
+
+    case ( col_act_pre_tridiag_solve_sources )
+      ! there are no pre-tridiag solve sources in this tracer module
+
+    case ( col_act_apply_boundary_fluxes )
+      ! boundary fluxes are not applied in this tracer module
+
+    case ( col_act_tridiag_solve )
+      do j=js,je
+        do i=is,ie
 !   The following line is appropriate for quantities like salinity
 ! that are left behind by evaporation, and any surface fluxes would
 ! be explicitly included in the flux structure.
-      hold0(i) = h_old(i,j,1)
+          hold0(i) = h(i,j,1)
 !   The following line is appropriate for quantities like temperature
 ! that can be assumed to have the same concentration in evaporation
 ! as they had in the water.  The explicit surface fluxes here would
 ! reflect differences in concentration from the ambient water, not
 ! the absolute fluxes.
-  !   hold0(i) = h_old(i,j,1) + ea(i,j,1)
-      b_denom_1 = h_old(i,j,1) + ea(i,j,1) + h_neglect
-      b1(i) = 1.0 / (b_denom_1 + eb(i,j,1))
-!       d1(i) = b_denom_1 * b1(i)
-      d1(i) = trdc(1) * (b_denom_1 * b1(i)) + (1.0 - trdc(1))
-      do m=1,NTR
-        CS%tr(i,j,1,m) = b1(i)*(hold0(i)*CS%tr(i,j,1,m) + trdc(3)*eb(i,j,1))
- !      Add any surface tracer fluxes to the preceding line.
+  !       hold0(i) = h(i,j,1) + ea(i,j,1)
+          b_denom_1 = h(i,j,1) + ea(i,j,1) + h_neglect
+          b1(i) = 1.0 / (b_denom_1 + eb(i,j,1))
+!           d1(i) = b_denom_1 * b1(i)
+          d1(i) = trdc(1) * (b_denom_1 * b1(i)) + (1.0 - trdc(1))
+          do m=1,NTR
+            CS%tr(i,j,1,m) = b1(i)*(hold0(i)*CS%tr(i,j,1,m) + trdc(3)*eb(i,j,1))
+ !          Add any surface tracer fluxes to the preceding line.
+          enddo
+        enddo
+        do k=2,nz ; do i=is,ie
+          c1(i,k) = trdc(1) * eb(i,j,k-1) * b1(i)
+          b_denom_1 = h(i,j,k) + d1(i)*ea(i,j,k) + h_neglect
+          b1(i) = 1.0 / (b_denom_1 + eb(i,j,k))
+          d1(i) = trdc(1) * (b_denom_1 * b1(i)) + (1.0 - trdc(1))
+          do m=1,NTR
+            CS%tr(i,j,k,m) = b1(i) * (h(i,j,k)*CS%tr(i,j,k,m) + &
+                     ea(i,j,k)*(trdc(1)*CS%tr(i,j,k-1,m)+trdc(2)) + &
+                     eb(i,j,k)*trdc(3))
+          enddo
+        enddo ; enddo
+        do m=1,NTR ; do k=nz-1,1,-1 ; do i=is,ie
+          CS%tr(i,j,k,m) = CS%tr(i,j,k,m) + c1(i,k+1)*CS%tr(i,j,k+1,m)
+        enddo ; enddo ; enddo
       enddo
-    enddo
-    do k=2,nz ; do i=is,ie
-      c1(i,k) = trdc(1) * eb(i,j,k-1) * b1(i)
-      b_denom_1 = h_old(i,j,k) + d1(i)*ea(i,j,k) + h_neglect
-      b1(i) = 1.0 / (b_denom_1 + eb(i,j,k))
-      d1(i) = trdc(1) * (b_denom_1 * b1(i)) + (1.0 - trdc(1))
-      do m=1,NTR
-        CS%tr(i,j,k,m) = b1(i) * (h_old(i,j,k)*CS%tr(i,j,k,m) + &
-                 ea(i,j,k)*(trdc(1)*CS%tr(i,j,k-1,m)+trdc(2)) + &
-                 eb(i,j,k)*trdc(3))
-      enddo
-    enddo ; enddo
-    do m=1,NTR ; do k=nz-1,1,-1 ; do i=is,ie
-      CS%tr(i,j,k,m) = CS%tr(i,j,k,m) + c1(i,k+1)*CS%tr(i,j,k+1,m)
-    enddo ; enddo ; enddo
-  enddo
+
+    case ( col_act_post_tridiag_solve_sources )
+      ! there are no post-tridiag solve sources in this tracer module
+
+  end select
 
 end subroutine tracer_column_physics
 

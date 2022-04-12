@@ -16,8 +16,13 @@ use MOM_open_boundary, only : ocean_OBC_type
 use MOM_restart, only : query_initialized, MOM_restart_CS
 use MOM_sponge, only : set_up_sponge_field, sponge_CS
 use MOM_time_manager, only : time_type
-use MOM_tracer_registry, only : register_tracer, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
+use MOM_tracer_registry, only : register_tracer
+use MOM_tracer_types, only : tracer_registry_type, col_act_apply_KPP_NLT
+use MOM_tracer_types, only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types, only : col_act_apply_boundary_fluxes
+use MOM_tracer_types, only : col_act_tridiag_solve
+use MOM_tracer_types, only : col_act_post_tridiag_solve_sources
 use MOM_tracer_Z_init, only : tracer_Z_init
 use MOM_unit_scaling, only : unit_scale_type
 use MOM_variables, only : surface
@@ -396,14 +401,14 @@ end subroutine init_tracer_CFC
 !>  This subroutine applies diapycnal diffusion, souces and sinks and any other column
 !! tracer physics or chemistry to the OCMIP2 CFC tracers.
 !! CFCs are relatively simple, as they are passive tracers with only a surface flux as a source.
-subroutine OCMIP2_CFC_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, CS, &
+subroutine OCMIP2_CFC_column_physics(action, h, ea, eb, fluxes, dt, G, GV, US, CS, &
               evap_CFL_limit, minimum_forcing_depth)
+  integer,                 intent(in) :: action !< action to be performed with this invocation
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
+                           intent(in) :: h    !< Layer thickness at time level appropriate
+                                              !! for action [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: ea   !< an array to which the amount of fluid entrained
                                               !! from the layer above during this call will be
@@ -427,51 +432,49 @@ subroutine OCMIP2_CFC_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US
 ! CFCs are relatively simple, as they are passive tracers. with only a surface
 ! flux as a source.
 
-! The arguments to this subroutine are redundant in that
-!     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
-
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G)) :: &
     CFC11_flux, &    ! The fluxes of CFC11 and CFC12 into the ocean, in unscaled units of
     CFC12_flux       ! CFC concentrations times meters per second [CU R Z T-1 ~> CU kg m-2 s-1]
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_work ! Used so that h can be modified [H ~> m or kg m-2]
-  integer :: i, j, k, m, is, ie, js, je, nz, idim(4), jdim(4)
+  integer :: idim(4), jdim(4)
 
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
-  idim(:) = (/G%isd, is, ie, G%ied/) ; jdim(:) = (/G%jsd, js, je, G%jed/)
+  idim(:) = (/G%isd, G%isc, G%iec, G%ied/) ; jdim(:) = (/G%jsd, G%jsc, G%jec, G%jed/)
 
   if (.not.associated(CS)) return
 
-  ! These two calls unpack the fluxes from the input arrays.
-  !   The -GV%Rho0 changes the sign convention of the flux and with the scaling factors changes
-  ! the units of the flux from [Conc. m s-1] to [Conc. R Z T-1 ~> Conc. kg m-2 s-1].
-  call extract_coupler_type_data(fluxes%tr_fluxes, CS%ind_cfc_11_flux, CFC11_flux, &
-                                 scale_factor=-GV%Rho0*US%m_to_Z*US%T_to_s, idim=idim, jdim=jdim)
-  call extract_coupler_type_data(fluxes%tr_fluxes, CS%ind_cfc_12_flux, CFC12_flux, &
-                                 scale_factor=-GV%Rho0*US%m_to_Z*US%T_to_s, idim=idim, jdim=jdim)
+  select case ( action )
+    case ( col_act_apply_KPP_NLT )
+      ! KPP NLT not applicable to this tracer module
 
-  ! Use a tridiagonal solver to determine the concentrations after the
-  ! surface source is applied and diapycnal advection and diffusion occurs.
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    do k=1,nz ;do j=js,je ; do i=is,ie
-      h_work(i,j,k) = h_old(i,j,k)
-    enddo ; enddo ; enddo
-    call applyTracerBoundaryFluxesInOut(G, GV, CS%CFC11, dt, fluxes, h_work, &
-                                        evap_CFL_limit, minimum_forcing_depth)
-    call tracer_vertdiff(h_work, ea, eb, dt, CS%CFC11, G, GV, sfc_flux=CFC11_flux)
+    case ( col_act_pre_tridiag_solve_sources )
+      ! there are no pre-tridiag solve sources in this tracer module
 
-    do k=1,nz ;do j=js,je ; do i=is,ie
-      h_work(i,j,k) = h_old(i,j,k)
-    enddo ; enddo ; enddo
-    call applyTracerBoundaryFluxesInOut(G, GV, CS%CFC12, dt, fluxes, h_work, &
-                                        evap_CFL_limit, minimum_forcing_depth)
-    call tracer_vertdiff(h_work, ea, eb, dt, CS%CFC12, G, GV, sfc_flux=CFC12_flux)
-  else
-    call tracer_vertdiff(h_old, ea, eb, dt, CS%CFC11, G, GV, sfc_flux=CFC11_flux)
-    call tracer_vertdiff(h_old, ea, eb, dt, CS%CFC12, G, GV, sfc_flux=CFC12_flux)
-  endif
+    case ( col_act_apply_boundary_fluxes )
+      call applyTracerBoundaryFluxesInOut(G, GV, CS%CFC11, dt, fluxes, h, &
+                                          evap_CFL_limit, minimum_forcing_depth)
+      call applyTracerBoundaryFluxesInOut(G, GV, CS%CFC12, dt, fluxes, h, &
+                                          evap_CFL_limit, minimum_forcing_depth)
 
-  ! Write out any desired diagnostics from tracer sources & sinks here.
+    case ( col_act_tridiag_solve )
+
+      ! These two calls unpack the fluxes from the input arrays.
+      !   The -GV%Rho0 changes the sign convention of the flux and with the scaling factors changes
+      ! the units of the flux from [Conc. m s-1] to [Conc. R Z T-1 ~> Conc. kg m-2 s-1].
+      call extract_coupler_type_data(fluxes%tr_fluxes, CS%ind_cfc_11_flux, CFC11_flux, &
+                                     scale_factor=-GV%Rho0*US%m_to_Z*US%T_to_s, &
+                                     idim=idim, jdim=jdim)
+      call extract_coupler_type_data(fluxes%tr_fluxes, CS%ind_cfc_12_flux, CFC12_flux, &
+                                     scale_factor=-GV%Rho0*US%m_to_Z*US%T_to_s, &
+                                     idim=idim, jdim=jdim)
+      call tracer_vertdiff(h, ea, eb, dt, CS%CFC11, G, GV, sfc_flux=CFC11_flux)
+      call tracer_vertdiff(h, ea, eb, dt, CS%CFC12, G, GV, sfc_flux=CFC12_flux)
+
+    case ( col_act_post_tridiag_solve_sources )
+      ! there are no post-tridiag solve sources in this tracer module
+
+      ! Write out any desired diagnostics from tracer sources & sinks here.
+
+  end select
 
 end subroutine OCMIP2_CFC_column_physics
 

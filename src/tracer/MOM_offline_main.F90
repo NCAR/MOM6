@@ -32,7 +32,11 @@ use MOM_time_manager,         only : time_type, real_to_time
 use MOM_tracer_advect,        only : tracer_advect_CS, advect_tracer
 use MOM_tracer_diabatic,      only : applyTracerBoundaryFluxesInOut
 use MOM_tracer_flow_control,  only : tracer_flow_control_CS, call_tracer_column_fns, call_tracer_stocks
-use MOM_tracer_registry,      only : tracer_registry_type, MOM_tracer_chksum, MOM_tracer_chkinv
+use MOM_tracer_registry,      only : MOM_tracer_chksum, MOM_tracer_chkinv
+use MOM_tracer_types,         only : tracer_registry_type
+use MOM_tracer_types,         only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types,         only : col_act_tridiag_solve
+use MOM_tracer_types,         only : col_act_post_tridiag_solve_sources
 use MOM_unit_scaling,         only : unit_scale_type
 use MOM_variables,            only : thermo_var_ptrs
 use MOM_verticalGrid,         only : verticalGrid_type
@@ -715,7 +719,14 @@ subroutine offline_diabatic_ale(fluxes, Time_start, Time_end, G, GV, US, CS, h_p
 
   ! Note that tracerBoundaryFluxesInOut within this subroutine should NOT be called
   ! as the freshwater fluxes have already been accounted for
-  call call_tracer_column_fns(h_pre, h_pre, eatr, ebtr, fluxes, CS%MLD, CS%dt_offline_vertical, &
+  call call_tracer_column_fns(col_act_pre_tridiag_solve_sources, h_pre, eatr, ebtr, fluxes, &
+                              CS%MLD, CS%dt_offline_vertical, &
+                              G, GV, US, CS%tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
+  call call_tracer_column_fns(col_act_tridiag_solve, h_pre, eatr, ebtr, fluxes, &
+                              CS%MLD, CS%dt_offline_vertical, &
+                              G, GV, US, CS%tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
+  call call_tracer_column_fns(col_act_post_tridiag_solve_sources, h_pre, eatr, ebtr, fluxes, &
+                              CS%MLD, CS%dt_offline_vertical, &
                               G, GV, US, CS%tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
 
   if (CS%diurnal_SW .and. CS%read_sw) then
@@ -748,9 +759,10 @@ subroutine offline_fw_fluxes_into_ocean(G, GV, CS, fluxes, h, in_flux_optional)
                     optional, intent(in)    :: in_flux_optional !< The total time-integrated amount
                                                   !! of tracer that leaves with freshwater
 
-  integer :: i, j, m
+  ! Local variables
+  integer :: i, j, k, m
   real, dimension(SZI_(G),SZJ_(G)) :: negative_fw !< store all negative fluxes [H ~> m or kg m-2]
-  logical :: update_h !< Flag for whether h should be updated
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_new !< Updated layer thickness [H ~> m or kg m-2]
 
   if ( present(in_flux_optional) ) &
     call MOM_error(WARNING, "Positive freshwater fluxes with non-zero tracer concentration not supported yet")
@@ -771,11 +783,18 @@ subroutine offline_fw_fluxes_into_ocean(G, GV, CS, fluxes, h, in_flux_optional)
     call MOM_tracer_chkinv("Before fluxes into ocean", G, GV, h, CS%tracer_reg%Tr, CS%tracer_reg%ntr)
   endif
   do m = 1,CS%tracer_reg%ntr
-    ! Layer thicknesses should only be updated after the last tracer is finished
-    update_h = ( m == CS%tracer_reg%ntr )
-    call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_reg%tr(m)%t, CS%dt_offline, fluxes, h, &
-                                        CS%evap_CFL_limit, CS%minimum_forcing_depth, update_h_opt=update_h)
+    ! Updated layer thicknesses are only needed from last tracer
+    if (m < CS%tracer_reg%ntr) then
+      call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_reg%tr(m)%t, CS%dt_offline, fluxes, h, &
+                                          CS%evap_CFL_limit, CS%minimum_forcing_depth)
+    else
+      call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_reg%tr(m)%t, CS%dt_offline, fluxes, h, &
+                                          CS%evap_CFL_limit, CS%minimum_forcing_depth, h_new)
+    endif
   enddo
+  do k=1,GV%ke ; do j=G%jsc,G%jec ; do i=G%isc,G%iec
+    h(i,j,k) = h_new(i,j,k)
+  enddo ; enddo ; enddo
   if (CS%debug) then
     call hchksum(h, "h after fluxes into ocean", G%HI, scale=GV%H_to_m)
     call MOM_tracer_chkinv("After fluxes into ocean", G, GV, h, CS%tracer_reg%Tr, CS%tracer_reg%ntr)
@@ -798,8 +817,9 @@ subroutine offline_fw_fluxes_out_ocean(G, GV, CS, fluxes, h, out_flux_optional)
                     optional, intent(in)    :: out_flux_optional !< The total time-integrated amount
                                                   !! of tracer that leaves with freshwater
 
-  integer :: m
-  logical :: update_h !< Flag for whether h should be updated
+  ! Local variables
+  integer :: i, j, k, m
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_new !< Updated layer thickness [H ~> m or kg m-2]
 
   if ( present(out_flux_optional) ) &
     call MOM_error(WARNING, "Negative freshwater fluxes with non-zero tracer concentration not supported yet")
@@ -809,11 +829,18 @@ subroutine offline_fw_fluxes_out_ocean(G, GV, CS, fluxes, h, out_flux_optional)
     call MOM_tracer_chkinv("Before fluxes out of ocean", G, GV, h, CS%tracer_reg%Tr, CS%tracer_reg%ntr)
   endif
   do m = 1, CS%tracer_reg%ntr
-    ! Layer thicknesses should only be updated after the last tracer is finished
-    update_h = ( m == CS%tracer_reg%ntr )
-    call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_reg%tr(m)%t, CS%dt_offline, fluxes, h, &
-                                        CS%evap_CFL_limit, CS%minimum_forcing_depth, update_h_opt = update_h)
+    ! Updated layer thicknesses are only needed from last tracer
+    if (m < CS%tracer_reg%ntr) then
+      call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_reg%tr(m)%t, CS%dt_offline, fluxes, h, &
+                                          CS%evap_CFL_limit, CS%minimum_forcing_depth)
+    else
+      call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_reg%tr(m)%t, CS%dt_offline, fluxes, h, &
+                                          CS%evap_CFL_limit, CS%minimum_forcing_depth, h_new)
+    endif
   enddo
+  do k=1,GV%ke ; do j=G%jsc,G%jec ; do i=G%isc,G%iec
+    h(i,j,k) = h_new(i,j,k)
+  enddo ; enddo ; enddo
   if (CS%debug) then
     call hchksum(h, "h after fluxes out of ocean", G%HI, scale=GV%H_to_m)
     call MOM_tracer_chkinv("Before fluxes out of ocean", G, GV, h, CS%tracer_reg%Tr, CS%tracer_reg%ntr)
@@ -903,7 +930,11 @@ subroutine offline_advection_layer(fluxes, Time_start, time_interval, G, GV, US,
     if (z_first) then
       ! First do vertical advection
       call update_h_vertical_flux(G, GV, eatr_sub, ebtr_sub, h_pre, h_new)
-      call call_tracer_column_fns(h_pre, h_new, eatr_sub, ebtr_sub, &
+      call call_tracer_column_fns(col_act_pre_tridiag_solve_sources, h_pre, eatr_sub, ebtr_sub, &
+          fluxes, CS%mld, dt_iter, G, GV, US, CS%tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
+      call call_tracer_column_fns(col_act_tridiag_solve, h_new, eatr_sub, ebtr_sub, &
+          fluxes, CS%mld, dt_iter, G, GV, US, CS%tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
+      call call_tracer_column_fns(col_act_post_tridiag_solve_sources, h_new, eatr_sub, ebtr_sub, &
           fluxes, CS%mld, dt_iter, G, GV, US, CS%tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
       ! We are now done with the vertical mass transports, so now h_new is h_sub
       do k=1,nz ; do j=js-1,je+1 ; do i=is-1,ie+1
@@ -943,7 +974,7 @@ subroutine offline_advection_layer(fluxes, Time_start, time_interval, G, GV, US,
 
       ! Second vertical advection
       call update_h_vertical_flux(G, GV, eatr_sub, ebtr_sub, h_pre, h_new)
-      call call_tracer_column_fns(h_pre, h_new, eatr_sub, ebtr_sub, &
+      call call_tracer_column_fns(0, h_new, eatr_sub, ebtr_sub, &
           fluxes, CS%mld, dt_iter, G, GV, US, CS%tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
       ! We are now done with the vertical mass transports, so now h_new is h_sub
       do k=1,nz ; do i=is-1,ie+1 ; do j=js-1,je+1

@@ -13,14 +13,17 @@ use MOM_grid,            only : ocean_grid_type
 use MOM_CVMix_KPP,       only : KPP_NonLocalTransport, KPP_CS
 use MOM_io,              only : file_exists, MOM_read_data, slasher
 use MOM_io,              only : vardesc, var_desc, query_vardesc, stdout
-use MOM_tracer_registry, only : tracer_type
 use MOM_open_boundary,   only : ocean_OBC_type
 use MOM_restart,         only : query_initialized, MOM_restart_CS
 use MOM_time_manager,    only : time_type
 use time_interp_external_mod, only : init_external_field, time_interp_external
-use MOM_tracer_registry, only : register_tracer
-use MOM_tracer_types,    only : tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
+use MOM_tracer_registry, only : register_tracer
+use MOM_tracer_types,    only : tracer_type, tracer_registry_type, col_act_apply_KPP_NLT
+use MOM_tracer_types,    only : col_act_pre_tridiag_solve_sources
+use MOM_tracer_types,    only : col_act_apply_boundary_fluxes
+use MOM_tracer_types,    only : col_act_tridiag_solve
+use MOM_tracer_types,    only : col_act_post_tridiag_solve_sources
 use MOM_tracer_Z_init,   only : tracer_Z_init
 use MOM_unit_scaling,    only : unit_scale_type
 use MOM_variables,       only : surface
@@ -271,14 +274,14 @@ end subroutine init_tracer_CFC
 !> Applies diapycnal diffusion, souces and sinks and any other column
 !! tracer physics to the CFC cap tracers. CFCs are relatively simple,
 !! as they are passive tracers with only a surface flux as a source.
-subroutine CFC_cap_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, CS, KPP_CSp, &
-                                  nonLocalTrans, evap_CFL_limit, minimum_forcing_depth)
+subroutine CFC_cap_column_physics(action, h, ea, eb, fluxes, dt, G, GV, US, CS, &
+                                  KPP_CSp, nonLocalTrans, evap_CFL_limit, minimum_forcing_depth)
+  integer,                 intent(in) :: action !< action to be performed with this invocation
   type(ocean_grid_type),   intent(in) :: G     !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV    !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
+                           intent(in) :: h     !< Layer thickness at time level appropriate
+                                               !! for action [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: ea    !< an array to which the amount of fluid entrained
                                                !! from the layer above during this call will be
@@ -300,60 +303,52 @@ subroutine CFC_cap_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, C
   real,          optional, intent(in) :: minimum_forcing_depth !< The smallest depth over which
                                                !! fluxes can be applied [H ~> m or kg m-2]
 
-  ! The arguments to this subroutine are redundant in that
-  !     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
-
   ! Local variables
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_work ! Used so that h can be modified [H ~> m or kg m-2]
   real :: flux_scale
-  integer :: i, j, k, m, is, ie, js, je, nz
-
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+  integer :: m
 
   if (.not.associated(CS)) return
 
-  ! Compute KPP nonlocal term if necessary
-  if (present(KPP_CSp)) then
-    if (associated(KPP_CSp) .and. present(nonLocalTrans)) then
+  select case ( action )
+    case ( col_act_apply_KPP_NLT )
+
       flux_scale = GV%Z_to_H / GV%rho0
 
-      call KPP_NonLocalTransport(KPP_CSp, G, GV, h_old, nonLocalTrans, fluxes%cfc11_flux(:,:), dt, &
+      call KPP_NonLocalTransport(KPP_CSp, G, GV, h, nonLocalTrans, fluxes%cfc11_flux(:,:), dt, &
                                 CS%CFC_data(1)%tr_ptr, CS%CFC_data(1)%conc(:,:,:), &
                                 flux_scale=flux_scale)
-      call KPP_NonLocalTransport(KPP_CSp, G, GV, h_old, nonLocalTrans, fluxes%cfc12_flux(:,:), dt, &
+      call KPP_NonLocalTransport(KPP_CSp, G, GV, h, nonLocalTrans, fluxes%cfc12_flux(:,:), dt, &
                                 CS%CFC_data(2)%tr_ptr, CS%CFC_data(2)%conc(:,:,:), &
                                 flux_scale=flux_scale)
-    endif
-  endif
 
-  ! Use a tridiagonal solver to determine the concentrations after the
-  ! surface source is applied and diapycnal advection and diffusion occurs.
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    do k=1,nz ;do j=js,je ; do i=is,ie
-      h_work(i,j,k) = h_old(i,j,k)
-    enddo ; enddo ; enddo
-    call applyTracerBoundaryFluxesInOut(G, GV, CS%CFC_data(1)%conc, dt, fluxes, h_work, &
-                                        evap_CFL_limit, minimum_forcing_depth)
-    call tracer_vertdiff(h_work, ea, eb, dt, CS%CFC_data(1)%conc, G, GV, sfc_flux=fluxes%cfc11_flux)
+    case ( col_act_pre_tridiag_solve_sources )
+      ! there are no pre-tridiag solve sources in this tracer module
 
-    do k=1,nz ;do j=js,je ; do i=is,ie
-      h_work(i,j,k) = h_old(i,j,k)
-    enddo ; enddo ; enddo
-    call applyTracerBoundaryFluxesInOut(G, GV, CS%CFC_data(2)%conc, dt, fluxes, h_work, &
-                                        evap_CFL_limit, minimum_forcing_depth)
-    call tracer_vertdiff(h_work, ea, eb, dt, CS%CFC_data(2)%conc, G, GV, sfc_flux=fluxes%cfc12_flux)
-  else
-    call tracer_vertdiff(h_old, ea, eb, dt, CS%CFC_data(1)%conc, G, GV, sfc_flux=fluxes%cfc11_flux)
-    call tracer_vertdiff(h_old, ea, eb, dt, CS%CFC_data(2)%conc, G, GV, sfc_flux=fluxes%cfc12_flux)
-  endif
+    case ( col_act_apply_boundary_fluxes )
+      do m=1,2
+        call applyTracerBoundaryFluxesInOut(G, GV, CS%CFC_data(m)%conc, dt, fluxes, h, &
+                                            evap_CFL_limit, minimum_forcing_depth)
+      enddo
 
-  ! If needed, write out any desired diagnostics from tracer sources & sinks here.
-  if (CS%CFC_data(1)%id_cmor > 0) call post_data(CS%CFC_data(1)%id_cmor, &
-                                                 (GV%Rho0*US%R_to_kg_m3)*CS%CFC_data(1)%conc, &
-                                                 CS%diag)
-  if (CS%CFC_data(2)%id_cmor > 0) call post_data(CS%CFC_data(2)%id_cmor, &
-                                                 (GV%Rho0*US%R_to_kg_m3)*CS%CFC_data(2)%conc, &
-                                                 CS%diag)
+    case ( col_act_tridiag_solve )
+
+      ! Use a tridiagonal solver to determine the concentrations after the
+      ! surface source is applied and diapycnal advection and diffusion occurs.
+      call tracer_vertdiff(h, ea, eb, dt, CS%CFC_data(1)%conc, G, GV, &
+                          sfc_flux=fluxes%cfc11_flux)
+      call tracer_vertdiff(h, ea, eb, dt, CS%CFC_data(2)%conc, G, GV, &
+                          sfc_flux=fluxes%cfc12_flux)
+
+    case ( col_act_post_tridiag_solve_sources )
+      ! If needed, write out any desired diagnostics from tracer sources & sinks here.
+      if (CS%CFC_data(1)%id_cmor > 0) call post_data(CS%CFC_data(1)%id_cmor, &
+                                                     (GV%Rho0*US%R_to_kg_m3)*CS%CFC_data(1)%conc, &
+                                                     CS%diag)
+      if (CS%CFC_data(2)%id_cmor > 0) call post_data(CS%CFC_data(2)%id_cmor, &
+                                                     (GV%Rho0*US%R_to_kg_m3)*CS%CFC_data(2)%conc, &
+                                                     CS%diag)
+
+  end select
 
 end subroutine CFC_cap_column_physics
 

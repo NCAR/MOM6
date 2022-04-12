@@ -6,12 +6,15 @@ module MOM_CVMix_KPP
 use MOM_coms,           only : max_across_PEs
 use MOM_debugging,      only : hchksum, is_NaN
 use MOM_diag_mediator,  only : time_type, diag_ctrl, post_data
-use MOM_diag_mediator,  only : register_diag_field
+use MOM_diag_mediator,  only : register_diag_field, set_diag_in_sync_with_state
 use MOM_error_handler,  only : MOM_error, MOM_mesg, FATAL, WARNING, is_root_PE
 use MOM_EOS,            only : EOS_type, calculate_density
+use MOM_field_stack,    only : field_stack_peek, field_stack_drop, field_stack_pop
 use MOM_file_parser,    only : get_param, log_param, log_version, param_file_type
 use MOM_file_parser,    only : openParameterBlock, closeParameterBlock
 use MOM_grid,           only : ocean_grid_type, isPointInCell
+use MOM_tracer_registry,only : diagnose_tracer_tend
+use MOM_tracer_types,   only : tracer_type, tracer_registry_type
 use MOM_unit_scaling,   only : unit_scale_type
 use MOM_variables,      only : thermo_var_ptrs
 use MOM_verticalGrid,   only : verticalGrid_type
@@ -19,7 +22,6 @@ use MOM_wave_interface, only : wave_parameters_CS, Get_Langmuir_Number, get_wave
 use MOM_domains,        only : pass_var
 use MOM_cpu_clock,      only : cpu_clock_id, cpu_clock_begin, cpu_clock_end
 use MOM_cpu_clock,      only : CLOCK_MODULE, CLOCK_ROUTINE
-use MOM_tracer_types,   only : tracer_type
 
 use CVMix_kpp, only : CVMix_init_kpp, CVMix_put_kpp, CVMix_get_kpp_real
 use CVMix_kpp, only : CVMix_coeffs_kpp
@@ -39,6 +41,7 @@ public :: KPP_compute_BLD
 public :: KPP_calculate
 public :: KPP_end
 public :: KPP_NonLocalTransport
+public :: KPP_NonLocalTransport_diag_3d
 public :: KPP_get_BLD
 
 ! Enumerated constants
@@ -1378,8 +1381,8 @@ subroutine KPP_NonLocalTransport(CS, G, GV, h, nonLocalTrans, surfFlux, &
   real, optional,                             intent(in)    :: flux_scale    !< Scale factor to get surfFlux
                                                                              !! into proper units
 
+  ! local variables
   integer :: i, j, k
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: dtracer ! Rate of tracer change [conc T-1 ~> conc s-1]
   real, dimension(SZI_(G),SZJ_(G)) :: surfFlux_loc
 
   ! term used to scale
@@ -1395,38 +1398,55 @@ subroutine KPP_NonLocalTransport(CS, G, GV, h, nonLocalTrans, surfFlux, &
   if (tr_ptr%id_net_surfflux > 0) &
       call post_data(tr_ptr%id_net_surfflux, surfFlux_loc(:,:), CS%diag)
 
-  ! Only continue if we are applying the nonlocal tendency
-  ! or the nonlocal tendency diagnostic has been requested
-  if ((tr_ptr%id_NLT_tendency > 0) .or. (CS%applyNonLocalTrans)) then
+  ! Only continue if we are applying the nonlocal tendency or a nonlocal
+  ! tendency diagnostic has been requested. If a nonlocal tendency is
+  ! requested, the term is applied independent of applyNonLocalTrans.
+  ! If applyNonLocalTrans == .false., the unaltered tracer value will be
+  ! recovered in KPP_NonLocalTransport_diag_3d
 
-    !$OMP parallel do default(none) shared(dtracer, nonLocalTrans, h, G, GV, surfFlux_loc)
+  if (CS%applyNonLocalTrans .or. (tr_ptr%id_NLT_tendency > 0) .or. (tr_ptr%id_NLT_budget > 0)) then
+
+    !$OMP parallel do default(none) shared(nonLocalTrans, h, G, GV, surfFlux_loc, dt, scalar)
     do k = 1, GV%ke ; do j = G%jsc, G%jec ; do i = G%isc, G%iec
-      dtracer(i,j,k) = ( nonLocalTrans(i,j,k) - nonLocalTrans(i,j,k+1) ) / &
-                       ( h(i,j,k) + GV%H_subroundoff ) * surfFlux_loc(i,j)
+      scalar(i,j,k) = scalar(i,j,k) &
+          + dt * ((nonLocalTrans(i,j,k) - nonLocalTrans(i,j,k+1)) &
+                  / (h(i,j,k) + GV%H_subroundoff) * surfFlux_loc(i,j))
     enddo ; enddo ; enddo
 
-    !  Update tracer due to non-local redistribution of surface flux
-    if (CS%applyNonLocalTrans) then
-      !$OMP parallel do default(none) shared(G, GV, dt, scalar, dtracer)
-      do k = 1, GV%ke ; do j = G%jsc, G%jec ; do i = G%isc, G%iec
-        scalar(i,j,k) = scalar(i,j,k) + dt * dtracer(i,j,k)
-      enddo ; enddo ; enddo
-    endif
-    if (tr_ptr%id_NLT_tendency > 0) call post_data(tr_ptr%id_NLT_tendency, dtracer, CS%diag)
-
-  endif
-
-
-  if (tr_ptr%id_NLT_budget > 0) then
-    !$OMP parallel do default(none) shared(G, GV, dtracer, nonLocalTrans, surfFlux_loc)
-    do k = 1, GV%ke ; do j = G%jsc, G%jec ; do i = G%isc, G%iec
-      ! Here dtracer has units of [Q R Z T-1 ~> W m-2].
-      dtracer(i,j,k) = (nonLocalTrans(i,j,k) - nonLocalTrans(i,j,k+1)) * surfFlux_loc(i,j)
-    enddo ; enddo ; enddo
-    call post_data(tr_ptr%id_NLT_budget, dtracer(:,:,:), CS%diag)
   endif
 
 end subroutine KPP_NonLocalTransport
+
+
+!> Post 3D diagnostics related to KPP non-local transport term for all tracers
+subroutine KPP_NonLocalTransport_diag_3d(Reg, CS, G, GV, h, dt)
+  type(tracer_registry_type),                 pointer       :: Reg !< pointer to the tracer registry
+  type(KPP_CS),                               intent(inout) :: CS  !< Control structure
+  type(ocean_grid_type),                      intent(in)    :: G   !< Ocean grid
+  type(verticalGrid_type),                    intent(in)    :: GV  !< Ocean vertical grid
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in)    :: h   !< Layer/level thickness [H ~> m or kg m-2]
+  real,                                       intent(in)    :: dt  !< Time-step [T ~> s]
+
+  ! local variables
+  integer :: m
+  real, dimension(:,:,:), pointer :: t_prev_ptr
+
+  ! If KPP NLT term is being applied, then state dependent diagnostic grids are now
+  ! out of sync with respect to h.
+  if (CS%applyNonLocalTrans) call set_diag_in_sync_with_state(CS%diag, .false.)
+
+  do m=1,Reg%ntr ; if (Reg%comp_KPP_NLT_tend(m)) then
+    call field_stack_peek(Reg%Tr(m)%t_prev, t_prev_ptr, "KPP_NonLocalTransport_diag_3d")
+    call diagnose_tracer_tend(G, GV, dt, t_prev_ptr, Reg%Tr(m)%t, h, CS%diag, &
+                              Reg%Tr(m)%id_NLT_tendency, Reg%Tr(m)%id_NLT_budget, -1)
+    if (CS%applyNonLocalTrans) then
+      call field_stack_drop(Reg%Tr(m)%t_prev, "KPP_NonLocalTransport_diag_3d")
+    else
+      call field_stack_pop(Reg%Tr(m)%t_prev, Reg%Tr(m)%t, "KPP_NonLocalTransport_diag_3d")
+    endif
+  endif ; enddo
+
+end subroutine KPP_NonLocalTransport_diag_3d
 
 
 !> Clear pointers, deallocate memory
