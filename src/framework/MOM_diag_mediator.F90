@@ -22,8 +22,8 @@ use MOM_diag_remap,       only : diag_remap_configure_axes, diag_remap_axes_conf
 use MOM_diag_remap,       only : diag_remap_diag_registration_closed, diag_remap_set_active
 use MOM_EOS,              only : EOS_type
 use MOM_error_handler,    only : MOM_error, FATAL, WARNING, is_root_pe, assert
-use MOM_field_stack,      only : field_stack_type, field_stack_init, field_stack_push
-use MOM_field_stack,      only : field_stack_peek, field_stack_drop
+use MOM_field_stack,      only : field_stack_type, field_stack_init, field_stack_end
+use MOM_field_stack,      only : field_stack_push, field_stack_peek, field_stack_drop
 use MOM_file_parser,      only : get_param, log_version, param_file_type
 use MOM_grid,             only : ocean_grid_type
 use MOM_io,               only : slasher, vardesc, query_vardesc, MOM_read_data
@@ -3575,6 +3575,7 @@ subroutine diag_push_h(diag_cs, msg)
   ! before pushing diagnostic grids, update them if they are not in sync
   if (id_clock_diag_grid_updates>0) call cpu_clock_begin(id_clock_diag_grid_updates)
   do i=1,diag_cs%num_diag_coords
+    if (diag_cs%diag_remap_cs(i)%nz == 0) cycle
     if (.not. diag_cs%diag_remap_cs(i)%in_sync_with_state) then
       call diag_remap_update(diag_cs%diag_remap_cs(i), diag_cs%G, diag_cs%GV, diag_cs%US, &
           diag_cs%h, diag_cs%T, diag_cs%S, diag_cs%eqn_of_state, diag_cs%diag_remap_cs(i)%h)
@@ -3584,6 +3585,7 @@ subroutine diag_push_h(diag_cs, msg)
   if (id_clock_diag_grid_updates>0) call cpu_clock_end(id_clock_diag_grid_updates)
 
   do i=1,diag_cs%num_diag_coords
+    if (diag_cs%diag_remap_cs(i)%nz == 0) cycle
     call field_stack_push(diag_cs%diag_remap_cs(i)%h_prev, diag_cs%diag_remap_cs(i)%h, msg)
   enddo
 
@@ -3600,6 +3602,7 @@ subroutine diag_drop_h(diag_cs, msg)
 
   call field_stack_drop(diag_cs%h_prev, msg)
   do i=1,diag_cs%num_diag_coords
+    if (diag_cs%diag_remap_cs(i)%nz == 0) cycle
     call field_stack_drop(diag_cs%diag_remap_cs(i)%h_prev, msg)
   enddo
 end subroutine diag_drop_h
@@ -3896,6 +3899,8 @@ subroutine diag_mediator_end(time, diag_CS, end_diag_manager)
 #if defined(DEBUG) || defined(__DO_SAFETY_CHECKS__)
   deallocate(diag_cs%h_old)
 #endif
+
+  call field_stack_end(diag_cs%h_prev, "diag_mediator_end")
 
   if (present(end_diag_manager)) then
     if (end_diag_manager) call MOM_diag_manager_end(time)

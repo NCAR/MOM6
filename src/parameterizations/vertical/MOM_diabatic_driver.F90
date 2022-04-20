@@ -1005,6 +1005,8 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Reg, Hml, fluxes, visc, ADp, CDp, dt
           endif
 
           ent_tr(i,j,K) = ent_s(i,j,K) + add_ent
+        else
+          ent_tr(i,j,K) = ent_s(i,j,K)
         endif
 
         if (CS%double_diffuse) then ; if (Kd_extra_S(i,j,k) > 0.0) then
@@ -1026,6 +1028,11 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Reg, Hml, fluxes, visc, ADp, CDp, dt
       endif
       ent_tr(i,j,K) = ent_s(i,j,K) + add_ent
     enddo ; enddo ; enddo
+  else
+    !$OMP parallel do default(shared)
+    do k=nz,2,-1 ; do j=js,je ; do i=is,ie
+      ent_tr(i,j,K) = ent_s(i,j,K)
+    enddo ; enddo ; enddo
   endif  ! (CS%mix_boundary_tracers)
 
   call call_tracer_column_fns(col_act_tridiag_solve, h, ent_tr(:,:,1:nz), ent_tr(:,:,2:nz+1), &
@@ -1039,7 +1046,8 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Reg, Hml, fluxes, visc, ADp, CDp, dt
   call set_diag_in_sync_with_state(CS%diag, .false.)
 
   ! diagnose diabatic related tendencies
-  call diagnose_diabatic_diff_tendency(Reg, h, dt, G, GV, CS)
+  if (any(Reg%comp_diabatic_diff_tend(:)) .or. (CS%id_diabatic_diff_h_tendency > 0)) &
+      call diagnose_diabatic_diff_tendency(Reg, h, dt, G, GV, CS)
   if (CS%id_diabatic_diff_h > 0) call post_data(CS%id_diabatic_diff_h, h, CS%diag)
 
   if (CS%debugConservation) call MOM_state_stats('triDiagTS', u, v, h, tv%T, tv%S, G, GV, US)
@@ -1563,9 +1571,16 @@ subroutine diabatic_ALE(u, v, h, tv, Reg, Hml, fluxes, visc, ADp, CDp, dt, Time_
           endif
 
           ent_tr(i,j,K) = ent_s(i,j,K) + add_ent
+        else
+          ent_tr(i,j,K) = ent_s(i,j,K)
         endif
       enddo ; enddo
     enddo
+  else
+    !$OMP parallel do default(shared)
+    do k=nz,2,-1 ; do j=js,je ; do i=is,ie
+      ent_tr(i,j,K) = ent_s(i,j,K)
+    enddo ; enddo ; enddo
   endif  ! (CS%mix_boundary_tracer_ALE)
 
   call call_tracer_column_fns(col_act_tridiag_solve, h, ent_tr(:,:,1:nz), ent_tr(:,:,2:nz+1), &
@@ -1579,7 +1594,8 @@ subroutine diabatic_ALE(u, v, h, tv, Reg, Hml, fluxes, visc, ADp, CDp, dt, Time_
   call set_diag_in_sync_with_state(CS%diag, .false.)
 
   ! diagnose diabatic related tendencies
-  call diagnose_diabatic_diff_tendency(Reg, h, dt, G, GV, CS)
+  if (any(Reg%comp_diabatic_diff_tend(:)) .or. (CS%id_diabatic_diff_h_tendency > 0)) &
+      call diagnose_diabatic_diff_tendency(Reg, h, dt, G, GV, CS)
   if (CS%id_diabatic_diff_h > 0) call post_data(CS%id_diabatic_diff_h, h, CS%diag)
 
   if (CS%debugConservation) call MOM_state_stats('triDiagTS', u, v, h, tv%T, tv%S, G, GV, US)
@@ -2340,7 +2356,7 @@ subroutine layered_diabatic(u, v, h, tv, Reg, Hml, fluxes, visc, ADp, CDp, dt, T
 
     enddo
 
-    call call_tracer_column_fns(col_act_tridiag_solve, h, eatr, ebtr, fluxes, Hml, dt, G, GV, US, &
+    call call_tracer_column_fns(col_act_tridiag_solve, hold, eatr, ebtr, fluxes, Hml, dt, G, GV, US, &
                                 tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
 
   elseif (CS%double_diffuse) then  ! extra diffusivity for passive tracers
@@ -2361,11 +2377,11 @@ subroutine layered_diabatic(u, v, h, tv, Reg, Hml, fluxes, visc, ADp, CDp, dt, T
       eatr(i,j,k) = ea(i,j,k) + add_ent
     enddo ; enddo ; enddo
 
-    call call_tracer_column_fns(col_act_tridiag_solve, h, eatr, ebtr, fluxes, Hml, dt, G, GV, US, &
+    call call_tracer_column_fns(col_act_tridiag_solve, hold, eatr, ebtr, fluxes, Hml, dt, G, GV, US, &
                                 tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
 
   else
-    call call_tracer_column_fns(col_act_tridiag_solve, h, ea, eb, fluxes, Hml, dt, G, GV, US, &
+    call call_tracer_column_fns(col_act_tridiag_solve, hold, ea, eb, fluxes, Hml, dt, G, GV, US, &
                                 tv, CS%optics, CS%tracer_flow_CSp, CS%debug)
 
   endif  ! (CS%mix_boundary_tracers)
@@ -2377,7 +2393,8 @@ subroutine layered_diabatic(u, v, h, tv, Reg, Hml, fluxes, visc, ADp, CDp, dt, T
   call set_diag_in_sync_with_state(CS%diag, .false.)
 
   ! diagnose diabatic related tendencies
-  call diagnose_diabatic_diff_tendency(Reg, h, dt, G, GV, CS)
+  if (any(Reg%comp_diabatic_diff_tend(:)) .or. (CS%id_diabatic_diff_h_tendency > 0)) &
+      call diagnose_diabatic_diff_tendency(Reg, h, dt, G, GV, CS)
   if (CS%id_diabatic_diff_h > 0) call post_data(CS%id_diabatic_diff_h, h, CS%diag)
 
   if (CS%debug) then
@@ -2850,6 +2867,9 @@ subroutine adiabatic_driver_init(Time, G, param_file, diag, CS, &
 
   if (CS%use_sponge .or. CS%use_energetic_PBL .or. CS%use_KPP) &
     call MOM_error(FATAL, "adiabatic_driver_init is aborting due to inconsistent parameter settings.")
+
+  ! set up the clocks for this module
+  id_clock_tracers = cpu_clock_id('(Ocean tracer_columns)', grain=CLOCK_MODULE_DRIVER+5)
 
 end subroutine adiabatic_driver_init
 

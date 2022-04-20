@@ -570,6 +570,8 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, G, GV, US, CS, Reg, tv, do_online
     call cpu_clock_begin(id_clock_epimix)
     call tracer_epipycnal_ML_diff(h, dt, Reg%Tr, ntr, khdt_x, khdt_y, G, GV, US, &
                                   CS, tv, num_itts)
+    ! state dependent diagnostic grids are now out of sync with respect to h
+    call set_diag_in_sync_with_state(CS%diag, .false.)
     call cpu_clock_end(id_clock_epimix)
   endif
 

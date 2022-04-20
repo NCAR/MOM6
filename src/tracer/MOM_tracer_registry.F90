@@ -38,6 +38,8 @@ public preALE_tracer_diagnostics, postALE_tracer_diagnostics
 public tracer_registry_init, lock_tracer_registry, tracer_registry_end
 public tracer_name_lookup
 
+!> call post_data for tracer concentration and content tendencies
+!! call post_data for tracer content after process, if diag ids provided
 interface diagnose_tracer_tend
   module procedure diagnose_tracer_tend_field_stack, diagnose_tracer_tend_field
 end interface diagnose_tracer_tend
@@ -292,6 +294,7 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
   logical :: comp_process_tend      !< is a tracer process tendency diag requested
                                     !! used to determine t_prev stack size
   type(tracer_type), pointer :: Tr=>NULL()
+  integer :: comp_tend_array_len
   integer :: t_prev_max_size
   integer :: i, j, k, is, ie, js, je, nz, m, m2
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
@@ -304,15 +307,21 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
 
   ! allocate space for derived diagnostic flags
   ! initialize here, via source, to ensure they are set, even if registry_diags=.false.
-  allocate(Reg%comp_net_tend(Reg%ntr), source=.false.)
-  allocate(Reg%comp_remap_tend(Reg%ntr), source=.false.)
-  allocate(Reg%comp_adv_tend(Reg%ntr), source=.false.)
-  allocate(Reg%comp_lbd_tend(Reg%ntr), source=.false.)
-  allocate(Reg%comp_neu_diff_tend(Reg%ntr), source=.false.)
-  allocate(Reg%comp_frazil_tend(Reg%ntr), source=.false.)
-  allocate(Reg%comp_KPP_NLT_tend(Reg%ntr), source=.false.)
-  allocate(Reg%comp_bndry_forc_tend(Reg%ntr), source=.false.)
-  allocate(Reg%comp_diabatic_diff_tend(Reg%ntr), source=.false.)
+  if (use_ALE) then
+    ! include space for potential _vardec tracers
+    comp_tend_array_len = min(2 * Reg%ntr, MAX_FIELDS_)
+  else
+    comp_tend_array_len = Reg%ntr
+  endif
+  allocate(Reg%comp_net_tend(comp_tend_array_len), source=.false.)
+  allocate(Reg%comp_remap_tend(comp_tend_array_len), source=.false.)
+  allocate(Reg%comp_adv_tend(comp_tend_array_len), source=.false.)
+  allocate(Reg%comp_lbd_tend(comp_tend_array_len), source=.false.)
+  allocate(Reg%comp_neu_diff_tend(comp_tend_array_len), source=.false.)
+  allocate(Reg%comp_frazil_tend(comp_tend_array_len), source=.false.)
+  allocate(Reg%comp_KPP_NLT_tend(comp_tend_array_len), source=.false.)
+  allocate(Reg%comp_bndry_forc_tend(comp_tend_array_len), source=.false.)
+  allocate(Reg%comp_diabatic_diff_tend(comp_tend_array_len), source=.false.)
 
   do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
     Tr => Reg%Tr(m)
@@ -816,6 +825,8 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
         Reg%Tr(m2)%units = unit2
         Reg%Tr(m2)%registry_diags = .false.
         Reg%Tr(m2)%ind_tr_squared = -1
+        call field_stack_init(Reg%Tr(m2)%t_prev, 0, isd, ied, jsd, jed, nz, &
+            trim(Reg%Tr(m2)%name) // "_prev")
         ! Augment the total number of tracers, including the squared tracers.
         Reg%ntr = Reg%ntr + 1
       endif
@@ -828,13 +839,13 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
     ! setup t_prev stack
     ! needed if comp_process_tend == .true. despite registry_diags == .false.
     t_prev_max_size = 0
-    if (comp_process_tend) t_prev_max_size = t_prev_max_size + 1
+    if (Tr%comp_process_tend) t_prev_max_size = t_prev_max_size + 1
     call field_stack_init(Tr%t_prev, t_prev_max_size, isd, ied, jsd, jed, nz, &
         trim(Tr%flux_nameroot) // "_prev")
 
   endif ; enddo
 
-  call prep_tracer_tend(Reg, Reg%comp_net_tend, "sync")
+  call prep_tracer_tend(Reg, Reg%comp_net_tend, "sync initial")
 
 end subroutine register_tracer_diagnostics
 
@@ -1116,6 +1127,7 @@ subroutine post_tracer_hordiff_diagnostics(G, GV, Reg, diag_pre_dyn, diag)
 
   do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
     Tr => Reg%Tr(m)
+    if (Tr%id_tr_post_horzn> 0) call post_data(Tr%id_tr_post_horzn, Tr%t, diag)
     if (Tr%id_dfx > 0) call post_data(Tr%id_dfx, Tr%df_x, diag, alt_h=diag_pre_dyn%h_state)
     if (Tr%id_dfy > 0) call post_data(Tr%id_dfy, Tr%df_y, diag, alt_h=diag_pre_dyn%h_state)
     if (Tr%id_dfx_2d > 0) call post_data(Tr%id_dfx_2d, Tr%df2d_x, diag)

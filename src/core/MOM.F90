@@ -729,6 +729,10 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
 
     if (showCallTree) call callTree_enter("DT cycles (step_MOM) n=",n)
 
+    ! Update the vertically extensive diagnostic grids so that they are
+    ! referenced to the beginning timestep
+    call diag_update_remap_grids(CS%diag, update_intensive = .false., update_extensive = .true. )
+
     !===========================================================================
     ! This is the first place where the diabatic processes and remapping could occur.
     if (CS%diabatic_first .and. (CS%t_dyn_rel_adv==0.0) .and. do_thermo) then ! do thermodynamics.
@@ -1075,6 +1079,8 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     call pass_var(h, G%Domain, clock=id_clock_pass, halo=max(2,CS%cont_stencil))
     call disable_averaging(CS%diag)
     if (showCallTree) call callTree_waypoint("finished thickness_diffuse_first (step_MOM)")
+    ! all diagnostic grids are now out of sync with respect to h
+    call set_diag_in_sync_with_state(CS%diag, .false.)
   endif
 
   !update porous barrier fractional cell metrics
@@ -1176,6 +1182,8 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     call cpu_clock_end(id_clock_thick_diff)
     call pass_var(h, G%Domain, clock=id_clock_pass, halo=max(2,CS%cont_stencil))
     if (showCallTree) call callTree_waypoint("finished thickness_diffuse (step_MOM)")
+    ! all diagnostic grids are now out of sync with respect to h
+    call set_diag_in_sync_with_state(CS%diag, .false.)
   endif
 
   ! apply the submesoscale mixed layer restratification parameterization

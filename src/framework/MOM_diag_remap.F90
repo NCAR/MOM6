@@ -63,7 +63,7 @@ use MOM_error_handler,    only : MOM_error, FATAL, assert, WARNING
 use MOM_debugging,        only : check_column_integrals
 use MOM_diag_manager_infra,only : MOM_diag_axis_init
 use MOM_diag_vkernels,    only : interpolate_column, reintegrate_column
-use MOM_field_stack,      only : field_stack_type
+use MOM_field_stack,      only : field_stack_type, field_stack_end
 use MOM_file_parser,      only : get_param, log_param, param_file_type
 use MOM_string_functions, only : lowercase, extractWord
 use MOM_grid,             only : ocean_grid_type
@@ -154,6 +154,7 @@ subroutine diag_remap_end(remap_cs)
   type(diag_remap_ctrl), intent(inout) :: remap_cs !< Diag remapping control structure
 
   if (allocated(remap_cs%h)) deallocate(remap_cs%h)
+  call field_stack_end(remap_cs%h_prev, "diag_remap_end")
 
   remap_cs%configured = .false.
   remap_cs%initialized = .false.

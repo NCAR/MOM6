@@ -45,18 +45,27 @@ subroutine field_stack_init(field_stack_obj, max_size, is, ie, js, je, nk, name)
   field_stack_obj%top = 0
   field_stack_obj%name = trim(name)
 
+  call write_stack_info_msg(sub_name, field_stack_obj, "init")
+
 end subroutine field_stack_init
 
 
 !> Deallocate memory associated with field_stack object
-subroutine field_stack_end(field_stack_obj)
+subroutine field_stack_end(field_stack_obj, info_msg)
   type(field_stack_type), intent(inout) :: field_stack_obj !< field_stack object being operated on
+  character(len=*),          intent(in) :: info_msg        !< informational message to write
 
-  if (associated(field_stack_obj%field)) then
-    deallocate(field_stack_obj%field)
-    field_stack_obj%field => NULL()
-    deallocate(field_stack_obj%name)
-  endif
+  ! Local variables
+  character(*), parameter :: sub_name = "field_stack_end"
+
+  if (.not. associated(field_stack_obj%field)) return
+
+  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
+
+  deallocate(field_stack_obj%field)
+  field_stack_obj%field => NULL()
+  field_stack_obj%top = 0
+  deallocate(field_stack_obj%name)
 
 end subroutine field_stack_end
 
@@ -72,10 +81,10 @@ subroutine field_stack_push(field_stack_obj, field, info_msg)
   integer :: i, j, k
   integer :: i_offset, j_offset
 
-  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
-
   if (.not. associated(field_stack_obj%field)) call MOM_error(FATAL, &
       sub_name // ": field_stack_obj has not been initialized")
+
+  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
 
   if (field_stack_obj%top == size(field_stack_obj%field, 4)) call MOM_error(FATAL, &
       sub_name // ": attempting to push to full stack")
@@ -110,10 +119,10 @@ subroutine field_stack_pop(field_stack_obj, field, info_msg)
   integer :: i, j, k
   integer :: i_offset, j_offset
 
-  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
-
   if (.not. associated(field_stack_obj%field)) call MOM_error(FATAL, &
       sub_name // ": field_stack_obj has not been initialized")
+
+  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
 
   if (field_stack_obj%top == 0) call MOM_error(FATAL, &
       sub_name // ": attempting to pop from empty stack")
@@ -146,10 +155,10 @@ subroutine field_stack_peek(field_stack_obj, field_ptr, info_msg)
   ! Local variables
   character(*), parameter :: sub_name = "field_stack_peek"
 
-  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
-
   if (.not. associated(field_stack_obj%field)) call MOM_error(FATAL, &
       sub_name // ": field_stack_obj has not been initialized")
+
+  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
 
   if (field_stack_obj%top == 0) call MOM_error(FATAL, &
       sub_name // ": attempting to peek at empty stack")
@@ -169,10 +178,10 @@ subroutine field_stack_drop(field_stack_obj, info_msg)
   integer :: i, j, k
   integer :: i_offset, j_offset
 
-  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
-
   if (.not. associated(field_stack_obj%field)) call MOM_error(FATAL, &
       sub_name // ": field_stack_obj has not been initialized")
+
+  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
 
   if (field_stack_obj%top == 0) call MOM_error(FATAL, &
       sub_name // ": attempting to drop from empty stack")
