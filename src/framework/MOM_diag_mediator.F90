@@ -353,7 +353,6 @@ subroutine set_axes_info(G, GV, US, param_file, diag_cs, set_vertical)
   integer :: id_xq, id_yq, id_zl, id_zi, id_xh, id_yh, id_null
   integer :: id_zl_native, id_zi_native
   integer :: i, j, k, nz
-  integer :: max_h_prev_size
   real :: zlev(GV%ke), zinter(GV%ke+1)
   logical :: set_vert
   real, allocatable, dimension(:) :: IaxB,iax
@@ -503,11 +502,7 @@ subroutine set_axes_info(G, GV, US, param_file, diag_cs, set_vertical)
     allocate(diag_cs%diag_remap_cs(i)%h(G%isd:G%ied,G%jsd:G%jed, diag_cs%diag_remap_cs(i)%nz))
     allocate(diag_cs%diag_remap_cs(i)%h_extensive(G%isd:G%ied,G%jsd:G%jed, diag_cs%diag_remap_cs(i)%nz))
 
-    ! Axes info is set before tracer diagnostics are registered, making it hard
-    ! to adaptively determine max_h_prev_size. So use 2. Will need to be
-    ! increased to 3 if multiprocess tendencies are implemented and used.
-    max_h_prev_size = 2
-    call field_stack_init(diag_cs%diag_remap_cs(i)%h_prev, max_h_prev_size, &
+    call field_stack_init(diag_cs%diag_remap_cs(i)%h_prev, &
         G%isd, G%ied, G%jsd, G%jed, diag_cs%diag_remap_cs(i)%nz, &
         "diag h_prev " // trim(diag_cs%diag_remap_cs(i)%diag_coord_name))
 
@@ -3363,7 +3358,6 @@ subroutine diag_mediator_init(G, GV, US, nz, param_file, diag_cs, doc_file_dir)
 
   ! Local variables
   integer :: ios, i, new_unit
-  integer :: max_h_prev_size
   logical :: opened, new_file
   logical :: answers_2018, default_2018_answers
   character(len=8)   :: this_pe
@@ -3451,12 +3445,7 @@ subroutine diag_mediator_init(G, GV, US, nz, param_file, diag_cs, doc_file_dir)
   diag_cs%h_old(:,:,:) = 0.0
 #endif
 
-  ! diag_mediator is initialized before tracer diagnostics are registered, making it hard
-  ! to adaptively determine max_h_prev_size. So use 2. Will need to be
-  ! increased to 3 if multiprocess tendencies are implemented and used.
-  max_h_prev_size = 2
-  call field_stack_init(diag_cs%h_prev, max_h_prev_size, &
-      G%isd, G%ied, G%jsd, G%jed, nz, "diag h_prev native")
+  call field_stack_init(diag_cs%h_prev, G%isd, G%ied, G%jsd, G%jed, nz, "diag h_prev native")
 
   diag_cs%is = G%isc - (G%isd-1) ; diag_cs%ie = G%iec - (G%isd-1)
   diag_cs%js = G%jsc - (G%jsd-1) ; diag_cs%je = G%jec - (G%jsd-1)

@@ -22,26 +22,22 @@ end type field_stack_type
 contains
 
 !> Initialize a field_stack object
-subroutine field_stack_init(field_stack_obj, max_size, is, ie, js, je, nk, name)
+subroutine field_stack_init(field_stack_obj, is, ie, js, je, nz, name)
   type(field_stack_type), intent(inout) :: field_stack_obj !< field_stack object being initialized
-  integer,                   intent(in) :: max_size        !< maximum size that stack can grow to
   integer,                   intent(in) :: is              !< The start index to allocate for the 1st dimension
   integer,                   intent(in) :: ie              !< The end index to allocate for the 1st dimension
   integer,                   intent(in) :: js              !< The start index to allocate for the 2nd dimension
   integer,                   intent(in) :: je              !< The end index to allocate for the 2nd dimension
-  integer,                   intent(in) :: nk              !< The size to allocate for the 3rd dimension
+  integer,                   intent(in) :: nz              !< The size to allocate for the 3rd dimension
   character(len=*),          intent(in) :: name            !< stack name to include in informational messages
 
   ! Local variables
   character(*), parameter :: sub_name = "field_stack_init"
 
-  if (max_size < 0) call MOM_error(FATAL, &
-      sub_name // ": max_size not permitted to be negative")
-
   if (associated(field_stack_obj%field)) call MOM_error(FATAL, &
       sub_name // ": field_stack_obj has already been initialized")
 
-  allocate(field_stack_obj%field(is:ie, js:je, nk, max_size))
+  allocate(field_stack_obj%field(is:ie, js:je, nz, 0))
   field_stack_obj%top = 0
   field_stack_obj%name = trim(name)
 
@@ -70,6 +66,41 @@ subroutine field_stack_end(field_stack_obj, info_msg)
 end subroutine field_stack_end
 
 
+!> Increase memory available in stack, preserving current stack values
+subroutine field_stack_grow(field_stack_obj, info_msg)
+  type(field_stack_type), intent(inout) :: field_stack_obj !< field_stack object being operated on
+  character(len=*),          intent(in) :: info_msg        !< informational message to write
+
+  ! Local variables
+  character(*), parameter :: sub_name = "field_stack_grow"
+  real, dimension(:,:,:,:), pointer :: field_ptr_tmp !< temporary pointer
+  integer :: is, ie, js, je, nz, stack_size !< bounds of stack's field
+
+  if (.not. associated(field_stack_obj%field)) call MOM_error(FATAL, &
+      sub_name // ": field_stack_obj has not been initialized")
+
+  call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
+
+  field_ptr_tmp => field_stack_obj%field
+
+  is = lbound(field_stack_obj%field, 1) ; ie = ubound(field_stack_obj%field, 1)
+  js = lbound(field_stack_obj%field, 2) ; je = ubound(field_stack_obj%field, 2)
+  nz = size(field_stack_obj%field, 3)
+  stack_size = size(field_stack_obj%field, 4)
+
+  stack_size = stack_size + 1
+
+  allocate(field_stack_obj%field(is:ie, js:je, nz, stack_size))
+
+  if (field_stack_obj%top > 0) then
+    field_stack_obj%field(:,:,:,1:field_stack_obj%top) = field_ptr_tmp(:,:,:,1:field_stack_obj%top)
+  endif
+
+  deallocate(field_ptr_tmp)
+
+end subroutine field_stack_grow
+
+
 !> Push field values to stack
 subroutine field_stack_push(field_stack_obj, field, info_msg)
   type(field_stack_type), intent(inout) :: field_stack_obj !< field_stack object being operated on
@@ -86,8 +117,8 @@ subroutine field_stack_push(field_stack_obj, field, info_msg)
 
   call write_stack_info_msg(sub_name, field_stack_obj, info_msg)
 
-  if (field_stack_obj%top == size(field_stack_obj%field, 4)) call MOM_error(FATAL, &
-      sub_name // ": attempting to push to full stack")
+  if (field_stack_obj%top == size(field_stack_obj%field, 4)) &
+      call field_stack_grow(field_stack_obj, info_msg)
 
   ! verify that field has same shape as stack field
   if ((size(field, 1) /= size(field_stack_obj%field, 1)) .or. &
@@ -198,13 +229,16 @@ subroutine write_stack_info_msg(caller, field_stack_obj, info_msg)
   character(len=*),       intent(in) :: info_msg        !< informational message to write
 
   ! Local variables
-  character(3) :: i3
+  character(2) :: top_i2 !< character version of stack top value
+  character(2) :: size_i2 !< character version of stack size value
 
   ! Only construct full informational message if verbosity is sufficiently high
   if (MOM_get_verbosity() >= 4) then
-    write(i3, '(I3)') field_stack_obj%top
+    write(top_i2, '(I2)') field_stack_obj%top
+    write(size_i2, '(I2)') size(field_stack_obj%field, 4)
     call MOM_mesg( &
-        caller // ": " // trim(field_stack_obj%name) // " " // trim(info_msg) // ", top=" // i3, 4)
+        caller // ": " // trim(field_stack_obj%name) // " " // trim(info_msg) // ", top=" &
+        // top_i2 // ", size=" // size_i2, 4)
   endif
 
 end subroutine write_stack_info_msg

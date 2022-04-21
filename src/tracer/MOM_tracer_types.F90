@@ -41,8 +41,6 @@ type, public :: tracer_type
 !  type(vardesc), pointer          :: vd             => NULL() !< metadata describing the tracer
   logical                         :: registry_diags = .false. !< If true, use the registry to set up the
                                                               !! diagnostics associated with this tracer.
-  logical                         :: comp_process_tend = .false. !< If true, then some process tendency
-                                                              !! diagnostics are enabled for this tracer
   character(len=64)               :: cmor_name                !< CMOR name of this tracer
   character(len=64)               :: cmor_units               !< CMOR physical dimensions of the tracer
   character(len=240)              :: cmor_longname            !< CMOR long name of the tracer

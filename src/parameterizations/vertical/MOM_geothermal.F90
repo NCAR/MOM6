@@ -562,8 +562,6 @@ subroutine geothermal_init(Time, G, GV, US, param_file, diag, CS, tv, useALEalgo
         'internal_heat_temp_tendency', diag%axesTL, Time,              &
         'Temperature tendency (in 3D) due to internal (geothermal) sources', &
         'degC s-1', conversion=US%s_to_T)
-  if ((CS%id_internal_heat_heat_tendency > 0) .or. (CS%id_internal_heat_temp_tendency > 0)) &
-      tv%tr_T%comp_process_tend = .true.
   if (.not.useALEalgorithm) then
     ! Do not offer this diagnostic if heating will be in place.
     CS%id_internal_heat_h_tendency=register_diag_field('ocean_model',    &

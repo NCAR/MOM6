@@ -289,13 +289,8 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
   character(len=120) :: var_lname      ! A temporary longname for a diagnostic.
   character(len=120) :: cmor_var_lname ! The temporary CMOR long name for a diagnostic
   character(len=72)  :: cmor_varname ! The temporary CMOR name for a diagnostic
-  logical :: comp_multiprocess_tend !< is a tracer multiprocess tendency diag requested
-                                    !! e.g., net hordiff, used to determine t_prev stack size
-  logical :: comp_process_tend      !< is a tracer process tendency diag requested
-                                    !! used to determine t_prev stack size
   type(tracer_type), pointer :: Tr=>NULL()
   integer :: comp_tend_array_len
-  integer :: t_prev_max_size
   integer :: i, j, k, is, ie, js, je, nz, m, m2
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
@@ -325,10 +320,6 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
 
   do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
     Tr => Reg%Tr(m)
-
-    comp_multiprocess_tend = .false.
-    comp_process_tend = Tr%comp_process_tend ! A process tendency outside of those
-        ! registered in this subroutine might be requested, e.g., tracer source terms.
 
 !    call query_vardesc(Tr%vd, name, units=units, longname=longname, &
 !                       cmor_field_name=cmorname, cmor_longname=cmor_longname, &
@@ -488,7 +479,6 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
         trim(lowercase(flux_longname)), conv_units, conversion=Tr%conv_scale*US%s_to_T)
     if ((Tr%id_adv_xy > 0) .or. (Tr%id_adv_xy_2d > 0)) then
       Reg%comp_adv_tend(m) = .true.
-      comp_process_tend = .true.
     endif
 
     Tr%id_tendency = register_diag_field('ocean_model', trim(shortnm)//'_tendency', &
@@ -552,12 +542,10 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
 
     if ((Tr%id_dfxy_conc > 0) .or. (Tr%id_dfxy_cont > 0) .or. (Tr%id_dfxy_cont_2d > 0)) then
       Reg%comp_neu_diff_tend(m) = .true.
-      comp_process_tend = .true.
     endif
 
     if ((Tr%id_lbdxy_conc > 0) .or. (Tr%id_lbdxy_cont > 0) .or. (Tr%id_lbdxy_cont_2d > 0)) then
       Reg%comp_lbd_tend(m) = .true.
-      comp_process_tend = .true.
     endif
 
     var_lname = "Net time tendency for "//lowercase(flux_longname)
@@ -607,7 +595,6 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
 
       if ((Tr%id_remap_conc > 0) .or. (Tr%id_remap_cont > 0) .or. (Tr%id_remap_cont_2d > 0)) then
         Reg%comp_remap_tend(m) = .true.
-        comp_process_tend = .true.
       endif
     endif
 
@@ -657,7 +644,6 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
     if ((Tr%id_frazil_conc > 0) .or. (Tr%id_frazil_cont > 0) &
         .or. (Tr%id_frazil_cont_2d > 0)) then
       Reg%comp_frazil_tend(m) = .true.
-      comp_process_tend = .true.
     endif
 
     ! KPP nonlocal term diagnostics
@@ -675,7 +661,6 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
 
       if ((Tr%id_NLT_tendency > 0) .or. (Tr%id_NLT_budget > 0)) then
         Reg%comp_KPP_NLT_tend(m) = .true.
-        comp_process_tend = .true.
       endif
     endif
 
@@ -722,7 +707,6 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
       if ((Tr%id_bndry_forc_conc > 0) .or. (Tr%id_bndry_forc_cont > 0) &
           .or. (Tr%id_bndry_forc_cont_2d > 0)) then
         Reg%comp_bndry_forc_tend(m) = .true.
-        comp_process_tend = .true.
       endif
     endif
 
@@ -799,16 +783,10 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
     if ((Tr%id_diabatic_diff_conc > 0) .or. (Tr%id_diabatic_diff_cont > 0) &
         .or. (Tr%id_diabatic_diff_cont_2d > 0)) then
       Reg%comp_diabatic_diff_tend(m) = .true.
-      comp_process_tend = .true.
     endif
 
     ! set up t_prev stack
-    t_prev_max_size = 0
-    if (Reg%comp_net_tend(m))   t_prev_max_size = t_prev_max_size + 1
-    if (comp_multiprocess_tend) t_prev_max_size = t_prev_max_size + 1
-    if (comp_process_tend)      t_prev_max_size = t_prev_max_size + 1
-    call field_stack_init(Tr%t_prev, t_prev_max_size, isd, ied, jsd, jed, nz, &
-        trim(shortnm) // "_prev")
+    call field_stack_init(Tr%t_prev, isd, ied, jsd, jed, nz, trim(shortnm) // "_prev")
 
     if (use_ALE .and. (Reg%ntr<MAX_FIELDS_) .and. Tr%remap_tr) then
       unit2 = trim(units)//"2"
@@ -825,7 +803,7 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
         Reg%Tr(m2)%units = unit2
         Reg%Tr(m2)%registry_diags = .false.
         Reg%Tr(m2)%ind_tr_squared = -1
-        call field_stack_init(Reg%Tr(m2)%t_prev, 0, isd, ied, jsd, jed, nz, &
+        call field_stack_init(Reg%Tr(m2)%t_prev, isd, ied, jsd, jed, nz, &
             trim(Reg%Tr(m2)%name) // "_prev")
         ! Augment the total number of tracers, including the squared tracers.
         Reg%ntr = Reg%ntr + 1
@@ -837,11 +815,8 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
     Tr => Reg%Tr(m)
 
     ! setup t_prev stack
-    ! needed if comp_process_tend == .true. despite registry_diags == .false.
-    t_prev_max_size = 0
-    if (Tr%comp_process_tend) t_prev_max_size = t_prev_max_size + 1
-    call field_stack_init(Tr%t_prev, t_prev_max_size, isd, ied, jsd, jed, nz, &
-        trim(Tr%flux_nameroot) // "_prev")
+    ! needed if a tracer module uses t_prev despite registry_diags == .false.
+    call field_stack_init(Tr%t_prev, isd, ied, jsd, jed, nz, trim(Tr%flux_nameroot) // "_prev")
 
   endif ; enddo
 
