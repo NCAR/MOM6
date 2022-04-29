@@ -64,9 +64,9 @@ public query_compressible
 
 !> Calculates density of sea water from T, S and P
 interface calculate_density
-  module procedure calculate_density_scalar, calculate_density_array, calculate_density_1d
-  module procedure calculate_stanley_density_scalar, calculate_stanley_density_array
-  module procedure calculate_stanley_density_1d
+  module procedure calculate_density_scalar, calculate_density_array, calculate_density_1d, &
+                   calculate_stanley_density_scalar, calculate_stanley_density_array, &
+                   calculate_stanley_density_1d
 end interface calculate_density
 
 !> Calculates specific volume of sea water from T, S and P
