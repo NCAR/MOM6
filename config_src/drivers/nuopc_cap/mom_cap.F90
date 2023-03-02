@@ -455,6 +455,12 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
   CALL ESMF_TimeIntervalGet(TINT, S=DT_OCEAN, RC=rc)
   if (ChkErr(rc,__LINE__,u_FILE_u)) return
 
+#ifdef CESMCOUPLED
+  call get_component_instance(gcomp, inst_suffix, inst_index, rc)
+  if (ChkErr(rc,__LINE__,u_FILE_u)) return
+  call ensemble_manager_init(inst_suffix)
+#endif
+
   ! reset shr logging to my log file
   if (localPet==0) then
     call NUOPC_CompAttributeGet(gcomp, name="diro", &
@@ -464,11 +470,19 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
          isPresent=isPresentLogfile, rc=rc)
     if (ChkErr(rc,__LINE__,u_FILE_u)) return
     if (isPresentDiro .and. isPresentLogfile) then
-         call NUOPC_CompAttributeGet(gcomp, name="diro", value=diro, rc=rc)
-         if (ChkErr(rc,__LINE__,u_FILE_u)) return
-         call NUOPC_CompAttributeGet(gcomp, name="logfile", value=logfile, rc=rc)
-         if (ChkErr(rc,__LINE__,u_FILE_u)) return
-         open(newunit=stdout,file=trim(diro)//"/"//trim(logfile))
+      call NUOPC_CompAttributeGet(gcomp, name="diro", value=diro, rc=rc)
+      if (ChkErr(rc,__LINE__,u_FILE_u)) return
+      call NUOPC_CompAttributeGet(gcomp, name="logfile", value=logfile, rc=rc)
+      if (ChkErr(rc,__LINE__,u_FILE_u)) return
+
+      if (cesm_coupled) then
+        ! Multiinstance logfile name needs a correction
+        if(logfile(4:4) == '_') then
+          logfile = logfile(1:3)//trim(inst_suffix)//logfile(9:)
+        endif 
+      endif
+
+      open(newunit=stdout,file=trim(diro)//"/"//trim(logfile))
     else
       stdout = output_unit
     endif
@@ -524,15 +538,6 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
   if (ChkErr(rc,__LINE__,u_FILE_u)) return
 
   time0 = set_date (YEAR,MONTH,DAY,HOUR,MINUTE,SECOND)
-
-
-
-#ifdef CESMCOUPLED
-  call get_component_instance(gcomp, inst_suffix, inst_index, rc)
-  if (ChkErr(rc,__LINE__,u_FILE_u)) return
-
-  call ensemble_manager_init(inst_suffix)
-#endif
 
   if (is_root_pe()) then
     write(stdout,*) subname//'start time: y,m,d-',year,month,day,'h,m,s=',hour,minute,second
