@@ -28,9 +28,11 @@ use MOM_cap_time,             only: AlarmInit
 use MOM_cap_methods,          only: mom_import, mom_export, mom_set_geomtype, mod2med_areacor
 use MOM_cap_methods,          only: med2mod_areacor, state_diagnose
 use MOM_cap_methods,          only: ChkErr
+use MOM_ensemble_manager,     only: ensemble_manager_init
 
 #ifdef CESMCOUPLED
 use shr_log_mod,             only: shr_log_setLogUnit
+use nuopc_shr_methods,       only: get_component_instance
 #endif
 use time_utils_mod,           only: esmf2fms_time
 
@@ -422,6 +424,8 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
                                                                  ! (same as restartfile if single restart file)
   character(len=*), parameter            :: subname='(MOM_cap:InitializeAdvertise)'
   character(len=32)                      :: calendar
+  character(len=16)                      :: inst_suffix
+  integer                                :: inst_index
 !--------------------------------
 
   rc = ESMF_SUCCESS
@@ -522,10 +526,13 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
   time0 = set_date (YEAR,MONTH,DAY,HOUR,MINUTE,SECOND)
 
 
-  ! rsd need to figure out how to get this without share code
-  !call shr_nuopc_get_component_instance(gcomp, inst_suffix, inst_index)
-  !inst_name = "OCN"//trim(inst_suffix)
 
+#ifdef CESMCOUPLED
+  call get_component_instance(gcomp, inst_suffix, inst_index, rc)
+  if (ChkErr(rc,__LINE__,u_FILE_u)) return
+
+  call ensemble_manager_init(inst_suffix)
+#endif
 
   if (is_root_pe()) then
     write(stdout,*) subname//'start time: y,m,d-',year,month,day,'h,m,s=',hour,minute,second
@@ -616,7 +623,12 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
   endif
 
   ocean_public%is_ocean_pe = .true.
-  call ocean_model_init(ocean_public, ocean_state, time0, time_start, input_restart_file=trim(adjustl(restartfiles)))
+  if (cesm_coupled .and. len_trim(inst_suffix)>0) then
+    call ocean_model_init(ocean_public, ocean_state, time0, time_start, &
+      input_restart_file=trim(adjustl(restartfiles)), inst_index=inst_index)
+  else
+    call ocean_model_init(ocean_public, ocean_state, time0, time_start, input_restart_file=trim(adjustl(restartfiles)))
+  endif
 
   ! GMM, this call is not needed in CESM. Check with EMC if it can be deleted.
   call ocean_model_flux_init(ocean_state)
