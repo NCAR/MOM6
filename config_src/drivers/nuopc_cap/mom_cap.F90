@@ -481,7 +481,7 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
         ! Multiinstance logfile name needs a correction
         if(logfile(4:4) == '_') then
           logfile = logfile(1:3)//trim(inst_suffix)//logfile(9:)
-        endif 
+        endif
       endif
 
       open(newunit=stdout,file=trim(diro)//"/"//trim(logfile))
