@@ -2087,7 +2087,7 @@ subroutine hor_visc_init(Time, G, GV, US, param_file, diag, CS, ADp)
   call get_param(param_file, mdl, "USE_LEITHY", CS%use_Leithy, &
                  "If true, use a biharmonic Leith nonlinear eddy "//&
                  "viscosity together with a harmonic backscatter.", &
-                 default=.false., do_not_log=.not.(CS%biharmonic .and. CS%Laplacian))
+                 default=.false.)
   call get_param(param_file, mdl, "BOUND_AH", CS%bound_Ah, &
                  "If true, the biharmonic coefficient is locally limited "//&
                  "to be stable.", default=.true., do_not_log=.not.CS%biharmonic)
