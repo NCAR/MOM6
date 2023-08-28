@@ -1172,10 +1172,10 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
             Del2vort_h = 0.25 * ((Del2vort_q(I,J) + Del2vort_q(I-1,J-1)) + &
                                  (Del2vort_q(I-1,J) + Del2vort_q(I,J-1)))
             AhLth  = CS%Biharm6_const_xx(i,j) * inv_PI6 * abs(Del2vort_h)
-            if (AhLth .le. CS%Ah_bg_xx(i,j)) then
+            if (AhLth <= CS%Ah_bg_xx(i,j)) then
               m_leithy(i,j) = 0.0
             else
-              if ((CS%m_const_leithy(i,j)*vert_vort_mag(i,j)) .lt. abs(vort_xy_smooth(i,j))) then
+              if ((CS%m_const_leithy(i,j)*vert_vort_mag(i,j)) < abs(vort_xy_smooth(i,j))) then
                 m_leithy(i,j) = CS%c_K * (vert_vort_mag(i,j) / vort_xy_smooth(i,j))**2
               else
                 m_leithy(i,j) = CS%m_leithy_max(i,j)
@@ -1199,7 +1199,8 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
           enddo ; enddo
           call smooth_x9(CS, G, field_h=Ah_h(:,:,k))
           do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1
-            Ah(i,j) = sqrt(Ah_h(i,j,k))
+            Ah_h(i,j,k) = sqrt(Ah_h(i,j,k))
+            Ah(i,j)     = Ah_h(i,j,k)
           enddo ; enddo
         endif
 
