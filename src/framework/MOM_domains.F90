@@ -287,8 +287,14 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
                  "example of mask_table masks out 2 processors, (1,2) and (3,6), out of the 24 "//&
                  "in a 4x6 layout: \n 2\n 4,6\n 1,2\n 3,6\n", default="MOM_mask_table", &
                  layoutParam=.true.)
-  mask_table = trim(inputdir)//trim(mask_table)
-  mask_table_exists = file_exists(mask_table)
+
+  ! First, check the run directory for the mask_table input file.
+  mask_table_exists = file_exists(trim(mask_table))
+  ! If not found, check the input directory
+  if (.not. mask_table_exists) then
+    mask_table = trim(inputdir)//trim(mask_table)
+    mask_table_exists = file_exists(mask_table)
+  endif
 
   if (is_static) then
     layout(1) = NIPROC ; layout(2) = NJPROC
