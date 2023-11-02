@@ -20,10 +20,12 @@ use MOM_domain_infra,     only : MOM_thread_affinity_set, set_MOM_thread_affinit
 use MOM_domain_infra,     only : AGRID, BGRID_NE, CGRID_NE, SCALAR_PAIR
 use MOM_domain_infra,     only : CORNER, CENTER, NORTH_FACE, EAST_FACE
 use MOM_domain_infra,     only : To_East, To_West, To_North, To_South, To_All, Omit_Corners
-use MOM_error_handler,    only : MOM_error, MOM_mesg, NOTE, WARNING, FATAL
+use MOM_domain_infra,     only : compute_extent
+use MOM_error_handler,    only : MOM_error, MOM_mesg, NOTE, WARNING, FATAL, is_root_pe
 use MOM_file_parser,      only : get_param, log_param, log_version, param_file_type
-use MOM_io_infra,         only : file_exists
+use MOM_io_infra,         only : file_exists, read_field, open_ASCII_file, close_file, WRITEONLY_FILE
 use MOM_string_functions, only : slasher
+use MOM_cpu_clock,        only : cpu_clock_id, cpu_clock_begin, cpu_clock_end, CLOCK_ROUTINE
 
 implicit none ; private
 
@@ -112,6 +114,7 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
   logical :: nonblocking    ! If true, nonblocking halo updates will be used.
   logical :: thin_halos     ! If true, If true, optional arguments may be used to specify the
                             ! width of the halos that are updated with each call.
+  logical            :: auto_mask_table ! Runtime flag that turns on automatic mask table generator
   logical            :: mask_table_exists ! True if there is a mask table file
   character(len=128) :: inputdir   ! The directory in which to find the diag table
   character(len=200) :: mask_table ! The file name and later the full path to the diag table
@@ -122,6 +125,9 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
   character(len=8) :: char_xsiz, char_ysiz, char_niglobal, char_njglobal
   character(len=40) :: nihalo_nm, njhalo_nm, layout_nm, io_layout_nm, masktable_nm
   character(len=40) :: niproc_nm, njproc_nm
+  character(len=200) :: topo_config
+  integer :: id_clock_auto_mask
+  character(len=:), allocatable :: auto_mask_table_fname ! Auto-generated mask table file name
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
   character(len=40)  :: mdl ! This module's name.
@@ -277,16 +283,50 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
   call get_param(param_file, mdl, "INPUTDIR", inputdir, do_not_log=.true., default=".")
   inputdir = slasher(inputdir)
 
-  call get_param(param_file, mdl, trim(masktable_nm), mask_table, &
-                 "A text file to specify n_mask, layout and mask_list. This feature masks out "//&
-                 "processors that contain only land points. The first line of mask_table is the "//&
-                 "number of regions to be masked out. The second line is the layout of the "//&
-                 "model and must be consistent with the actual model layout. The following "//&
-                 "(n_mask) lines give the logical positions of the processors that are masked "//&
-                 "out. The mask_table can be created by tools like check_mask. The following "//&
-                 "example of mask_table masks out 2 processors, (1,2) and (3,6), out of the 24 "//&
-                 "in a 4x6 layout: \n 2\n 4,6\n 1,2\n 3,6\n", default="MOM_mask_table", &
-                 layoutParam=.true.)
+  call get_param(param_file, mdl, "TOPO_CONFIG", topo_config, do_not_log=.true., fail_if_missing=.true.)
+
+  auto_mask_table = .false.
+  if (.not. present(param_suffix) .and. .not. is_static .and. trim(topo_config) == 'file') then
+     call get_param(param_file, mdl, 'AUTO_MASKTABLE', auto_mask_table, &
+                 "Turn on automatic mask table generation to eliminate land blocks.", &
+                 default=.false., layoutParam=.true.)
+  endif
+
+  if (auto_mask_table) then
+    id_clock_auto_mask = cpu_clock_id('(Ocean gen_auto_mask_table)', grain=CLOCK_ROUTINE)
+    auto_mask_table_fname = "MOM_auto_mask_table"
+
+    ! Auto-generate a mask file and determine the layout
+    call cpu_clock_begin(id_clock_auto_mask)
+    if (is_root_PE()) then
+      call gen_auto_mask_table(n_global, PEs_used, param_file, inputdir, auto_mask_table_fname, layout)
+    endif
+    call broadcast(layout, length=2)
+    call cpu_clock_end(id_clock_auto_mask)
+
+    mask_table = auto_mask_table_fname
+    call log_param(param_file, mdl, trim(masktable_nm), mask_table, &
+                   "A text file to specify n_mask, layout and mask_list. This feature masks out "//&
+                   "processors that contain only land points. The first line of mask_table is the "//&
+                   "number of regions to be masked out. The second line is the layout of the "//&
+                   "model and must be consistent with the actual model layout. The following "//&
+                   "(n_mask) lines give the logical positions of the processors that are masked "//&
+                   "out. The mask_table can be created by tools like check_mask. The following "//&
+                   "example of mask_table masks out 2 processors, (1,2) and (3,6), out of the 24 "//&
+                   "in a 4x6 layout: \n 2\n 4,6\n 1,2\n 3,6\n", default="MOM_mask_table", &
+                   layoutParam=.true.)
+  else
+    call get_param(param_file, mdl, trim(masktable_nm), mask_table, &
+                   "A text file to specify n_mask, layout and mask_list. This feature masks out "//&
+                   "processors that contain only land points. The first line of mask_table is the "//&
+                   "number of regions to be masked out. The second line is the layout of the "//&
+                   "model and must be consistent with the actual model layout. The following "//&
+                   "(n_mask) lines give the logical positions of the processors that are masked "//&
+                   "out. The mask_table can be created by tools like check_mask. The following "//&
+                   "example of mask_table masks out 2 processors, (1,2) and (3,6), out of the 24 "//&
+                   "in a 4x6 layout: \n 2\n 4,6\n 1,2\n 3,6\n", default="MOM_mask_table", &
+                   layoutParam=.true.)
+  endif
 
   ! First, check the run directory for the mask_table input file.
   mask_table_exists = file_exists(trim(mask_table))
@@ -298,7 +338,7 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
 
   if (is_static) then
     layout(1) = NIPROC ; layout(2) = NJPROC
-  else
+  elseif (.not. auto_mask_table) then
     call get_param(param_file, mdl, trim(layout_nm), layout, &
                  "The processor layout to be used, or 0, 0 to automatically set the layout "//&
                  "based on the number of processors.", default=0, do_not_log=.true.)
@@ -392,5 +432,172 @@ subroutine MOM_define_layout(n_global, ndivs, layout)
 
   layout = (/ idiv, jdiv /)
 end subroutine MOM_define_layout
+
+!> Given a desired number of active npes, generate a layout and mask_table
+subroutine gen_auto_mask_table(n_global, npes, param_file, inputdir, filename, layout)
+  integer, dimension(2), intent(in)         :: n_global   !< The total number of gridpoints in 2 directions
+  integer,               intent(in)         :: npes       !< The desired number of active PEs. 
+  type(param_file_type), intent(in)         :: param_file !< A structure to parse for run-time parameters
+  character(len=128), intent(in)            :: inputdir   !< INPUTDIR parameter>
+  character(len=:), allocatable, intent(in) :: filename   !< Mask table file path (to be auto-generated.)
+  integer, dimension(2), intent(out)        :: layout     !< The generated layout of PEs (incl. masked blocks)
+  !local
+  real, dimension(n_global(1), n_global(2)) :: D        ! Bathymetric depth (to be read in from TOPO_FILE) 
+  integer, dimension(n_global(1), n_global(2)) :: mask  ! Cell masks (based on D and MINIMUM_DEPTH)
+  character(len=200) :: topo_filepath, topo_file        ! Strings for file/path
+  character(len=200) :: topo_varname                    ! Variable name in file
+  character(len=200) :: topo_config
+  character(len=40)  :: mdl = "gen_auto_mask_table"      ! This subroutine's name.
+  integer :: i, j, p
+  real :: Dmask      ! The depth for masking in the same units as D
+  real :: min_depth  ! The minimum ocean depth in the same units as D
+  real :: mask_depth ! The depth shallower than which to mask a point as land.
+  real :: glob_ocn_frac  ! ratio of ocean points to total number of points
+  real :: r_p        ! aspect ratio for division count p.
+  real, parameter :: r_extreme = 10.0 ! aspect ratio limit (>1) for a layout to be considered.
+  integer :: num_masked_blocks
+  integer, allocatable :: mask_table(:,:)
+
+  ! Read in params necessary for auto-masking
+  call get_param(param_file, mdl, "MINIMUM_DEPTH", min_depth, do_not_log=.true., units="m", default=0.0) 
+  call get_param(param_file, mdl, "MASKING_DEPTH", mask_depth, do_not_log=.true., units="m", default=-9999.0)
+  call get_param(param_file, mdl, "TOPO_CONFIG", topo_config, do_not_log=.true., fail_if_missing=.true.)
+  call get_param(param_file, mdl, "TOPO_FILE", topo_file, do_not_log=.true., default="topog.nc")
+  call get_param(param_file, mdl, "TOPO_VARNAME", topo_varname, do_not_log=.true., default="depth")
+  topo_filepath = trim(inputdir)//trim(topo_file)
+  
+  ! Sanity checks
+  if (.not. is_root_pe()) then
+    call MOM_error(FATAL, 'gen_auto_mask_table should only be called by the root PE.')
+  endif
+  if (trim(topo_config) /= "file") then
+    call MOM_error(FATAL, 'Auto mask table only works with TOPO_CONFIG="file"')
+  endif
+  if (.not.file_exists(topo_filepath)) then
+    call MOM_error(FATAL, " gen_auto_mask_table: Unable to open "//trim(topo_filepath))
+  endif
+
+  ! Read in bathymetric depth.
+  D(:,:) = -9.0e30  ! Initializing to a very large negative depth (tall mountains) everywhere.
+  call read_field(topo_filepath, trim(topo_varname), D, start=(/1, 1/), nread=n_global, no_domain=.true.)
+
+  ! Determine cell masks
+  Dmask = mask_depth
+  if (mask_depth == -9999.0) Dmask = min_depth
+  do i=1,n_global(1) ; do j=1,n_global(2)
+    if (D(i,j) <= Dmask) then
+      mask(i,j) = 0
+    else
+      mask(i,j) = 1
+    endif
+  enddo ; enddo
+
+  glob_ocn_frac = real(sum(mask)) / size(mask) 
+
+  ! Iteratively check for all possible division counts starting from the upper bound of npes/glob_ocn_frac,
+  ! which is over-optimistic for realistic domains, but may be satisfied with idealized domains. 
+  do p = ceiling(npes/glob_ocn_frac), npes, -1
+  
+    ! compute the layout for the current division count, p
+    call MOM_define_layout(n_global, p, layout)
+
+    ! don't bother checking this p if the aspect ratio is extreme
+    r_p = (real(n_global(1))/layout(1)) / (real(n_global(2))/layout(2))
+    if ( r_p * r_extreme < 1 .or. r_extreme < r_p ) cycle
+
+    ! Get the number of masked_blocks for this particular division count
+    call determine_land_blocks(mask, n_global, layout(1), layout(2), num_masked_blocks)
+
+    ! If we can eliminate enough blocks to reach the target npes, adopt
+    ! this p (and the associated layout) and terminate the iteration.
+    if (p-num_masked_blocks <= npes) then
+      call MOM_error(NOTE, "Found the optimum layout for auto-masking. Terminating iteration...")
+      exit
+    endif
+  enddo
+
+  if (num_masked_blocks == 0) then
+    call MOM_error(FATAL, "Couldn't auto-eliminate any land blocks. Try to increase the number "//&
+        "of MOM6 PEs or set AUTO_MASKTABLE to False.")
+  endif
+
+  ! Call determine_land_blocks once again, this time to retrieve the mask_table.
+  allocate(mask_table(num_masked_blocks,2))
+  call determine_land_blocks(mask, n_global, layout(1), layout(2), num_masked_blocks, mask_table)
+  call write_auto_mask_file(mask_table, layout, npes, filename)
+  deallocate(mask_table)
+
+end subroutine gen_auto_mask_table
+
+! Given number of domain divisions, compute the max number of land blocks that can be eliminated,
+! and return the resulting mask table if requested.
+subroutine determine_land_blocks(mask, n_global, idiv, jdiv, num_masked_blocks, mask_table)
+  integer, dimension(:,:), intent(in)   :: mask     !< cell masks based on depth and MINIMUM_DEPTH
+  integer, dimension(2), intent(in)     :: n_global !< The total number of gridpoints in 2 directions
+  integer, intent(in)                   :: idiv     !< number of divisions along x axis
+  integer, intent(in)                   :: jdiv     !< number of divisions along y axis
+  integer, intent(out)                  :: num_masked_blocks
+  integer, intent(out), optional        :: mask_table(:,:)
+  ! integer
+  integer, dimension(idiv) :: ibegin   !< The starting index of each division along x axis
+  integer, dimension(idiv) :: iend     !< The ending index of each division along x axis
+  integer, dimension(jdiv) :: jbegin   !< The starting index of each division along y axis
+  integer, dimension(jdiv) :: jend     !< The ending index of each division along y axis
+  integer, parameter :: ibuf=2, jbuf=2
+  integer :: i, j, ib, ie, jb,je
+
+  call compute_extent(1, n_global(1), idiv, ibegin, iend)
+  call compute_extent(1, n_global(2), jdiv, jbegin, jend)
+
+  num_masked_blocks = 0
+
+  do i=1,idiv
+    ib = max(ibegin(i)-ibuf, 1)
+    ie = min(iend(i)+ibuf, n_global(1))
+    do j=1,jdiv
+      jb = max(jbegin(j)-jbuf, 1)
+      je = min(jend(j)+jbuf, n_global(2))
+
+      if (any(mask(ib:ie,jb:je)==1)) cycle
+
+      num_masked_blocks = num_masked_blocks + 1
+
+      if (present(mask_table)) then
+        if ( num_masked_blocks > size(mask_table, dim=1)) then
+          call MOM_error(FATAL, "The mask_table argument passed to determine_land_blocks() has insufficient size.")
+        endif
+
+        mask_table(num_masked_blocks,1) = i
+        mask_table(num_masked_blocks,2) = j
+      endif
+    enddo
+  enddo
+
+end subroutine determine_land_blocks
+
+!< Write out the auto-generated mask information to a file in the run directory.
+subroutine write_auto_mask_file(mask_table, layout, npes, filename)
+  integer, intent(in) :: mask_table(:,:)
+  integer, dimension(2), intent(in) :: layout
+  integer, intent(in) :: npes
+  character(len=:), allocatable, intent(in) :: filename
+  ! local
+  integer :: file_ascii= -1  !< The unit number of the auto-generated mask_file file.
+  integer :: true_num_masked_blocks
+  integer :: p
+
+  ! Eliminate only enough blocks to ensure that the number of active blocks precisely matches the target npes.
+  true_num_masked_blocks = layout(1) * layout(2) - npes
+
+  call open_ASCII_file(file_ascii, trim(filename), action=WRITEONLY_FILE)
+  write(file_ascii, '(I0)'), true_num_masked_blocks
+  write(file_ascii, '(I0,",",I0)'), layout(1), layout(2)
+  do p = 1, true_num_masked_blocks
+    write(file_ascii, '(I0,",",I0)'), mask_table(p,1), mask_table(p,2)
+  enddo
+  call close_file(file_ascii)
+
+  call MOM_error(NOTE, "Wrote an auto-generated mask table at "//trim(filename)//".")
+end subroutine write_auto_mask_file
 
 end module MOM_domains
