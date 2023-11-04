@@ -971,17 +971,17 @@ subroutine InitializeRealize(gcomp, importState, exportState, clock, rc)
     if (associated(ocean_grid%Domain%maskmap)) then
       njproc = size(ocean_grid%Domain%maskmap, 1)
       niproc = size(ocean_grid%Domain%maskmap, 2)
-      
+
       do ip = 1, niproc
         do jp = 1, njproc
           if (.not. ocean_grid%Domain%maskmap(jp,ip)) then
-            num_elim_blocks = num_elim_blocks+1 
+            num_elim_blocks = num_elim_blocks+1
           endif
         enddo
       enddo
     endif
 
-    ! Apply land block elimination to ESMF gindex 
+    ! Apply land block elimination to ESMF gindex
     ! (Here we assume that each processor gets assigned a single tile. If multi-tile implementation is to be added
     ! in MOM6 NUOPC cap in the future, below code must be updated accordingly.)
     if (num_elim_blocks>0) then
@@ -1009,7 +1009,7 @@ subroutine InitializeRealize(gcomp, importState, exportState, clock, rc)
 
       if (pe_here() == pe(npes)) then
         ! assign all remaining cells to the last PE.
-        num_elim_cells_remaining = num_elim_cells_global - num_elim_cells_local * npes 
+        num_elim_cells_remaining = num_elim_cells_global - num_elim_cells_local * npes
         allocate(gindex_elim(num_elim_cells_local+num_elim_cells_remaining))
       else
         allocate(gindex_elim(num_elim_cells_local))
@@ -1035,7 +1035,7 @@ subroutine InitializeRealize(gcomp, importState, exportState, clock, rc)
       do k = 1, lsize
         gindex(k) = gindex_ocn(k)
       enddo
-      do k = 1, num_elim_cells_local + num_elim_cells_remaining 
+      do k = 1, num_elim_cells_local + num_elim_cells_remaining
         gindex(k+lsize) = gindex_elim(k)
       enddo
 
