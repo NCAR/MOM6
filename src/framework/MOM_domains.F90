@@ -459,7 +459,7 @@ subroutine gen_auto_mask_table(n_global, reentrant, tripolar_N, npes, param_file
   real :: r_p            ! aspect ratio for division count p.
   integer :: nx, ny      ! global domain sizes
   integer, parameter :: ibuf=2, jbuf=2
-  real, parameter :: r_extreme = 10.0 ! aspect ratio limit (>1) for a layout to be considered.
+  real, parameter :: r_extreme = 4.0 ! aspect ratio limit (>1) for a layout to be considered.
   integer :: num_masked_blocks
   integer, allocatable :: mask_table(:,:)
 
@@ -520,7 +520,16 @@ subroutine gen_auto_mask_table(n_global, reentrant, tripolar_N, npes, param_file
         mask(i, jbuf+ny+j) = mask(nx+2*ibuf+1-i, jbuf+ny+1-j)
       enddo
     enddo
-    !mask(:, jbuf+ny) = 1 ! TODO - REMOVE
+  endif
+
+  ! Tripolar Stitch Fix: In cases where masking is asymmetrical across the tripolar stitch, there's a possibility
+  ! that certain unmasked blocks won't be able to obtain grid metrics from the halo points. This occurs when the
+  ! neighboring block on the opposite side of the tripolar stitch is masked. As a consequence, certain metrics like
+  ! dxT and dyT may be calculated through extrapolation (refer to extrapolate_metric), potentially leading to the
+  ! generation of non-positive values. This can result in divide-by-zero errors elsewhere, e.g., in MOM_hor_visc.F90.
+  ! Currently, the safest and most general solution is to prohibit masking along the tripolar stitch:
+  if (tripolar_N) then
+    mask(:, jbuf+ny) = 1
   endif
 
   glob_ocn_frac = real(sum(mask(1+ibuf:nx+ibuf, 1+jbuf:ny+jbuf))) / (nx * ny)
