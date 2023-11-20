@@ -115,6 +115,7 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
   logical :: thin_halos     ! If true, If true, optional arguments may be used to specify the
                             ! width of the halos that are updated with each call.
   logical            :: auto_mask_table ! Runtime flag that turns on automatic mask table generator
+  integer            :: auto_io_layout_fac ! Used to compute IO layout when auto_mask_table is True.
   logical            :: mask_table_exists ! True if there is a mask table file
   character(len=128) :: inputdir   ! The directory in which to find the diag table
   character(len=200) :: mask_table ! The file name and later the full path to the diag table
@@ -398,9 +399,28 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
   ! Set up the I/O layout, it will be checked later that it uses an even multiple of the number of
   ! PEs in each direction.
   io_layout(:) = (/ 1, 1 /)
-  call get_param(param_file, mdl, trim(io_layout_nm), io_layout, &
-                 "The processor layout to be used, or 0,0 to automatically set the io_layout "//&
-                 "to be the same as the layout.", default=1, layoutParam=.true.)
+
+  ! Compute a valid IO layout if auto_mask_table is on. Otherwise, read in IO_LAYOUT parameter,
+  if (auto_mask_table) then
+    call get_param(param_file, mdl, "AUTO_IO_LAYOUT_FAC", auto_io_layout_fac, &
+            "When AUTO_MASKTABLE is enabled, io layout is calculated by performing integer "//&
+            "division of the runtime-determined domain layout with this factor. If the factor "//&
+            "is set to 0 (default), the io layout is set to 1,1.", &
+            default=0, layoutParam=.true.)
+    if (auto_io_layout_fac>0) then
+      io_layout(1) = max(layout(1)/auto_io_layout_fac, 1)
+      io_layout(2) = max(layout(2)/auto_io_layout_fac, 1)
+    elseif (auto_io_layout_fac<0) then
+      call MOM_error(FATAL, 'AUTO_IO_LAYOUT_FAC must be a nonnegative integer.')
+    endif
+    call log_param(param_file, mdl, trim(io_layout_nm), io_layout, &
+                   "The processor layout to be used, or 0,0 to automatically set the io_layout "//&
+                   "to be the same as the layout.", layoutParam=.true.)
+  else
+    call get_param(param_file, mdl, trim(io_layout_nm), io_layout, &
+                   "The processor layout to be used, or 0,0 to automatically set the io_layout "//&
+                   "to be the same as the layout.", default=1, layoutParam=.true.)
+  endif
 
   call create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, layout, &
                          io_layout=io_layout, domain_name=domain_name, mask_table=mask_table, &
