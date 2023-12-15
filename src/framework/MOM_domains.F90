@@ -26,6 +26,7 @@ use MOM_file_parser,      only : get_param, log_param, log_version, param_file_t
 use MOM_io_infra,         only : file_exists, read_field, open_ASCII_file, close_file, WRITEONLY_FILE
 use MOM_string_functions, only : slasher
 use MOM_cpu_clock,        only : cpu_clock_id, cpu_clock_begin, cpu_clock_end, CLOCK_ROUTINE
+use MOM_unit_scaling,     only : unit_scale_type
 
 implicit none ; private
 
@@ -62,11 +63,12 @@ contains
 !> MOM_domains_init initializes a MOM_domain_type variable, based on the information
 !! read in from a param_file_type, and optionally returns data describing various
 !! properties of the domain type.
-subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
+subroutine MOM_domains_init(MOM_dom, US, param_file, symmetric, static_memory, &
                             NIHALO, NJHALO, NIGLOBAL, NJGLOBAL, NIPROC, NJPROC, &
                             min_halo, domain_name, include_name, param_suffix)
   type(MOM_domain_type),           pointer       :: MOM_dom      !< A pointer to the MOM_domain_type
                                                                  !! being defined here.
+  type(unit_scale_type),           pointer       :: US           !< A dimensional unit scaling type
   type(param_file_type),           intent(in)    :: param_file   !< A structure to parse for
                                                                  !! run-time parameters
   logical, optional,               intent(in)    :: symmetric    !< If present, this specifies
@@ -100,6 +102,7 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
 
   ! Local variables
   integer, dimension(2) :: layout    ! The number of logical processors in the i- and j- directions
+  integer, dimension(2) :: auto_layout ! The layout determined by the auto masking routine
   integer, dimension(2) :: io_layout ! The layout of logical processors for input and output
   !$ integer :: ocean_nthreads       ! Number of openMP threads
   !$ logical :: ocean_omp_hyper_thread ! If true use openMP hyper-threads
@@ -128,6 +131,7 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
   character(len=40) :: niproc_nm, njproc_nm
   character(len=200) :: topo_config
   integer :: id_clock_auto_mask
+  character(len=:), allocatable :: masktable_desc
   character(len=:), allocatable :: auto_mask_table_fname ! Auto-generated mask table file name
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
@@ -293,6 +297,15 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
                  default=.false., layoutParam=.true.)
   endif
 
+  masktable_desc = "A text file to specify n_mask, layout and mask_list. This feature masks out "//&
+      "processors that contain only land points. The first line of mask_table is the "//&
+      "number of regions to be masked out. The second line is the layout of the "//&
+      "model and must be consistent with the actual model layout. The following "//&
+      "(n_mask) lines give the logical positions of the processors that are masked "//&
+      "out. The mask_table can be created by tools like check_mask. The following "//&
+      "example of mask_table masks out 2 processors, (1,2) and (3,6), out of the 24 "//&
+      "in a 4x6 layout: \n 2\n 4,6\n 1,2\n 3,6\n"
+
   if (auto_mask_table) then
     id_clock_auto_mask = cpu_clock_id('(Ocean gen_auto_mask_table)', grain=CLOCK_ROUTINE)
     auto_mask_table_fname = "MOM_auto_mask_table"
@@ -301,33 +314,17 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
     call cpu_clock_begin(id_clock_auto_mask)
     if (is_root_PE()) then
       call gen_auto_mask_table(n_global, reentrant, tripolar_N, PEs_used, param_file, inputdir, &
-                               auto_mask_table_fname, layout)
+                               auto_mask_table_fname, US, auto_layout)
     endif
-    call broadcast(layout, length=2)
+    call broadcast(auto_layout, length=2)
     call cpu_clock_end(id_clock_auto_mask)
 
     mask_table = auto_mask_table_fname
-    call log_param(param_file, mdl, trim(masktable_nm), mask_table, &
-                   "A text file to specify n_mask, layout and mask_list. This feature masks out "//&
-                   "processors that contain only land points. The first line of mask_table is the "//&
-                   "number of regions to be masked out. The second line is the layout of the "//&
-                   "model and must be consistent with the actual model layout. The following "//&
-                   "(n_mask) lines give the logical positions of the processors that are masked "//&
-                   "out. The mask_table can be created by tools like check_mask. The following "//&
-                   "example of mask_table masks out 2 processors, (1,2) and (3,6), out of the 24 "//&
-                   "in a 4x6 layout: \n 2\n 4,6\n 1,2\n 3,6\n", default="MOM_mask_table", &
-                   layoutParam=.true.)
+    call log_param(param_file, mdl, trim(masktable_nm), mask_table, masktable_desc, &
+                   default="MOM_mask_table", layoutParam=.true.)
   else
-    call get_param(param_file, mdl, trim(masktable_nm), mask_table, &
-                   "A text file to specify n_mask, layout and mask_list. This feature masks out "//&
-                   "processors that contain only land points. The first line of mask_table is the "//&
-                   "number of regions to be masked out. The second line is the layout of the "//&
-                   "model and must be consistent with the actual model layout. The following "//&
-                   "(n_mask) lines give the logical positions of the processors that are masked "//&
-                   "out. The mask_table can be created by tools like check_mask. The following "//&
-                   "example of mask_table masks out 2 processors, (1,2) and (3,6), out of the 24 "//&
-                   "in a 4x6 layout: \n 2\n 4,6\n 1,2\n 3,6\n", default="MOM_mask_table", &
-                   layoutParam=.true.)
+    call get_param(param_file, mdl, trim(masktable_nm), mask_table, masktable_desc, &
+                   default="MOM_mask_table", layoutParam=.true.)
   endif
 
   ! First, check the run directory for the mask_table input file.
@@ -340,7 +337,7 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
 
   if (is_static) then
     layout(1) = NIPROC ; layout(2) = NJPROC
-  elseif (.not. auto_mask_table) then
+  else
     call get_param(param_file, mdl, trim(layout_nm), layout, &
                  "The processor layout to be used, or 0, 0 to automatically set the layout "//&
                  "based on the number of processors.", default=0, do_not_log=.true.)
@@ -363,6 +360,16 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
       layout(2) = njp_parsed
       call MOM_mesg(trim(njproc_nm)//" used to set "//trim(layout_nm)//" in dynamic mode.  "//&
                     "Shift to using "//trim(layout_nm)//" instead.")
+    endif
+
+    if (auto_mask_table) then
+        if (layout(1) /= 0 .and. layout(1) /= auto_layout(1)) then
+          call MOM_error(FATAL, "Cannot set LAYOUT or NIPROC when AUTO_MASKTABLE is enabled.")
+        endif
+        if (layout(2) /= 0 .and. layout(2) /= auto_layout(2)) then
+          call MOM_error(FATAL, "Cannot set LAYOUT or NJPROC when AUTO_MASKTABLE is enabled.")
+        endif
+        layout(:) = auto_layout(:)
     endif
 
     if ( (layout(1) == 0) .and. (layout(2) == 0) ) &
@@ -455,26 +462,27 @@ subroutine MOM_define_layout(n_global, ndivs, layout)
 end subroutine MOM_define_layout
 
 !> Given a desired number of active npes, generate a layout and mask_table
-subroutine gen_auto_mask_table(n_global, reentrant, tripolar_N, npes, param_file, inputdir, filename, layout)
+subroutine gen_auto_mask_table(n_global, reentrant, tripolar_N, npes, param_file, inputdir, filename, US, layout)
   integer, dimension(2), intent(in)         :: n_global   !< The total number of gridpoints in 2 directions
   logical, dimension(2), intent(in)         :: reentrant  !< True if the x- and y- directions are periodic.
   logical                                   :: tripolar_N !< A flag indicating whether there is n. tripolar connectivity
   integer,               intent(in)         :: npes       !< The desired number of active PEs.
   type(param_file_type), intent(in)         :: param_file !< A structure to parse for run-time parameters
-  character(len=128), intent(in)            :: inputdir   !< INPUTDIR parameter>
+  character(len=128), intent(in)            :: inputdir   !< INPUTDIR parameter
   character(len=:), allocatable, intent(in) :: filename   !< Mask table file path (to be auto-generated.)
+  type(unit_scale_type), pointer            :: US !< A dimensional unit scaling type
   integer, dimension(2), intent(out)        :: layout     !< The generated layout of PEs (incl. masked blocks)
   !local
-  real, dimension(n_global(1), n_global(2)) :: D        ! Bathymetric depth (to be read in from TOPO_FILE)
+  real, dimension(n_global(1), n_global(2)) :: D        ! Bathymetric depth (to be read in from TOPO_FILE) [Z ~> m]
   integer, dimension(:,:), allocatable :: mask          ! Cell masks (based on D and MINIMUM_DEPTH)
   character(len=200) :: topo_filepath, topo_file        ! Strings for file/path
   character(len=200) :: topo_varname                    ! Variable name in file
   character(len=200) :: topo_config
   character(len=40)  :: mdl = "gen_auto_mask_table"      ! This subroutine's name.
   integer :: i, j, p
-  real :: Dmask          ! The depth for masking in the same units as D
-  real :: min_depth      ! The minimum ocean depth in the same units as D
-  real :: mask_depth     ! The depth shallower than which to mask a point as land.
+  real :: Dmask          ! The depth for masking in the same units as D             [Z ~> m]
+  real :: min_depth      ! The minimum ocean depth in the same units as D           [Z ~> m]
+  real :: mask_depth     ! The depth shallower than which to mask a point as land.  [Z ~> m]
   real :: glob_ocn_frac  ! ratio of ocean points to total number of points
   real :: r_p            ! aspect ratio for division count p.
   integer :: nx, ny      ! global domain sizes
@@ -506,10 +514,11 @@ subroutine gen_auto_mask_table(n_global, reentrant, tripolar_N, npes, param_file
   ny = n_global(2)
 
   ! Read in bathymetric depth.
-  D(:,:) = -9.0e30  ! Initializing to a very large negative depth (tall mountains) everywhere.
-  call read_field(topo_filepath, trim(topo_varname), D, start=(/1, 1/), nread=n_global, no_domain=.true.)
+  D(:,:) = -9.0e30 * US%m_to_Z ! Initializing to a very large negative depth (tall mountains) everywhere.
+  call read_field(topo_filepath, trim(topo_varname), D, start=(/1, 1/), nread=n_global, no_domain=.true., &
+      scale=US%m_to_Z)
 
-  allocate( mask(nx+2*ibuf, ny+2*jbuf), source=0)
+  allocate(mask(nx+2*ibuf, ny+2*jbuf), source=0)
 
   ! Determine cell masks
   Dmask = mask_depth
@@ -661,8 +670,6 @@ subroutine write_auto_mask_file(mask_table, layout, npes, filename)
     write(file_ascii, '(I0,",",I0)'), mask_table(p,1), mask_table(p,2)
   enddo
   call close_file(file_ascii)
-
-  call MOM_error(NOTE, "Wrote an auto-generated mask table at "//trim(filename)//".")
 end subroutine write_auto_mask_file
 
 end module MOM_domains
