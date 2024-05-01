@@ -97,7 +97,7 @@ type, public :: ALE_CS ; private
                             !! values result in the use of more robust and accurate forms of
                             !! mathematically equivalent expressions.
 
-  logical :: conserve_ke    !< Apply a correction to the baroclinic velocity after remapping to 
+  logical :: conserve_ke    !< Apply a correction to the baroclinic velocity after remapping to
                             !! conserve KE.
 
   logical :: debug   !< If true, write verbose checksums for debugging purposes.
@@ -1115,7 +1115,7 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
 
   ! --- Remap u profiles from the source vertical grid onto the new target grid.
 
-  !$OMP parallel do default(shared) private(h1,h2,dz,u_src,h_mask_vel,u_tgt, &
+  !$OMP parallel do default(shared) private(h1,h2,u_src,h_mask_vel,u_tgt, &
   !$OMP                                     u_bt,ke_c_src,ke_c_tgt,rescale_coef, &
   !$OMP                                     u2h_tot,v2h_tot)
   do j=G%jsc,G%jec ; do I=G%IscB,G%IecB ; if (G%mask2dCu(I,j)>0.) then
@@ -1136,13 +1136,6 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
     call remapping_core_h(CS%vel_remapCS, nz, h1, u_src, nz, h2, u_tgt, &
                           h_neglect, h_neglect_edge)
 
-    if (CS%id_remap_delta_integ_u2>0) then
-      do k=1,nz
-        u2h_tot = u2h_tot + h2(k) * (u_tgt(k)**2)
-      enddo
-      du2h_tot(I,j) = GV%Rho0 * u2h_tot / dt
-    endif
-
     if (variance_option .and. CS%conserve_ke) then
     ! Conserve ke_u by correcting baroclinic component.
     ! Assumes total depth doesn't change during remap, and
@@ -1161,10 +1154,17 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
         ke_c_tgt = ke_c_tgt + h2(k) * (u_tgt(k) - u_bt)**2
       enddo
       ! Next rescale baroclinic component on target grid to conserve ke
-      rescale_coef = sqrt(ke_c_src / (ke_c_tgt + 1.E-19))
+      rescale_coef = min(1.25, sqrt(ke_c_src / (ke_c_tgt + 1.E-19)))
       do k=1,nz
         u_tgt(k) = u_bt + rescale_coef * (u_tgt(k) - u_bt)
       enddo
+    endif
+
+    if (CS%id_remap_delta_integ_u2>0) then
+      do k=1,nz
+        u2h_tot = u2h_tot + h2(k) * (u_tgt(k)**2)
+      enddo
+      du2h_tot(I,j) = GV%Rho0 * u2h_tot / dt
     endif
 
     if ((CS%BBL_h_vel_mask > 0.0) .and. (CS%h_vel_mask > 0.0)) &
@@ -1183,7 +1183,7 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
 
   ! --- Remap v profiles from the source vertical grid onto the new target grid.
 
-  !$OMP parallel do default(shared) private(h1,h2,v_src,dz,h_mask_vel,v_tgt, &
+  !$OMP parallel do default(shared) private(h1,h2,v_src,h_mask_vel,v_tgt, &
   !$OMP                                     v_bt,ke_c_src,ke_c_tgt,rescale_coef, &
   !$OMP                                     u2h_tot,v2h_tot)
   do J=G%JscB,G%JecB ; do i=G%isc,G%iec ; if (G%mask2dCv(i,J)>0.) then
@@ -1204,13 +1204,6 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
     call remapping_core_h(CS%vel_remapCS, nz, h1, v_src, nz, h2, v_tgt, &
                           h_neglect, h_neglect_edge)
 
-    if (CS%id_remap_delta_integ_v2>0) then
-      do k=1,nz
-        v2h_tot = v2h_tot + h2(k) * (v_tgt(k)**2)
-      enddo
-      dv2h_tot(I,j) = GV%Rho0 * GV%H_to_m * v2h_tot / dt
-    endif
-              
     if (variance_option .and. CS%conserve_ke) then
     ! Conserve ke_v by correcting baroclinic component.
     ! Assumes total depth doesn't change during remap, and
@@ -1229,10 +1222,17 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
         ke_c_tgt = ke_c_tgt + h2(k) * (v_tgt(k) - v_bt)**2
       enddo
       ! Next rescale baroclinic component on target grid to conserve ke
-      rescale_coef = sqrt(ke_c_src / (ke_c_tgt + 1.E-19))
+      rescale_coef = min(1.25, sqrt(ke_c_src / (ke_c_tgt + 1.E-19)))
       do k=1,nz
         v_tgt(k) = v_bt + rescale_coef * (v_tgt(k) - v_bt)
       enddo
+    endif
+
+    if (CS%id_remap_delta_integ_v2>0) then
+      do k=1,nz
+        v2h_tot = v2h_tot + h2(k) * (v_tgt(k)**2)
+      enddo
+      dv2h_tot(I,j) = GV%Rho0 * GV%H_to_m * v2h_tot / dt
     endif
 
     if ((CS%BBL_h_vel_mask > 0.0) .and. (CS%h_vel_mask > 0.0)) then
