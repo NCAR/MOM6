@@ -1232,7 +1232,7 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
       do k=1,nz
         v2h_tot = v2h_tot + h2(k) * (v_tgt(k)**2)
       enddo
-      dv2h_tot(I,j) = GV%Rho0 * GV%H_to_m * v2h_tot / dt
+      dv2h_tot(I,j) = GV%Rho0 * v2h_tot / dt
     endif
 
     if ((CS%BBL_h_vel_mask > 0.0) .and. (CS%h_vel_mask > 0.0)) then
