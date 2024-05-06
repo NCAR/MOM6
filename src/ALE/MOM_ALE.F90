@@ -361,15 +361,13 @@ subroutine ALE_register_diags(Time, G, GV, US, diag, CS)
   CS%id_remap_delta_integ_u2 = register_diag_field('ocean_model', 'ale_u2', diag%axesCu1, Time, &
       'Rate of change in half rho0 times depth integral of squared zonal'//&
       ' velocity by remapping. If REMAP_VEL_CONSERVE_KE is .true. then '//&
-      ' this measures the change before the KE-conserving correction is'//&
-      ' applied.', 'W m-2', conversion=US%R_to_kg_m3*GV%H_to_m*US%L_T_to_m_s**2 &
-      * US%s_to_T)
+      ' this measures the change before the KE-conserving correction is applied.', &
+      'W m-2', conversion=US%RZ3_T3_to_W_m2 * US%L_to_Z**2)
   CS%id_remap_delta_integ_v2 = register_diag_field('ocean_model', 'ale_v2', diag%axesCv1, Time, &
       'Rate of change in half rho0 times depth integral of squared meridional'//&
       ' velocity by remapping. If REMAP_VEL_CONSERVE_KE is .true. then '//&
-      ' this measures the change before the KE-conserving correction is'//&
-      ' applied.', 'W m-2', conversion=US%R_to_kg_m3*GV%H_to_m*US%L_T_to_m_s**2 &
-      * US%s_to_T)
+      ' this measures the change before the KE-conserving correction is applied.', &
+      'W m-2', conversion=US%RZ3_T3_to_W_m2 * US%L_to_Z**2)
 
 end subroutine ALE_register_diags
 
@@ -1079,12 +1077,13 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
   real :: h_neglect, h_neglect_edge  ! Tiny thicknesses used in remapping [H ~> m or kg m-2]
   real :: rescale_coef  ! Factor that scales the baroclinic velocity to conserve ke [nondim]
   real :: u_bt, v_bt    ! Depth-averaged velocity components [L T-1 ~> m s-1]
-  real :: ke_c_src, ke_c_tgt ! \int [u_c or v_c]^2 dz on src and tgt grids [H L T-1 ~> m2 s-1]
+  real :: ke_c_src, ke_c_tgt ! \int [u_c or v_c]^2 dz on src and tgt grids [H L2 T-2 ~> m3 s-2]
   real, dimension(SZIB_(G),SZJ_(G)) :: du2h_tot  ! The rate of change of vertically integrated
                                                  ! 0.5 * rho0 *  u**2 [R Z L2 T-3 ~> W m-2]
   real, dimension(SZI_(G),SZJB_(G)) :: dv2h_tot  ! The rate of change of vertically integrated
                                                  ! 0.5 * rho0 *  v**2 [R Z L2 T-3 ~> W m-2]
   real :: u2h_tot, v2h_tot   ! The vertically integrated u**2 and v**2 [H L2 T-2 ~> m3 s-2 or kg s-2]
+  real :: I_dt               ! 1 / dt [T-1 ~> s-1]
   logical :: variance_option ! Contains the value of allow_preserve_variance when present, else false
   logical :: show_call_tree
   integer :: i, j, k, nz
@@ -1096,6 +1095,7 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
   ! Setup related to KE conservation
   variance_option = .false.
   if (present(allow_preserve_variance)) variance_option=allow_preserve_variance
+  if (present(dt)) I_dt = 1.0 / dt
 
   if (CS%id_remap_delta_integ_u2>0) du2h_tot(:,:) = 0.
   if (CS%id_remap_delta_integ_v2>0) dv2h_tot(:,:) = 0.
@@ -1164,7 +1164,7 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
       do k=1,nz
         u2h_tot = u2h_tot + h2(k) * (u_tgt(k)**2)
       enddo
-      du2h_tot(I,j) = GV%Rho0 * u2h_tot / dt
+      du2h_tot(I,j) = GV%H_to_RZ * u2h_tot * I_dt
     endif
 
     if ((CS%BBL_h_vel_mask > 0.0) .and. (CS%h_vel_mask > 0.0)) &
@@ -1232,7 +1232,7 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
       do k=1,nz
         v2h_tot = v2h_tot + h2(k) * (v_tgt(k)**2)
       enddo
-      dv2h_tot(I,j) = GV%Rho0 * v2h_tot / dt
+      dv2h_tot(I,j) = GV%H_to_RZ * v2h_tot * I_dt
     endif
 
     if ((CS%BBL_h_vel_mask > 0.0) .and. (CS%h_vel_mask > 0.0)) then
