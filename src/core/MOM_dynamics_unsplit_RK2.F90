@@ -86,6 +86,7 @@ use MOM_open_boundary, only : radiation_open_bdry_conds
 use MOM_open_boundary, only : open_boundary_zero_normal_flow
 use MOM_PressureForce, only : PressureForce, PressureForce_init, PressureForce_CS
 use MOM_set_visc, only : set_viscous_ML, set_visc_CS
+use MOM_self_attr_load, only : SAL_init, SAL_end, SAL_CS
 use MOM_stochastics,   only : stochastic_CS
 use MOM_tidal_forcing, only : tidal_forcing_init, tidal_forcing_end, tidal_forcing_CS
 use MOM_unit_scaling, only : unit_scale_type
