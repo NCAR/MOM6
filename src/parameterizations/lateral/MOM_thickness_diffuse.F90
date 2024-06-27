@@ -778,7 +778,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
   real, allocatable :: skeb_gm_work(:,:)                ! Temp array to hold GM work for SKEB
   real, allocatable :: skeb_ebt_norm2(:,:)              ! Used to normalize EBT for SKEB
   real :: h_tot ! total depth [H ~> m]
-  
+
   logical :: present_slope_x, present_slope_y, calc_derivatives
   integer, dimension(2) :: EOSdom_u  ! The shifted I-computational domain to use for equation of
                                      ! state calculations at u-points.
