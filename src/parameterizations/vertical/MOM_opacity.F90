@@ -1061,7 +1061,7 @@ subroutine opacity_init(Time, G, GV, US, param_file, diag, CS, optics)
                  "valid options include:\n"//&
                  " \t\t  MANIZZA_05 - Use Manizza et al., GRL, 2005. \n"//&
                  " \t\t  MOREL_88 - Use Morel, JGR, 1988. \n"//&
-                 " \t\t  OHLMANN_03 - Use Ohlman, J Clim, 2003.", &
+                 " \t\t  OHLMANN_03 - Use Ohlmann, J Clim, 2003.", &
                  default=MANIZZA_05_STRING)
     if (len_trim(tmpstr) > 0) then
       tmpstr = uppercase(tmpstr)
