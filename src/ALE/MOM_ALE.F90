@@ -362,12 +362,12 @@ subroutine ALE_register_diags(Time, G, GV, US, diag, CS)
       'Rate of change in half rho0 times depth integral of squared zonal'//&
       ' velocity by remapping. If REMAP_VEL_CONSERVE_KE is .true. then '//&
       ' this measures the change before the KE-conserving correction is applied.', &
-      'W m-2', conversion=US%RZ3_T3_to_W_m2 * US%L_to_Z**2)
+      'W m-2', conversion=GV%H_to_kg_m2 * US%L_T_to_m_s**2 * US%s_to_T)
   CS%id_remap_delta_integ_v2 = register_diag_field('ocean_model', 'ale_v2', diag%axesCv1, Time, &
       'Rate of change in half rho0 times depth integral of squared meridional'//&
       ' velocity by remapping. If REMAP_VEL_CONSERVE_KE is .true. then '//&
       ' this measures the change before the KE-conserving correction is applied.', &
-      'W m-2', conversion=US%RZ3_T3_to_W_m2 * US%L_to_Z**2)
+      'W m-2', conversion=GV%H_to_kg_m2 * US%L_T_to_m_s**2 * US%s_to_T)
 
 end subroutine ALE_register_diags
 
@@ -1154,7 +1154,11 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
         ke_c_tgt = ke_c_tgt + h2(k) * (u_tgt(k) - u_bt)**2
       enddo
       ! Next rescale baroclinic component on target grid to conserve ke
-      rescale_coef = min(1.25, sqrt(ke_c_src / (ke_c_tgt + 1.E-19)))
+      if (ke_c_src < 1.5625 * ke_c_tgt) then
+        rescale_coef = sqrt(ke_c_src / ke_c_tgt)
+      else
+        rescale_coef = 1.25
+      endif
       do k=1,nz
         u_tgt(k) = u_bt + rescale_coef * (u_tgt(k) - u_bt)
       enddo
@@ -1222,7 +1226,11 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
         ke_c_tgt = ke_c_tgt + h2(k) * (v_tgt(k) - v_bt)**2
       enddo
       ! Next rescale baroclinic component on target grid to conserve ke
-      rescale_coef = min(1.25, sqrt(ke_c_src / (ke_c_tgt + 1.E-19)))
+      if (ke_c_src < 1.5625 * ke_c_tgt) then
+        rescale_coef = sqrt(ke_c_src / ke_c_tgt)
+      else
+        rescale_coef = 1.25
+      endif
       do k=1,nz
         v_tgt(k) = v_bt + rescale_coef * (v_tgt(k) - v_bt)
       enddo
