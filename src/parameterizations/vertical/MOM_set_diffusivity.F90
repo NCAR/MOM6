@@ -548,7 +548,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
     ! Copy the 2-d slices into the 3-d array that is exported.
     do K=1,nz+1 ; do i=is,ie
-      Kd_int(i,j,K) = Kd_int_2d(i,K)
+      Kd_int(i,j,K) = Kd_int(i,j,K) + Kd_int_2d(i,K)
     enddo ; enddo
 
     if (CS%limit_dissipation) then
