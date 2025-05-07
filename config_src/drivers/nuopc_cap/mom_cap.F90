@@ -776,7 +776,18 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
               Ice_ocean_boundary% seaice_bc_flux (isc:iec,jsc:jec),      &
               Ice_ocean_boundary% atm_co2_prog (isc:iec,jsc:jec),    &
               Ice_ocean_boundary% atm_co2_diag (isc:iec,jsc:jec),    &
+              Ice_ocean_boundary% EPHYTO1UVA_NET(isc:iec,jsc:jec), &
+              Ice_ocean_boundary% EPHYTO6UVA_NET(isc:iec,jsc:jec), &
+              Ice_ocean_boundary% EPHYTO7UVA_NET(isc:iec,jsc:jec), &
+              Ice_ocean_boundary% EPHYTO1UVB_NET(isc:iec,jsc:jec), &
+              Ice_ocean_boundary% EPHYTO6UVB_NET(isc:iec,jsc:jec), &
+              Ice_ocean_boundary% EPHYTO7UVB_NET(isc:iec,jsc:jec), &
+              Ice_ocean_boundary% EPHYTO1UVC_NET(isc:iec,jsc:jec), &
+              Ice_ocean_boundary% EPHYTO6UVC_NET(isc:iec,jsc:jec), &
+              Ice_ocean_boundary% EPHYTO7UVC_NET(isc:iec,jsc:jec), &
               source=0.0)
+              !Coupe added EPHYTO terms here because of MARBL dependence but
+              !noting that ice type dependence may need to be added here. 5/7/2025
     endif
   endif
 
@@ -866,6 +877,16 @@ subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
     call fld_list_add(fldsToOcn_num, fldsToOcn, "Fioi_bcpho"                 , "will provide")
     call fld_list_add(fldsToOcn_num, fldsToOcn, "Sa_co2prog"        , "will provide") !-> prognostic CO2 from atm
     call fld_list_add(fldsToOcn_num, fldsToOcn, "Sa_co2diag"        , "will provide") !-> diagnostic CO2 from atm
+    !Coupe adding EPHYTO variables - noting these need to be under use_MARBL = true
+    call fld_list_add(fldsToOcn_num, fldsToOcn,"Sa_ephyto1UVA", "will provide")
+    call fld_list_add(fldsToOcn_num, fldsToOcn,"Sa_ephyto6UVA", "will provide")
+    call fld_list_add(fldsToOcn_num, fldsToOcn,"Sa_ephyto7UVA", "will provide")
+    call fld_list_add(fldsToOcn_num, fldsToOcn,"Sa_ephyto1UVB", "will provide")
+    call fld_list_add(fldsToOcn_num, fldsToOcn,"Sa_ephyto6UVB", "will provide")
+    call fld_list_add(fldsToOcn_num, fldsToOcn,"Sa_ephyto7UVB", "will provide")
+    call fld_list_add(fldsToOcn_num, fldsToOcn,"Sa_ephyto1UVC", "will provide")
+    call fld_list_add(fldsToOcn_num, fldsToOcn,"Sa_ephyto6UVC", "will provide")
+    call fld_list_add(fldsToOcn_num, fldsToOcn,"Sa_ephyto7UVC", "will provide")
   endif
 
   if (use_waves) then
