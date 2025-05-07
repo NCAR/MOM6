@@ -423,6 +423,75 @@ subroutine mom_import(ocean_public, ocean_grid, importState, ice_ocean_boundary,
     if (ChkErr(rc,__LINE__,u_FILE_u)) return
   endif
 
+!---
+! EPHYTO UV inhibition of phytoplankton photosynthesis - Coupe added 5/7/2025
+!---
+!UV-A
+if (associated(ice_ocean_boundary%EPHYTO1UVA_NET)) then
+    call state_getimport(importState, 'Sa_ephyto1UVA',  &
+        isc, iec, jsc, jec, ice_ocean_boundary%EPHYTO1UVA_NET(:,:), &
+        areacor=med2mod_areacor, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+  endif
+
+if (associated(ice_ocean_boundary%EPHYTO6UVA_NET)) then
+    call state_getimport(importState, 'Sa_ephyto6UVA',  &
+        isc, iec, jsc, jec, ice_ocean_boundary%EPHYTO6UVA_NET(:,:), &
+        areacor=med2mod_areacor, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+  endif
+
+if (associated(ice_ocean_boundary%EPHYTO7UVA_NET)) then
+    call state_getimport(importState, 'Sa_ephyto7UVA',  &
+        isc, iec, jsc, jec, ice_ocean_boundary%EPHYTO7UVA_NET(:,:), &
+        areacor=med2mod_areacor, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+  endif
+
+!UV-B
+if (associated(ice_ocean_boundary%EPHYTO1UVB_NET)) then
+    call state_getimport(importState, 'Sa_ephyto1UVB',  &
+        isc, iec, jsc, jec, ice_ocean_boundary%EPHYTO1UVB_NET(:,:), &
+        areacor=med2mod_areacor, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+  endif
+
+if (associated(ice_ocean_boundary%EPHYTO6UVB_NET)) then
+    call state_getimport(importState, 'Sa_ephyto6UVB',  &
+        isc, iec, jsc, jec, ice_ocean_boundary%EPHYTO6UVB_NET(:,:), &
+        areacor=med2mod_areacor, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+  endif
+
+if (associated(ice_ocean_boundary%EPHYTO7UVB_NET)) then
+    call state_getimport(importState, 'Sa_ephyto7UVB',  &
+        isc, iec, jsc, jec, ice_ocean_boundary%EPHYTO7UVB_NET(:,:), &
+        areacor=med2mod_areacor, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+  endif
+
+!UV-C
+if (associated(ice_ocean_boundary%EPHYTO1UVC_NET)) then
+    call state_getimport(importState, 'Sa_ephyto1UVC',  &
+        isc, iec, jsc, jec, ice_ocean_boundary%EPHYTO1UVC_NET(:,:), &
+        areacor=med2mod_areacor, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+  endif
+
+if (associated(ice_ocean_boundary%EPHYTO6UVC_NET)) then
+    call state_getimport(importState, 'Sa_ephyto6UVC',  &
+        isc, iec, jsc, jec, ice_ocean_boundary%EPHYTO6UVC_NET(:,:), &
+        areacor=med2mod_areacor, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+  endif
+
+if (associated(ice_ocean_boundary%EPHYTO7UVC_NET)) then
+    call state_getimport(importState, 'Sa_ephyto7UVC',  &
+        isc, iec, jsc, jec, ice_ocean_boundary%EPHYTO7UVC_NET(:,:), &
+        areacor=med2mod_areacor, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+  endif
+
   ! Fields coming from coupler per ice category
   if (ice_ocean_boundary%ice_ncat > 0) then
     call state_getimport(importState, 'Sf_afracr',  &
