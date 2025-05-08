@@ -204,6 +204,11 @@ type, public :: ice_ocean_boundary_type
   real, pointer, dimension(:,:) :: seaice_dust_flux     =>NULL() !< Dust flux from seaice [kg m-2 s-1]
   real, pointer, dimension(:,:) :: atm_bc_flux          =>NULL() !< Black carbon flux from atmosphere [kg m-2 s-1]
   real, pointer, dimension(:,:) :: seaice_bc_flux       =>NULL() !< Black carbon flux from seaice [kg m-2 s-1]
+  real, pointer, dimension(:,:) :: EPHYTO1UVA_NET       =>NULL() !< UV-A inhibition for diatoms [1]
+  real, pointer, dimension(:,:) :: EPHYTO1UVB_NET       =>NULL() !< UV-B inhibition for diatoms [1]
+  real, pointer, dimension(:,:) :: EPHYTO1UVC_NET       =>NULL() !< UV-C inhibition for diatoms [1]
+  ! need to add ephyto6 and ephyto7 here 
+
   real, pointer, dimension(:,:) :: afracr               =>NULL() !< Fractional atmosphere coverage wrt ocean [1]
   real, pointer, dimension(:,:) :: swnet_afracr         =>NULL() !< Net shortwave radiation times atmosphere fraction
                                                                  !! positive => into the ocean [W m-2]
