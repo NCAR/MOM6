@@ -207,7 +207,12 @@ type, public :: ice_ocean_boundary_type
   real, pointer, dimension(:,:) :: EPHYTO1UVA_NET       =>NULL() !< UV-A inhibition for diatoms [1]
   real, pointer, dimension(:,:) :: EPHYTO1UVB_NET       =>NULL() !< UV-B inhibition for diatoms [1]
   real, pointer, dimension(:,:) :: EPHYTO1UVC_NET       =>NULL() !< UV-C inhibition for diatoms [1]
-  ! need to add ephyto6 and ephyto7 here 
+  real, pointer, dimension(:,:) :: EPHYTO6UVA_NET       =>NULL() !< UV-A inhibition for coccolithophores [1]
+  real, pointer, dimension(:,:) :: EPHYTO6UVB_NET       =>NULL() !< UV-B inhibition for coccolithophores [1]
+  real, pointer, dimension(:,:) :: EPHYTO6UVC_NET       =>NULL() !< UV-C inhibition for coccolithophores [1]
+  real, pointer, dimension(:,:) :: EPHYTO7UVA_NET       =>NULL() !< UV-A inhibition for small phytoplankton/diazotrophs [1]
+  real, pointer, dimension(:,:) :: EPHYTO7UVB_NET       =>NULL() !< UV-B inhibition for small phytoplankton/diazotrophs [1]
+  real, pointer, dimension(:,:) :: EPHYTO7UVC_NET       =>NULL() !< UV-C inhibition for small phytoplankton/diazotrophs [1]
 
   real, pointer, dimension(:,:) :: afracr               =>NULL() !< Fractional atmosphere coverage wrt ocean [1]
   real, pointer, dimension(:,:) :: swnet_afracr         =>NULL() !< Net shortwave radiation times atmosphere fraction
@@ -620,12 +625,15 @@ subroutine convert_IOB_to_fluxes(IOB, fluxes, index_bounds, Time, valid_time, G,
 
   ! Copy MARBL-specific IOB fields into fluxes; also set some MARBL-specific forcings to other values
   ! (constants, values from netCDF, etc)
-  if (CS%use_marbl_tracers) &
+  if (CS%use_marbl_tracers) & ! Coupe added EPHYTO{1,6,7}UV{A,B,C}_NET to end of list - subroutine is located in src/tracer/MARBL_forcing_mod.F90
     call convert_driver_fields_to_forcings(IOB%atm_fine_dust_flux, IOB%atm_coarse_dust_flux, &
                                            IOB%seaice_dust_flux, IOB%atm_bc_flux, IOB%seaice_bc_flux, &
                                            IOB%nhx_dep, IOB%noy_dep, IOB%atm_co2_prog, IOB%atm_co2_diag, &
                                            IOB%afracr, IOB%swnet_afracr, IOB%ifrac_n, IOB%swpen_ifrac_n, &
-                                           Time, G, US, i0, j0, fluxes, CS%marbl_forcing_CSp)
+                                           Time, G, US, i0, j0, fluxes, CS%marbl_forcing_CSp, &
+                                           IOB%EPHYTO1UVA_NET, IOB%EPHYTO1UVB_NET, IOB%EPHYTO1UVC_NET, &
+                                          IOB%EPHYTO6UVA_NET, IOB%EPHYTO6UVB_NET, IOB%EPHYTO6UVC_NET, &
+                                           IOB%EPHYTO7UVA_NET, IOB%EPHYTO7UVB_NET, IOB%EPHYTO7UVC_NET)
 
   ! wave to ocean coupling
   if ( associated(IOB%lamult)) then
@@ -1654,6 +1662,46 @@ subroutine ice_ocn_bnd_type_chksum(id, timestep, iobt)
   if (associated(iobt%swpen_ifrac_n)) then
     chks = field_chksum(iobt%swpen_ifrac_n)
     if (root) write(outunit,110) 'iobt%swpen_ifrac_n        ', chks
+  endif
+
+! COUPE added EPHYTO{1,6,7}UV{A,B,C}_NET terms below, following atm_bc_flux
+  if (associated(iobt%EPHYTO1UVA_NET)) then
+    chks = field_chksum(iobt%EPHYTO1UVA_NET)
+    if (root) write(outunit,110) 'iobt%EPHYTO1UVA_NET        ', chks
+  endif
+  if (associated(iobt%EPHYTO1UVB_NET)) then
+    chks = field_chksum(iobt%EPHYTO1UVB_NET)
+    if (root) write(outunit,110) 'iobt%EPHYTO1UVB_NET        ', chks
+  endif
+  if (associated(iobt%EPHYTO1UVC_NET)) then
+    chks = field_chksum(iobt%EPHYTO1UVC_NET)
+    if (root) write(outunit,110) 'iobt%EPHYTO1UVC_NET        ', chks
+  endif
+
+  if (associated(iobt%EPHYTO6UVA_NET)) then
+    chks = field_chksum(iobt%EPHYTO6UVA_NET)
+    if (root) write(outunit,110) 'iobt%EPHYTO6UVA_NET        ', chks
+  endif
+  if (associated(iobt%EPHYTO6UVB_NET)) then
+    chks = field_chksum(iobt%EPHYTO6UVB_NET)
+    if (root) write(outunit,110) 'iobt%EPHYTO6UVB_NET        ', chks
+  endif
+  if (associated(iobt%EPHYTO6UVC_NET)) then
+    chks = field_chksum(iobt%EPHYTO6UVC_NET)
+    if (root) write(outunit,110) 'iobt%EPHYTO6UVC_NET        ', chks
+  endif
+
+  if (associated(iobt%EPHYTO7UVA_NET)) then
+    chks = field_chksum(iobt%EPHYTO7UVA_NET)
+    if (root) write(outunit,110) 'iobt%EPHYTO7UVA_NET        ', chks
+  endif
+  if (associated(iobt%EPHYTO7UVB_NET)) then
+    chks = field_chksum(iobt%EPHYTO7UVB_NET)
+    if (root) write(outunit,110) 'iobt%EPHYTO7UVB_NET        ', chks
+  endif
+  if (associated(iobt%EPHYTO7UVC_NET)) then
+    chks = field_chksum(iobt%EPHYTO7UVC_NET)
+    if (root) write(outunit,110) 'iobt%EPHYTO7UVC_NET        ', chks
   endif
 
   ! enthalpy
