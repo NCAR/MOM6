@@ -485,7 +485,6 @@ subroutine set_rotation_beta_plane(f, G, param_file, US)
   real    :: f_0    ! The reference value of the Coriolis parameter [T-1 ~> s-1]
   real    :: beta   ! The meridional gradient of the Coriolis parameter [T-1 L-1 ~> s-1 m-1]
   real    :: beta_lat_ref ! The reference latitude for the beta plane [degrees_N] or [km] or [m]
-  real    :: Rad_Earth_L  ! The radius of the planet in rescaled units [L ~> m]
   real    :: y_scl  ! A scaling factor from the units of latitude [L lat-1 ~> m lat-1]
   real    :: PI     ! The ratio of the circumference of a circle to its diameter [nondim]
   character(len=40)  :: mdl = "set_rotation_beta_plane" ! This subroutine's name.
@@ -503,18 +502,16 @@ subroutine set_rotation_beta_plane(f, G, param_file, US)
   call get_param(param_file, mdl, "AXIS_UNITS", axis_units, default="degrees")
 
   PI = 4.0*atan(1.0)
+  y_scl = G%grid_unit_to_L
+  if (G%grid_unit_to_L <= 0.0) y_scl = PI * G%Rad_Earth_L / 180.
+
   select case (axis_units(1:1))
     case ("d")
-      call get_param(param_file, mdl, "RAD_EARTH", Rad_Earth_L, &
-                   "The radius of the Earth.", units="m", default=6.378e6, scale=US%m_to_L)
       beta_lat_ref_units = "degrees"
-      y_scl = PI * Rad_Earth_L / 180.
     case ("k")
       beta_lat_ref_units = "kilometers"
-      y_scl = 1.0e3 * US%m_to_L
     case ("m")
       beta_lat_ref_units = "meters"
-      y_scl = 1.0 * US%m_to_L
     case default ; call MOM_error(FATAL, &
       " set_rotation_beta_plane: unknown AXIS_UNITS = "//trim(axis_units))
   end select
@@ -1313,24 +1310,20 @@ subroutine compute_global_grid_integrals(G, US)
   type(unit_scale_type),  intent(in)    :: US !< A dimensional unit scaling type
 
   ! Local variables
-  real, dimension(G%isc:G%iec, G%jsc:G%jec) :: tmpForSumming ! Masked and unscaled cell areas [m2]
-  real :: area_scale  ! A scaling factor for area into MKS units [m2 L-2 ~> 1]
-  integer :: i,j
+  real, dimension(G%isc:G%iec, G%jsc:G%jec) :: masked_area ! Masked cell areas [L2 ~> m2]
+  integer :: i, j
 
-  area_scale = US%L_to_m**2
-
-  tmpForSumming(:,:) = 0.
+  masked_area(:,:) = 0.
   G%areaT_global = 0.0 ; G%IareaT_global = 0.0
   do j=G%jsc,G%jec ; do i=G%isc,G%iec
-    tmpForSumming(i,j) = area_scale*G%areaT(i,j) * G%mask2dT(i,j)
+    masked_area(i,j) = G%areaT(i,j) * G%mask2dT(i,j)
   enddo ; enddo
-  G%areaT_global = reproducing_sum(tmpForSumming)
+  G%areaT_global = reproducing_sum(masked_area, unscale=US%L_to_m**2)
 
   if (G%areaT_global == 0.0) &
-    call MOM_error(FATAL, "compute_global_grid_integrals: "//&
-                    "zero ocean area (check topography?)")
+    call MOM_error(FATAL, "compute_global_grid_integrals: zero ocean area (check topography?)")
 
-  G%IareaT_global = 1.0 / (G%areaT_global)
+  G%IareaT_global = 1.0 / G%areaT_global
 end subroutine compute_global_grid_integrals
 ! -----------------------------------------------------------------------------
 
@@ -1361,7 +1354,7 @@ subroutine write_ocean_geometry_file(G, param_file, directory, US, geom_file)
 
   call callTree_enter('write_ocean_geometry_file()')
 
-  nFlds = 19 ; if (G%bathymetry_at_vel) nFlds = 23
+  nFlds = 23 ; if (G%bathymetry_at_vel) nFlds = 27
 
   allocate(vars(nFlds))
   allocate(fields(nFlds))
@@ -1380,28 +1373,32 @@ subroutine write_ocean_geometry_file(G, param_file, directory, US, geom_file)
   vars(2) = var_desc("geolonb","degree","longitude at corner (Bu) points",'q','1','1')
   vars(3) = var_desc("geolat","degree", "latitude at tracer (T) points", 'h','1','1')
   vars(4) = var_desc("geolon","degree","longitude at tracer (T) points",'h','1','1')
-  vars(5) = var_desc("D","meter","Basin Depth",'h','1','1')
-  vars(6) = var_desc("f","s-1","Coriolis Parameter",'q','1','1')
-  vars(7) = var_desc("dxCv","m","Zonal grid spacing at v points",'v','1','1')
-  vars(8) = var_desc("dyCu","m","Meridional grid spacing at u points",'u','1','1')
-  vars(9) = var_desc("dxCu","m","Zonal grid spacing at u points",'u','1','1')
-  vars(10)= var_desc("dyCv","m","Meridional grid spacing at v points",'v','1','1')
-  vars(11)= var_desc("dxT","m","Zonal grid spacing at h points",'h','1','1')
-  vars(12)= var_desc("dyT","m","Meridional grid spacing at h points",'h','1','1')
-  vars(13)= var_desc("dxBu","m","Zonal grid spacing at q points",'q','1','1')
-  vars(14)= var_desc("dyBu","m","Meridional grid spacing at q points",'q','1','1')
-  vars(15)= var_desc("Ah","m2","Area of h cells",'h','1','1')
-  vars(16)= var_desc("Aq","m2","Area of q cells",'q','1','1')
+  vars(5) = var_desc("geolatu","degree","latitude at zonal velocity (Cu) points",'u','1','1')
+  vars(6) = var_desc("geolonu","degree","longitude at zonal velocity (Cu) points",'u','1','1')
+  vars(7) = var_desc("geolatv","degree","latitude at meridional velocity (Cv) points",'v','1','1')
+  vars(8) = var_desc("geolonv","degree","longitude at meridional velocity (Cv) points",'v','1','1')
+  vars(9) = var_desc("D","meter","Basin Depth",'h','1','1')
+  vars(10)= var_desc("f","s-1","Coriolis Parameter",'q','1','1')
+  vars(11)= var_desc("dxCv","m","Zonal grid spacing at v points",'v','1','1')
+  vars(12)= var_desc("dyCu","m","Meridional grid spacing at u points",'u','1','1')
+  vars(13)= var_desc("dxCu","m","Zonal grid spacing at u points",'u','1','1')
+  vars(14)= var_desc("dyCv","m","Meridional grid spacing at v points",'v','1','1')
+  vars(15)= var_desc("dxT","m","Zonal grid spacing at h points",'h','1','1')
+  vars(16)= var_desc("dyT","m","Meridional grid spacing at h points",'h','1','1')
+  vars(17)= var_desc("dxBu","m","Zonal grid spacing at q points",'q','1','1')
+  vars(18)= var_desc("dyBu","m","Meridional grid spacing at q points",'q','1','1')
+  vars(19)= var_desc("Ah","m2","Area of h cells",'h','1','1')
+  vars(20)= var_desc("Aq","m2","Area of q cells",'q','1','1')
 
-  vars(17)= var_desc("dxCvo","m","Open zonal grid spacing at v points",'v','1','1')
-  vars(18)= var_desc("dyCuo","m","Open meridional grid spacing at u points",'u','1','1')
-  vars(19)= var_desc("wet", "nondim", "land or ocean?", 'h','1','1')
+  vars(21)= var_desc("dxCvo","m","Open zonal grid spacing at v points",'v','1','1')
+  vars(22)= var_desc("dyCuo","m","Open meridional grid spacing at u points",'u','1','1')
+  vars(23)= var_desc("wet", "nondim", "land or ocean?", 'h','1','1')
 
   if (G%bathymetry_at_vel) then
-    vars(20) = var_desc("Dblock_u","m","Blocked depth at u points",'u','1','1')
-    vars(21) = var_desc("Dopen_u","m","Open depth at u points",'u','1','1')
-    vars(22) = var_desc("Dblock_v","m","Blocked depth at v points",'v','1','1')
-    vars(23) = var_desc("Dopen_v","m","Open depth at v points",'v','1','1')
+    vars(24) = var_desc("Dblock_u","m","Blocked depth at u points",'u','1','1')
+    vars(25) = var_desc("Dopen_u","m","Open depth at u points",'u','1','1')
+    vars(26) = var_desc("Dblock_v","m","Blocked depth at v points",'v','1','1')
+    vars(27) = var_desc("Dopen_v","m","Open depth at v points",'v','1','1')
   endif
 
   if (present(geom_file)) then
@@ -1436,31 +1433,35 @@ subroutine write_ocean_geometry_file(G, param_file, directory, US, geom_file)
   call MOM_write_field(IO_handle, fields(2), G%Domain, G%geoLonBu)
   call MOM_write_field(IO_handle, fields(3), G%Domain, G%geoLatT)
   call MOM_write_field(IO_handle, fields(4), G%Domain, G%geoLonT)
+  call MOM_write_field(IO_handle, fields(5), G%Domain, G%geoLatCu)
+  call MOM_write_field(IO_handle, fields(6), G%Domain, G%geoLonCu)
+  call MOM_write_field(IO_handle, fields(7), G%Domain, G%geoLatCv)
+  call MOM_write_field(IO_handle, fields(8), G%Domain, G%geoLonCv)
 
-  call MOM_write_field(IO_handle, fields(5), G%Domain, G%bathyT, unscale=US%Z_to_m)
-  call MOM_write_field(IO_handle, fields(6), G%Domain, G%CoriolisBu, unscale=US%s_to_T)
+  call MOM_write_field(IO_handle, fields(9),  G%Domain, G%bathyT, unscale=US%Z_to_m)
+  call MOM_write_field(IO_handle, fields(10), G%Domain, G%CoriolisBu, unscale=US%s_to_T)
 
-  call MOM_write_field(IO_handle, fields(7),  G%Domain, G%dxCv, unscale=US%L_to_m)
-  call MOM_write_field(IO_handle, fields(8),  G%Domain, G%dyCu, unscale=US%L_to_m)
-  call MOM_write_field(IO_handle, fields(9),  G%Domain, G%dxCu, unscale=US%L_to_m)
-  call MOM_write_field(IO_handle, fields(10), G%Domain, G%dyCv, unscale=US%L_to_m)
-  call MOM_write_field(IO_handle, fields(11), G%Domain, G%dxT, unscale=US%L_to_m)
-  call MOM_write_field(IO_handle, fields(12), G%Domain, G%dyT, unscale=US%L_to_m)
-  call MOM_write_field(IO_handle, fields(13), G%Domain, G%dxBu, unscale=US%L_to_m)
-  call MOM_write_field(IO_handle, fields(14), G%Domain, G%dyBu, unscale=US%L_to_m)
+  call MOM_write_field(IO_handle, fields(11), G%Domain, G%dxCv, unscale=US%L_to_m)
+  call MOM_write_field(IO_handle, fields(12), G%Domain, G%dyCu, unscale=US%L_to_m)
+  call MOM_write_field(IO_handle, fields(13), G%Domain, G%dxCu, unscale=US%L_to_m)
+  call MOM_write_field(IO_handle, fields(14), G%Domain, G%dyCv, unscale=US%L_to_m)
+  call MOM_write_field(IO_handle, fields(15), G%Domain, G%dxT, unscale=US%L_to_m)
+  call MOM_write_field(IO_handle, fields(16), G%Domain, G%dyT, unscale=US%L_to_m)
+  call MOM_write_field(IO_handle, fields(17), G%Domain, G%dxBu, unscale=US%L_to_m)
+  call MOM_write_field(IO_handle, fields(18), G%Domain, G%dyBu, unscale=US%L_to_m)
 
-  call MOM_write_field(IO_handle, fields(15), G%Domain, G%areaT, unscale=US%L_to_m**2)
-  call MOM_write_field(IO_handle, fields(16), G%Domain, G%areaBu, unscale=US%L_to_m**2)
+  call MOM_write_field(IO_handle, fields(19), G%Domain, G%areaT, unscale=US%L_to_m**2)
+  call MOM_write_field(IO_handle, fields(20), G%Domain, G%areaBu, unscale=US%L_to_m**2)
 
-  call MOM_write_field(IO_handle, fields(17), G%Domain, G%dx_Cv, unscale=US%L_to_m)
-  call MOM_write_field(IO_handle, fields(18), G%Domain, G%dy_Cu, unscale=US%L_to_m)
-  call MOM_write_field(IO_handle, fields(19), G%Domain, G%mask2dT)
+  call MOM_write_field(IO_handle, fields(21), G%Domain, G%dx_Cv, unscale=US%L_to_m)
+  call MOM_write_field(IO_handle, fields(22), G%Domain, G%dy_Cu, unscale=US%L_to_m)
+  call MOM_write_field(IO_handle, fields(23), G%Domain, G%mask2dT)
 
   if (G%bathymetry_at_vel) then
-    call MOM_write_field(IO_handle, fields(20), G%Domain, G%Dblock_u, unscale=US%Z_to_m)
-    call MOM_write_field(IO_handle, fields(21), G%Domain, G%Dopen_u, unscale=US%Z_to_m)
-    call MOM_write_field(IO_handle, fields(22), G%Domain, G%Dblock_v, unscale=US%Z_to_m)
-    call MOM_write_field(IO_handle, fields(23), G%Domain, G%Dopen_v, unscale=US%Z_to_m)
+    call MOM_write_field(IO_handle, fields(24), G%Domain, G%Dblock_u, unscale=US%Z_to_m)
+    call MOM_write_field(IO_handle, fields(25), G%Domain, G%Dopen_u, unscale=US%Z_to_m)
+    call MOM_write_field(IO_handle, fields(26), G%Domain, G%Dblock_v, unscale=US%Z_to_m)
+    call MOM_write_field(IO_handle, fields(27), G%Domain, G%Dopen_v, unscale=US%Z_to_m)
   endif
 
   call IO_handle%close()
