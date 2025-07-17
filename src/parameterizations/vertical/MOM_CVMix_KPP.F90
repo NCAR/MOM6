@@ -1294,7 +1294,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
 
       enddo ! k-loop finishes
 
-      if ( (CS%LT_K_ENHANCEMENT .or. CS%LT_VT2_ENHANCEMENT) .and. .not. present(lamult)) then
+      if ( (CS%LT_K_ENHANCEMENT .or. CS%LT_VT2_ENHANCEMENT)) then
         MLD_guess = max( CS%MLD_guess_min, abs(CS%OBLdepthprev(i,j) ) )
         call get_Langmuir_Number(LA, G, GV, US, MLD_guess, uStar(i,j), i, j, &
                                  dz=dz(i,j,:), U_H=U_H, V_H=V_H, WAVES=WAVES)
