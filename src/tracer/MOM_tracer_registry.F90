@@ -16,11 +16,13 @@ use MOM_error_handler, only : MOM_error, FATAL, WARNING, MOM_mesg, is_root_pe
 use MOM_file_parser,   only : get_param, log_version, param_file_type
 use MOM_hor_index,     only : hor_index_type
 use MOM_grid,          only : ocean_grid_type
+use MOM_interface_heights, only : thickness_to_dz
 use MOM_io,            only : vardesc, query_vardesc, cmor_long_std
 use MOM_restart,       only : register_restart_field, MOM_restart_CS
 use MOM_string_functions, only : lowercase
 use MOM_time_manager,  only : time_type
 use MOM_unit_scaling,  only : unit_scale_type
+use MOM_variables,     only : thermo_var_ptrs
 use MOM_verticalGrid,  only : verticalGrid_type
 use MOM_tracer_types,  only : tracer_type, tracer_registry_type
 
@@ -32,6 +34,7 @@ public register_tracer
 public MOM_tracer_chksum, MOM_tracer_chkinv
 public register_tracer_diagnostics
 public post_tracer_diagnostics_at_sync, post_tracer_transport_diagnostics
+public post_tracer_integral_diagnostics
 public preALE_tracer_diagnostics, postALE_tracer_diagnostics
 public tracer_registry_init, lock_tracer_registry, tracer_registry_end
 public tracer_name_lookup
@@ -437,13 +440,13 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
     Tr%id_zint = register_diag_field("ocean_model", trim(shortnm)//"_zint", &
         diag%axesT1, Time, &
         "Thickness-weighted integral of " // trim(longname), &
-        trim(units) // " m")
+        trim(units) // " m", conversion=Tr%conc_scale*US%Z_to_m)
     Tr%id_zint_100m = register_diag_field("ocean_model", trim(shortnm)//"_zint_100m", &
         diag%axesT1, Time, &
         "Thickness-weighted integral of "// trim(longname) // " over top 100m", &
-        trim(units) // " m")
+        trim(units) // " m", conversion=Tr%conc_scale*US%Z_to_m)
     Tr%id_surf = register_diag_field("ocean_model", trim(shortnm)//"_SURF", &
-        diag%axesT1, Time, "Surface values of "// trim(longname), trim(units))
+        diag%axesT1, Time, "Surface values of "// trim(longname), trim(units), conversion=Tr%conc_scale)
     if (Tr%id_adx > 0) call safe_alloc_ptr(Tr%ad_x,IsdB,IedB,jsd,jed,nz)
     if (Tr%id_ady > 0) call safe_alloc_ptr(Tr%ad_y,isd,ied,JsdB,JedB,nz)
     if (Tr%id_adx_resolved > 0) call safe_alloc_ptr(Tr%ad_x_resolved,IsdB,IedB,jsd,jed,nz)
@@ -792,44 +795,12 @@ subroutine post_tracer_transport_diagnostics(G, GV, Reg, h_diag, diag)
                               intent(in) :: h_diag !< Layer thicknesses on which to post fields [H ~> m or kg m-2]
   type(diag_ctrl),            intent(in) :: diag !< structure to regulate diagnostic output
 
-  integer :: i, j, k, is, ie, js, je, nz, m, khi
+  integer :: i, j, k, is, ie, js, je, nz, m
   real    :: work2d(SZI_(G),SZJ_(G))      ! The vertically integrated convergence of lateral advective
                                           ! tracer fluxes [CU H T-1 ~> conc m s-1 or conc kg m-2 s-1]
-  real    :: frac_under_100m(SZI_(G),SZJ_(G),SZK_(GV)) ! weights used to compute 100m vertical integrals [nondim]
-  real    :: ztop(SZI_(G),SZJ_(G)) ! position of the top interface [H ~> m or kg m-2]
-  real    :: zbot(SZI_(G),SZJ_(G)) ! position of the bottom interface [H ~> m or kg m-2]
   type(tracer_type), pointer :: Tr=>NULL()
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
-
-  ! If any tracers are posting 100m vertical integrals, compute weights
-  frac_under_100m(:,:,:) = 0.0
-  ! khi will be the largest layer index corresponding where ztop < 100m and ztop >= 100m
-  ! in any column (we can reduce computation of 100m integrals by only looping through khi
-  ! rather than GV%ke)
-  khi = 0
-  do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
-    Tr => Reg%Tr(m)
-    if (Tr%id_zint_100m > 0) then
-      zbot(:,:) = 0.0
-      do k=1, nz
-        do j=js,je ; do i=is,ie
-          ztop(i,j) = zbot(i,j)
-          zbot(i,j) = ztop(i,j) + h_diag(i,j,k)*GV%H_to_m
-          if (zbot(i,j) <= 100.0) then
-            frac_under_100m(i,j,k) = 1.0
-          elseif (ztop(i,j) < 100.0) then
-            frac_under_100m(i,j,k) = (100.0 - ztop(i,j)) / (zbot(i,j) - ztop(i,j))
-          else
-            frac_under_100m(i,j,k) = 0.0
-          endif
-          ! frac_under_100m(i,j,k) = max(0, min(1.0, (100.0 - ztop(i,j)) / (zbot(i,j) - ztop(i,j))))
-        enddo ; enddo
-        if (any(frac_under_100m(:,:,k) > 0)) khi = k
-      enddo
-      exit
-    endif
-  endif; enddo
 
   do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
     Tr => Reg%Tr(m)
@@ -854,13 +825,83 @@ subroutine post_tracer_transport_diagnostics(G, GV, Reg, h_diag, diag)
       enddo ; enddo ; enddo
       call post_data(Tr%id_adv_xy_2d, work2d, diag)
     endif
+  endif ; enddo
 
+end subroutine post_tracer_transport_diagnostics
+
+!> Post diagnostics of vertically integrated tracer amouints
+subroutine post_tracer_integral_diagnostics(G, GV, US, Reg, h_diag, tv, diag)
+  type(ocean_grid_type),      intent(in) :: G    !< The ocean's grid structure
+  type(verticalGrid_type),    intent(in) :: GV   !< The ocean's vertical grid structure
+  type(unit_scale_type),      intent(in) :: US   !< A dimensional unit scaling type
+  type(tracer_registry_type), pointer    :: Reg  !< pointer to the tracer registry
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                              intent(in) :: h_diag !< Layer thicknesses on which to post fields [H ~> m or kg m-2]
+  type(thermo_var_ptrs),      intent(in)  :: tv  !< A structure pointing to various
+                                                 !! thermodynamic variables.
+  type(diag_ctrl),            intent(in) :: diag !< structure to regulate diagnostic output
+
+  integer :: i, j, k, is, ie, js, je, nz, m, khi
+  real    :: work2d(SZI_(G),SZJ_(G))  ! The vertically integrated tracer amounts [CU Z T-1 ~> conc m]
+  real    :: dz(SZI_(G),SZJ_(G),SZK_(GV)) !< Geometric layer thicknesses in height units [Z ~> m]
+  real    :: frac_under_100m(SZI_(G),SZJ_(G),SZK_(GV)) ! weights used to compute 100m vertical integrals [nondim]
+  real    :: ztop(SZI_(G),SZJ_(G))    ! position of the top interface [Z ~> m]
+  real    :: zbot(SZI_(G),SZJ_(G))    ! position of the bottom interface [Z ~> m]
+  real    :: Z_100  ! 100 m in depth units [Z ~> m]
+  logical :: dz_needed, dz100_used
+  type(tracer_type), pointer :: Tr=>NULL()
+
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+
+  dz_needed = .false.
+  dz100_used = .false.
+  do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
+    if (Reg%Tr(m)%id_zint_100m > 0) dz100_used = .true.
+    if (Reg%Tr(m)%id_zint > 0) dz_needed = .true.
+  endif ; enddo
+  if (dz100_used) dz_needed = .true.
+
+  if (dz_needed) then
+    ! Convert the layer thicknesses into geometric depths, using the pre-stored layer-mean specific
+    ! volumes when in non-Boussinesq mode.
+    call thickness_to_dz(h_diag, tv, dz, G, GV, US)
+  endif
+
+  if (dz100_used) then
+    ! If any tracers are posting 100m vertical integrals, compute weights
+    frac_under_100m(:,:,:) = 0.0
+    ! khi will be the largest layer index corresponding where ztop < 100m and ztop >= 100m
+    ! in any column (we can reduce computation of 100m integrals by only looping through khi
+    ! rather than GV%ke)
+    khi = 0
+
+    Z_100 = 100.0*US%m_to_Z
+    zbot(:,:) = 0.0
+    do k=1,nz
+      do j=js,je ; do i=is,ie
+        ztop(i,j) = zbot(i,j)
+        zbot(i,j) = ztop(i,j) + dz(i,j,k)
+        if (zbot(i,j) <= Z_100) then
+          frac_under_100m(i,j,k) = 1.0
+        elseif (ztop(i,j) < Z_100) then
+          frac_under_100m(i,j,k) = (Z_100 - ztop(i,j)) / (zbot(i,j) - ztop(i,j))
+        else
+          frac_under_100m(i,j,k) = 0.0
+        endif
+        ! frac_under_100m(i,j,k) = max(0, min(1.0, (Z_100 - ztop(i,j)) / (zbot(i,j) - ztop(i,j))))
+      enddo ; enddo
+      if (any(frac_under_100m(:,:,k) > 0)) khi = k
+    enddo
+  endif
+
+  do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then
+    Tr => Reg%Tr(m)
     ! A few diagnostics introduce with MARBL driver
     ! Compute full-depth vertical integral
     if (Tr%id_zint > 0) then
       work2d(:,:) = 0.0
       do k=1,nz ; do j=js,je ; do i=is,ie
-        work2d(i,j) = work2d(i,j) + (h_diag(i,j,k)*GV%H_to_m)*tr%t(i,j,k)
+        work2d(i,j) = work2d(i,j) + dz(i,j,k)*tr%t(i,j,k)
       enddo ; enddo ; enddo
       call post_data(Tr%id_zint, work2d, diag)
     endif
@@ -869,7 +910,7 @@ subroutine post_tracer_transport_diagnostics(G, GV, Reg, h_diag, diag)
     if (Tr%id_zint_100m > 0) then
       work2d(:,:) = 0.0
       do k=1,khi ; do j=js,je ; do i=is,ie
-        work2d(i,j) = work2d(i,j) + frac_under_100m(i,j,k)*((h_diag(i,j,k)*GV%H_to_m)*tr%t(i,j,k))
+        work2d(i,j) = work2d(i,j) + frac_under_100m(i,j,k) * dz(i,j,k)*Tr%t(i,j,k)
       enddo ; enddo ; enddo
       call post_data(Tr%id_zint_100m, work2d, diag)
     endif
@@ -878,7 +919,7 @@ subroutine post_tracer_transport_diagnostics(G, GV, Reg, h_diag, diag)
     if (Tr%id_SURF > 0) call post_data(Tr%id_SURF, Tr%t(:,:,1), diag)
   endif ; enddo
 
-end subroutine post_tracer_transport_diagnostics
+end subroutine post_tracer_integral_diagnostics
 
 !> This subroutine writes out chksums for the first ntr registered tracers.
 subroutine tracer_array_chksum(mesg, Tr, ntr, G)

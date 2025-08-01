@@ -1335,9 +1335,8 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
                                   ! scaled by the resolution function.
   logical :: better_speed_est ! If true, use a more robust estimate of the first
                               ! mode wave speed as the starting point for iterations.
-  real :: Stanley_coeff    ! Coefficient relating the temperature gradient and sub-gridscale
-                           ! temperature variance [nondim]
   logical :: om4_remap_via_sub_cells ! Use the OM4-era ramap_via_sub_cells for calculating the EBT structure
+  logical :: stoch_eos        ! Can't use Stanley param here unless stoch_eos is true
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
   character(len=40)  :: mdl = "MOM_lateral_mixing_coeffs" ! This module's name.
@@ -1461,15 +1460,13 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
 
   call get_param(param_file, mdl, "DEBUG", CS%debug, default=.false., do_not_log=.true.)
 
+  call get_param(param_file, mdl, "STOCH_EOS", stoch_eos, &
+                 default=.false., do_not_log=.true.)
   call get_param(param_file, mdl, "USE_STANLEY_ISO", CS%use_stanley_iso, &
                  "If true, turn on Stanley SGS T variance parameterization "// &
                  "in isopycnal slope code.", default=.false.)
-  if (CS%use_stanley_iso) then
-    call get_param(param_file, mdl, "STANLEY_COEFF", Stanley_coeff, &
-                 "Coefficient correlating the temperature gradient and SGS T variance.", &
-                 units="nondim", default=-1.0, do_not_log=.true.)
-    if (Stanley_coeff < 0.0) call MOM_error(FATAL, &
-                 "STANLEY_COEFF must be set >= 0 if USE_STANLEY_ISO is true.")
+  if (CS%use_Stanley_ISO .and. .not.stoch_eos) then
+    call MOM_error(FATAL, "VarMix_init: USE_STANLEY_ISO requires STOCH_EOS")
   endif
 
   if (CS%Resoln_use_ebt .or. CS%khth_use_ebt_struct .or. CS%kdgl90_use_ebt_struct &

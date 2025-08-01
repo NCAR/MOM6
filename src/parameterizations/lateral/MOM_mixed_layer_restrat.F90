@@ -863,6 +863,9 @@ subroutine mixedlayer_restrat_Bodner(CS, G, GV, US, h, uhtr, vhtr, tv, forces, d
            "To use the Bodner et al., 2023, MLE parameterization, either MLE_USE_PBL_MLD or "// &
            "Bodner_detect_MLD must be True.")
   endif
+  if (CS%use_Stanley_ML .and. .not.GV%Boussinesq) call MOM_error(FATAL, &
+       "MOM_mixedlayer_restrat: The Stanley parameterization is not"//&
+       "available without the Boussinesq approximation.")
 
   if (associated(bflux)) &
     call pass_var(bflux, G%domain, halo=1)
@@ -1644,8 +1647,6 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
   real :: flux_to_kg_per_s ! A unit conversion factor for fluxes. [kg T s-1 H-1 L-2 ~> kg m-3 or 1]
   real :: omega            ! The Earth's rotation rate [T-1 ~> s-1].
   real :: ustar_min_dflt   ! The default value for RESTRAT_USTAR_MIN [Z T-1 ~> m s-1]
-  real :: Stanley_coeff    ! Coefficient relating the temperature gradient and sub-gridscale
-                           ! temperature variance [nondim]
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags
   ! This include declares and sets the variable "version".
   character(len=200) :: inputdir   ! The directory where NetCDF input files
@@ -1653,6 +1654,7 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
   character(len=128) :: mle_fl_file ! Data containing MLE front-length scale. Used
                                     ! when reading from file.
   character(len=32)  :: fl_varname ! Name of front-length scale variable in mle_fl_file.
+  logical :: stoch_eos     ! Can't use Stanley param here unless stoch_eos is true
 
 # include "version_variable.h"
   integer :: i, j
@@ -1689,6 +1691,14 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
       "This sets the default value for the various _ANSWER_DATE parameters.", &
       default=99991231, do_not_log=.true.)
   call get_param(param_file, mdl, "INPUTDIR", inputdir, default=".")
+  call get_param(param_file, mdl, "STOCH_EOS", stoch_eos, &
+                 default=.false., do_not_log=.true.)
+  call get_param(param_file, mdl, "USE_STANLEY_ML", CS%use_Stanley_ML, &
+                 "If true, turn on Stanley SGS T variance parameterization "// &
+                 "in ML restrat code.", default=.false.)
+  if (CS%use_Stanley_ML .and. .not.stoch_eos) then
+    call MOM_error(FATAL, "mixedlayer_restrat_init: USE_STANLEY_ML requires STOCH_EOS")
+  endif
   call openParameterBlock(param_file,'MLE') ! Prepend MLE% to all parameters
   if (GV%nkml==0) then
     call get_param(param_file, mdl, "USE_BODNER23", CS%use_Bodner, &
@@ -1751,9 +1761,6 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
              "Fraction by which to extend the mixed-layer restratification "//&
              "depth used for a smoother stream function at the base of "//&
              "the mixed-layer.", units="nondim", default=0.0)
-    call get_param(param_file, mdl, "USE_STANLEY_TVAR", CS%use_Stanley_ML, &
-             "If true, turn on Stanley SGS T variance parameterization "// &
-             "in ML restrat code.", default=.false.)
     call get_param(param_file, mdl, "USE_CR_GRID", CS%Cr_grid, &
              "If true, read in a spatially varying Cr field.", default=.false.)
     call get_param(param_file, mdl, "USE_MLD_GRID", CS%MLD_grid, &
@@ -1811,17 +1818,6 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
              "geostrophic kinetic energy or 1 plus the square of the "//&
              "grid spacing over the deformation radius, as detailed "//&
              "by Fox-Kemper et al. (2011)", units="nondim", default=0.0)
-    ! These parameters are only used in the OM4-era version of Fox-Kemper
-    call get_param(param_file, mdl, "USE_STANLEY_ML", CS%use_Stanley_ML, &
-                   "If true, turn on Stanley SGS T variance parameterization "// &
-                   "in ML restrat code.", default=.false.)
-    if (CS%use_Stanley_ML) then
-      call get_param(param_file, mdl, "STANLEY_COEFF", Stanley_coeff, &
-                   "Coefficient correlating the temperature gradient and SGS T variance.", &
-                   units="nondim", default=-1.0, do_not_log=.true.)
-      if (Stanley_coeff < 0.0) call MOM_error(FATAL, &
-               "STANLEY_COEFF must be set >= 0 if USE_STANLEY_ML is true.")
-    endif
     call get_param(param_file, mdl, 'VON_KARMAN_CONST', CS%vonKar, &
                    'The value the von Karman constant as used for mixed layer viscosity.', &
                    units='nondim', default=0.41)

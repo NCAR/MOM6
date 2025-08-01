@@ -139,6 +139,7 @@ use MOM_tracer_hor_diff,       only : tracer_hor_diff_end, tracer_hor_diff_CS
 use MOM_tracer_registry,       only : tracer_registry_type, register_tracer, tracer_registry_init
 use MOM_tracer_registry,       only : register_tracer_diagnostics, post_tracer_diagnostics_at_sync
 use MOM_tracer_registry,       only : post_tracer_transport_diagnostics, MOM_tracer_chksum
+use MOM_tracer_registry,       only : post_tracer_integral_diagnostics
 use MOM_tracer_registry,       only : preALE_tracer_diagnostics, postALE_tracer_diagnostics
 use MOM_tracer_registry,       only : lock_tracer_registry, tracer_registry_end
 use MOM_tracer_flow_control,   only : call_tracer_register, tracer_flow_control_CS
@@ -1062,6 +1063,8 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
                           CS%CDp, p_surf, CS%t_dyn_rel_diag, CS%diag_pre_sync,&
                           G, GV, US, CS%diagnostics_CSp)
       call post_tracer_diagnostics_at_sync(CS%Tracer_reg, h, CS%diag_pre_sync, CS%diag, G, GV, CS%t_dyn_rel_diag)
+      call post_tracer_integral_diagnostics(G, GV, US, CS%Tracer_reg, h, CS%tv, CS%diag)
+
       call diag_copy_diag_to_storage(CS%diag_pre_sync, h, CS%diag)
       if (showCallTree) call callTree_waypoint("finished calculate_diagnostic_fields (step_MOM)")
       call disable_averaging(CS%diag)
@@ -1730,7 +1733,7 @@ subroutine step_MOM_thermo(CS, G, GV, US, u, v, h, tv, fluxes, dtdia, &
     fluxes%fluxes_used = .true.
 
     if (CS%stoch_CS%do_skeb) then
-       call apply_skeb(CS%G,CS%GV,CS%stoch_CS,CS%u,CS%v,CS%h,CS%tv,dtdia,Time_end_thermo)
+       call apply_skeb(G, GV, US, CS%stoch_CS, u, v, h, tv, dtdia, Time_end_thermo)
     endif
 
     if (showCallTree) call callTree_waypoint("finished diabatic (step_MOM_thermo)")
@@ -3738,7 +3741,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
   endif
 
   ! initialize stochastic physics
-  call stochastics_init(CS%dt_therm, CS%G, CS%GV, CS%stoch_CS, param_file, diag, Time)
+  call stochastics_init(CS%dt_therm, CS%G, CS%GV, US, CS%stoch_CS, param_file, diag, Time)
 
   call callTree_leave("initialize_MOM()")
   call cpu_clock_end(id_clock_init)
