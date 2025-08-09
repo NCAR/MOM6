@@ -9,6 +9,7 @@ module marbl_interface
     use marbl_interface_public_types, only : marbl_diagnostics_type
     use marbl_interface_public_types, only : marbl_domain_type
     use marbl_interface_public_types, only : marbl_output_for_GCM_type
+    use marbl_interface_public_types, only : marbl_running_mean_0d_type
     implicit none
     private ! Only want marbl_interface_class to be public, not supporting functions
 
@@ -33,6 +34,14 @@ module marbl_interface
         real, allocatable :: bot_flux_to_tend(:)      !< dummy array for bot flux to tendency wgts
         real, allocatable :: surface_fluxes(:,:)  !< dummy fluxes
         real, allocatable :: interior_tendencies(:,:)  !< dummy tendencies
+        real, allocatable :: glo_avg_fields_interior_tendency(:)  !< dummy tracer array
+        real, allocatable :: glo_avg_fields_surface_flux(:,:)  !< dummy tracer array
+        real, allocatable :: glo_avg_averages_interior_tendency(:)  !< dummy tracer array
+        real, allocatable :: glo_avg_averages_surface_flux(:)  !< dummy tracer array
+        type(marbl_running_mean_0d_type), allocatable  :: glo_avg_rmean_interior_tendency(:) !< dummy rmean array
+        type(marbl_running_mean_0d_type), allocatable  :: glo_avg_rmean_surface_flux(:) !< dummy rmean array
+        type(marbl_running_mean_0d_type), allocatable  :: glo_scalar_rmean_interior_tendency(:) !< dummy rmean array
+        type(marbl_running_mean_0d_type), allocatable  :: glo_scalar_rmean_surface_flux(:) !< dummy rmean array
        contains
         procedure, public  :: put_setting                !< dummy put_setting routine
         procedure, public  :: get_setting                !< dummy get_setting routine

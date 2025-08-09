@@ -304,7 +304,7 @@ subroutine tracer_flow_control_init(restart, day, G, GV, US, h, param_file, diag
                                          intent(in)    :: h       !< Layer thicknesses [H ~> m or kg m-2]
   type(param_file_type),                 intent(in)    :: param_file !< A structure to parse for
                                                                   !! run-time parameters
-  type(diag_ctrl), target,               intent(in)    :: diag    !< A structure that is used to
+  type(diag_ctrl), target,               intent(inout) :: diag    !< A structure that is used to
                                                                   !! regulate diagnostic output.
   type(ocean_OBC_type),                  pointer       :: OBC     !< This open boundary condition
                                                                   !! type specifies whether, where,

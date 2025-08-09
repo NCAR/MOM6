@@ -87,4 +87,10 @@ module marbl_interface_public_types
         type(marbl_single_output_type), dimension(:), pointer :: outputs_for_GCM => NULL()  !< dummy outputs_for_GCM
     end type marbl_output_for_GCM_type
 
+    !> A non-functioning template of MARBL running mean type
+    type, public :: marbl_running_mean_0d_type
+        character(len=0) :: sname  !< dummy shortname label
+        real :: rmean  !< dummy running mean values
+    end type marbl_running_mean_0d_type
+
 end module marbl_interface_public_types

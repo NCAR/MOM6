@@ -1,10 +1,8 @@
 !> This module provides a common datatype to provide forcing for MARBL tracers
-!! regardless of driver
+!! regardless of driver from config_src/
 module MARBL_forcing_mod
 
-!! This module exists to house code used by multiple drivers in config_src/
-!! for passing forcing fields to MARBL
-!! (This comment can go in the wiki on the NCAR fork?)
+! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_diag_mediator,        only : safe_alloc_ptr, diag_ctrl, register_diag_field, post_data
 use MOM_time_manager,         only : time_type

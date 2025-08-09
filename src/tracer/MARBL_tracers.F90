@@ -25,7 +25,7 @@ use MOM_open_boundary,   only : ocean_OBC_type
 use MOM_remapping,       only : reintegrate_column
 use MOM_remapping,       only : remapping_CS, initialize_remapping, remapping_core_h
 use MOM_restart,         only : query_initialized, MOM_restart_CS, register_restart_field
-use MOM_spatial_means,   only : global_mass_int_EFP
+use MOM_spatial_means,   only : global_mass_int_EFP, global_area_mean
 use MOM_sponge,          only : set_up_sponge_field, sponge_CS
 use MOM_time_manager,    only : time_type
 use MOM_tracer_registry, only : register_tracer
@@ -36,7 +36,7 @@ use MOM_tracer_Z_init,   only : read_Z_edges
 use MOM_unit_scaling,    only : unit_scale_type
 use MOM_variables,       only : surface, thermo_var_ptrs
 use MOM_verticalGrid,    only : verticalGrid_type
-use MOM_diag_mediator,   only : register_diag_field, post_data!, safe_alloc_ptr
+use MOM_diag_mediator,   only : register_diag_field, register_scalar_field, post_data!, safe_alloc_ptr
 
 use MARBL_interface,              only : MARBL_interface_class
 use MARBL_interface_public_types, only : marbl_diagnostics_type, marbl_saved_state_type
@@ -209,18 +209,24 @@ type, public :: MARBL_tracers_CS ; private
                                            !! (dims: i, j, k, num_ito)
                                            !! Units vary based on index of num_ito dimension
 
-  integer :: u10_sqr_ind   !< index of MARBL forcing field array to copy 10-m wind (squared) into
-  integer :: sss_ind       !< index of MARBL forcing field array to copy sea surface salinity into
-  integer :: sst_ind       !< index of MARBL forcing field array to copy sea surface temperature into
-  integer :: ifrac_ind     !< index of MARBL forcing field array to copy ice fraction into
-  integer :: dust_dep_ind  !< index of MARBL forcing field array to copy dust flux into
-  integer :: fe_dep_ind    !< index of MARBL forcing field array to copy iron flux into
-  integer :: nox_flux_ind  !< index of MARBL forcing field array to copy NOx flux into
-  integer :: nhy_flux_ind  !< index of MARBL forcing field array to copy NHy flux into
-  integer :: atmpress_ind  !< index of MARBL forcing field array to copy atmospheric pressure into
-  integer :: xco2_ind      !< index of MARBL forcing field array to copy CO2 flux into
-  integer :: xco2_alt_ind  !< index of MARBL forcing field array to copy CO2 flux (alternate CO2) into
-  integer :: d14c_ind      !< index of MARBL forcing field array to copy d14C into
+  integer :: u10_sqr_ind      !< index of MARBL forcing field array to copy 10-m wind (squared) into
+  integer :: sss_ind          !< index of MARBL forcing field array to copy sea surface salinity into
+  integer :: sst_ind          !< index of MARBL forcing field array to copy sea surface temperature into
+  integer :: ifrac_ind        !< index of MARBL forcing field array to copy ice fraction into
+  integer :: dust_dep_ind     !< index of MARBL forcing field array to copy dust flux into
+  integer :: fe_dep_ind       !< index of MARBL forcing field array to copy iron flux into
+  integer :: nox_flux_ind     !< index of MARBL forcing field array to copy NOx flux into
+  integer :: nhy_flux_ind     !< index of MARBL forcing field array to copy NHy flux into
+  integer :: atmpress_ind     !< index of MARBL forcing field array to copy atmospheric pressure into
+  integer :: xco2_ind         !< index of MARBL forcing field array to copy CO2 flux into
+  integer :: xco2_alt_ind     !< index of MARBL forcing field array to copy CO2 flux (alternate CO2) into
+  integer :: ext_C_flux_ind   !< index of MARBL forcing field array to copy external C flux into
+                              !! Needed if running with ladjust_bury_coeff = .true.
+  integer :: ext_P_flux_ind   !< index of MARBL forcing field array to copy external P flux into
+                              !! Needed if running with ladjust_bury_coeff = .true.
+  integer :: ext_Si_flux_ind  !< index of MARBL forcing field array to copy external Si flux into
+                              !! Needed if running with ladjust_bury_coeff = .true.
+  integer :: d14c_ind         !< index of MARBL forcing field array to copy d14C into
 
   !> external_field types for river fluxes (added to surface fluxes)
   type(external_field) :: id_din_riv     !< id for time_interp_external.
@@ -284,6 +290,14 @@ type, public :: MARBL_tracers_CS ; private
   integer :: ito_cnt       !< number of interior tendency outputs from MARBL
   integer :: flux_co2_ind  !< index to co2 flux surface flux output
   integer :: total_Chl_ind !< index to total chlorophyll interior tendency output
+
+  !> Variables related to global averages
+  real, allocatable, dimension(:,:,:) :: glo_avg_fields_interior !< global copy of values returned
+                                                                 !! column-by-column from MARBL
+  real, allocatable, dimension(:,:,:) :: glo_avg_fields_surface  !< global copy of values returned
+                                                                 !! column-by-column from MARBL
+  integer, allocatable, dimension(:)  :: glo_scalar_rmean_interior_id !< diagnostic index
+  integer, allocatable, dimension(:)  :: glo_scalar_rmean_surface_id !< diagnostic index
 
   ! TODO: create generic 3D forcing input type to read z coordinate + values
   real    :: fesedflux_scale_factor !< scale factor for iron sediment flux [mmol umol-1 d s-1]
@@ -395,7 +409,7 @@ subroutine configure_MARBL_tracers(GV, US, param_file, CS)
   call MARBL_instances%init(gcm_num_levels = nz, gcm_num_PAR_subcols = CS%ice_ncat + 1, &
       gcm_num_elements_surface_flux = 1, & ! FIXME: change to number of grid cells on MPI task
       gcm_delta_z = GV%sInterface(2:nz+1) - GV%sInterface(1:nz), gcm_zw = GV%sInterface(2:nz+1), &
-      gcm_zt = GV%sLayer, unit_system_opt = "mks", lgcm_has_global_ops = .false.) ! FIXME: add global ops
+      gcm_zt = GV%sLayer, unit_system_opt = "mks", lgcm_has_global_ops = .true.)
   ! Regardless of vertical grid, MOM6 will always use GV%ke levels in all columns
   MARBL_instances%domain%kmt = GV%ke
   if (MARBL_instances%StatusLog%labort_marbl) &
@@ -456,6 +470,9 @@ subroutine configure_MARBL_tracers(GV, US, param_file, CS)
   CS%atmpress_ind = -1
   CS%xco2_ind = -1
   CS%xco2_alt_ind = -1
+  CS%ext_C_flux_ind = -1
+  CS%ext_P_flux_ind = -1
+  CS%ext_Si_flux_ind = -1
   do m=1,size(MARBL_instances%surface_flux_forcings)
     select case (trim(MARBL_instances%surface_flux_forcings(m)%metadata%varname))
       case('u10_sqr')
@@ -480,6 +497,12 @@ subroutine configure_MARBL_tracers(GV, US, param_file, CS)
         CS%xco2_ind = m
       case('xco2_alt_co2')
         CS%xco2_alt_ind = m
+      case('external C Flux')
+        CS%ext_C_flux_ind = m
+      case('external P Flux')
+        CS%ext_P_flux_ind = m
+      case('external Si Flux')
+        CS%ext_Si_flux_ind = m
       case('d14c')
         CS%d14c_ind = m
       case DEFAULT
@@ -586,6 +609,7 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
   integer :: forcing_file_data_ref_year
   integer :: forcing_file_model_ref_year
   integer :: forcing_file_forcing_year
+  integer :: glo_avg_field_cnt
   logical :: register_MARBL_tracers
   ! read_Z_edges() has several mandatory arguments that we do not use given our expectation
   ! of how the file being read in was created
@@ -603,6 +627,12 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
 
   call configure_MARBL_tracers(GV, US, param_file, CS)
   MARBL_computes_chl = CS%base_bio_on
+
+  ! Allocate memory for global means and sums
+  glo_avg_field_cnt = size(marbl_instances%glo_avg_fields_interior_tendency, dim=1)
+  allocate(CS%glo_avg_fields_interior(isd:ied, jsd:jed, glo_avg_field_cnt), source=0.)
+  glo_avg_field_cnt = size(marbl_instances%glo_avg_fields_surface_flux, dim=2)
+  allocate(CS%glo_avg_fields_surface(isd:ied, jsd:jed, glo_avg_field_cnt), source=0.)
 
   ! Read all relevant parameters and write them to the model log.
   call log_version(param_file, mdl, version, "")
@@ -857,7 +887,7 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   type(unit_scale_type),                 intent(in)    :: US           !< A dimensional unit scaling type
   real, dimension(NIMEM_,NJMEM_,NKMEM_), intent(in)    :: h            !< Layer thicknesses [H ~> m or kg m-2]
   type(param_file_type),                 intent(in)    :: param_file   !< A structure to parse for run-time parameters
-  type(diag_ctrl), target,               intent(in)    :: diag         !< Structure used to regulate diagnostic output.
+  type(diag_ctrl), target,               intent(inout) :: diag         !< Structure used to regulate diagnostic output.
   type(ocean_OBC_type),                  pointer       :: OBC          !< This open boundary condition type specifies
                                                                        !! whether, where, and what open boundary
                                                                        !! conditions are used.
@@ -951,6 +981,24 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   CS%bot_flux_to_tend_id = register_diag_field("ocean_model", "BOT_FLUX_TO_TEND", &
       diag%axesTL, & ! T=> tracer grid? L => layer center
       day, "Conversion Factor for Bottom Flux -> Tend", "1/m")
+
+  ! Register scalar fields from running means (if ladjust_bury_coeff = .true.)
+  diag_size = size(MARBL_instances%glo_scalar_rmean_interior_tendency)
+  allocate(CS%glo_scalar_rmean_interior_id(diag_size), source=-1)
+  do m=1,diag_size
+    CS%glo_scalar_rmean_interior_id(m) = register_scalar_field('ocean_model', &
+        trim(MARBL_instances%glo_scalar_rmean_interior_tendency(m)%sname), &
+        day, diag, trim(MARBL_instances%glo_scalar_rmean_interior_tendency(m)%sname), &
+        'unitless')
+  end do
+  diag_size = size(MARBL_instances%glo_scalar_rmean_surface_flux)
+  allocate(CS%glo_scalar_rmean_surface_id(diag_size))
+  do m=1,diag_size
+    CS%glo_scalar_rmean_surface_id(m) = register_scalar_field('ocean_model', &
+        trim(MARBL_instances%glo_scalar_rmean_surface_flux(m)%sname), &
+        day, diag, trim(MARBL_instances%glo_scalar_rmean_surface_flux(m)%sname), &
+        'unitless')
+  end do
 
   ! Initialize tracers (if they weren't initialized from restart file)
   do m=1,CS%ntr
@@ -1359,6 +1407,36 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
         endif
       endif
 
+      ! If running with ladjust_bury_coeff = .true., need to fill external flux forcing
+      if (CS%ext_C_flux_ind > 0) then
+        MARBL_instances%surface_flux_forcings(CS%ext_C_flux_ind)%field_0d(1) = 0.
+        if (CS%tracer_inds%dic_ind > 0) &
+          MARBL_instances%surface_flux_forcings(CS%ext_C_flux_ind)%field_0d(1) =     &
+              MARBL_instances%surface_flux_forcings(CS%ext_C_flux_ind)%field_0d(1) + &
+              CS%RIV_FLUXES(i,j,CS%tracer_inds%dic_ind)
+        if (CS%tracer_inds%doc_ind > 0) &
+          MARBL_instances%surface_flux_forcings(CS%ext_C_flux_ind)%field_0d(1) =     &
+              MARBL_instances%surface_flux_forcings(CS%ext_C_flux_ind)%field_0d(1) + &
+              CS%RIV_FLUXES(i,j,CS%tracer_inds%doc_ind)
+      endif
+      if (CS%ext_P_flux_ind > 0) then
+        MARBL_instances%surface_flux_forcings(CS%ext_P_flux_ind)%field_0d(1) = 0.
+        if (CS%tracer_inds%po4_ind > 0) &
+          MARBL_instances%surface_flux_forcings(CS%ext_P_flux_ind)%field_0d(1) =     &
+              MARBL_instances%surface_flux_forcings(CS%ext_P_flux_ind)%field_0d(1) + &
+              CS%RIV_FLUXES(i,j,CS%tracer_inds%po4_ind)
+        if (CS%tracer_inds%dop_ind > 0) &
+          MARBL_instances%surface_flux_forcings(CS%ext_P_flux_ind)%field_0d(1) =     &
+              MARBL_instances%surface_flux_forcings(CS%ext_P_flux_ind)%field_0d(1) + &
+              CS%RIV_FLUXES(i,j,CS%tracer_inds%dop_ind)
+      endif
+      if (CS%ext_Si_flux_ind > 0) then
+        MARBL_instances%surface_flux_forcings(CS%ext_Si_flux_ind)%field_0d(1) = 0.
+        if (CS%tracer_inds%sio3_ind > 0) &
+          MARBL_instances%surface_flux_forcings(CS%ext_Si_flux_ind)%field_0d(1) = &
+              CS%RIV_FLUXES(i,j,CS%tracer_inds%sio3_ind)
+      endif
+
       !       These are okay, but need option to come in from coupler
       if (CS%xco2_ind > 0) &
         MARBL_instances%surface_flux_forcings(CS%xco2_ind)%field_0d(1) = fluxes%atm_co2(i,j)
@@ -1430,6 +1508,9 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
         CS%SFO(i,j,m) = MARBL_instances%surface_flux_output%outputs_for_GCM(m)%forcing_field_0d(1)
       enddo
 
+      !     * Variables for global means
+      CS%glo_avg_fields_surface(i,j,:) = marbl_instances%glo_avg_fields_surface_flux(1,:)
+
     enddo
   enddo
 
@@ -1497,6 +1578,17 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
         call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
     endif
   endif
+
+  ! Running mean variables
+  do m=1,size(CS%glo_scalar_rmean_surface_id)
+    MARBL_instances%glo_avg_averages_surface_flux(m) = global_area_mean( &
+        CS%glo_avg_fields_surface(:,:,m), G)
+    ! TODO: this should actually be running mean
+    MARBL_instances%glo_avg_rmean_surface_flux(m)%rmean = MARBL_instances%glo_avg_averages_surface_flux(m)
+    if (CS%glo_scalar_rmean_surface_id(m) > 0) &
+      call post_data(CS%glo_scalar_rmean_surface_id(m), &
+                     MARBL_instances%glo_scalar_rmean_surface_flux(m)%rmean, CS%diag)
+  end do
 
   if (CS%debug) then
     do m=1,CS%ntr
@@ -1765,6 +1857,9 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
             MARBL_instances%interior_tendency_output%outputs_for_GCM(m)%forcing_field_1d(1,:)
       enddo
 
+      !     * Variables for global means
+      CS%glo_avg_fields_interior(i,j,:) = marbl_instances%glo_avg_fields_interior_tendency(:)
+
     enddo
   enddo
 
@@ -1779,6 +1874,7 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
   !     i. Interior tendency diagnostics (mix of 2D and 3D)
   !     ii. Interior tendencies themselves
   !     iii. Forcing fields
+  !     iv. Running means
   if (CS%bot_flux_to_tend_id > 0) &
     call post_data(CS%bot_flux_to_tend_id, bot_flux_to_tend(:, :, :), CS%diag)
 
@@ -1828,6 +1924,17 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
         call post_data(CS%qsw_cat_id(m), fluxes%qsw_cat(:,:,m), CS%diag)
     enddo
   endif
+
+  ! Running mean variables
+  do m=1,size(CS%glo_scalar_rmean_interior_id)
+    MARBL_instances%glo_avg_averages_interior_tendency(m) = global_area_mean( &
+        CS%glo_avg_fields_interior(:,:,m), G)
+    ! TODO: this should actually be running mean
+    MARBL_instances%glo_avg_rmean_interior_tendency(m)%rmean = MARBL_instances%glo_avg_averages_interior_tendency(m)
+    if (CS%glo_scalar_rmean_interior_id(m) > 0) &
+      call post_data(CS%glo_scalar_rmean_interior_id(m), &
+                     MARBL_instances%glo_scalar_rmean_interior_tendency(m)%rmean, CS%diag)
+  end do
 
 
 end subroutine MARBL_tracers_column_physics
@@ -2170,6 +2277,8 @@ subroutine MARBL_tracers_end(CS)
     if (allocated(CS%fesedflux_in)) deallocate(CS%fesedflux_in)
     if (allocated(CS%feventflux_in)) deallocate(CS%feventflux_in)
     if (allocated(CS%I_tau)) deallocate(CS%I_tau)
+    if (allocated(CS%glo_avg_fields_interior)) deallocate(CS%glo_avg_fields_interior)
+    if (allocated(CS%glo_avg_fields_surface)) deallocate(CS%glo_avg_fields_surface)
     deallocate(CS)
   endif
 end subroutine MARBL_tracers_end
