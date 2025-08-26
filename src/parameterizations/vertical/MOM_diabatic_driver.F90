@@ -67,7 +67,7 @@ use MOM_set_diffusivity,     only : set_diffusivity_CS
 use MOM_sponge,              only : apply_sponge, sponge_CS
 use MOM_ALE_sponge,          only : apply_ALE_sponge, ALE_sponge_CS
 use MOM_time_manager,        only : time_type, real_to_time, operator(-), operator(<=)
-use MOM_tracer_flow_control, only : call_tracer_column_fns, tracer_flow_control_CS
+use MOM_tracer_flow_control, only : call_tracer_column_fns, tracer_flow_control_CS, extract_tracer_flow_member
 use MOM_tracer_diabatic,     only : tracer_vertdiff, tracer_vertdiff_Eulerian
 use MOM_unit_scaling,        only : unit_scale_type
 use MOM_variables,           only : thermo_var_ptrs, vertvisc_type, accel_diag_ptrs
@@ -178,10 +178,17 @@ type, public :: diabatic_CS ; private
   real    :: dz_subML_N2             !< The distance over which to calculate a diagnostic of the
                                      !! average stratification at the base of the mixed layer [Z ~> m].
   real    :: MLD_En_vals(3)          !< Energy values for energy mixed layer diagnostics [R Z3 T-2 ~> J m-2]
+  real    :: BMLD_En_vals(3)         !< Energy values for energy bottom mixed layer diagnostics [R Z3 T-2 ~> J m-2]
+  logical :: use_OM4_MLD_En_iter     !< If true, uses an older iteration in the energetics MLD calculation to bitwise
+                                     !! reproduce OM4 era models
   real    :: ref_h_mld = 0.0         !< The depth of the "surface"  density used in a difference mixed based
                                      !! MLD calculation [Z ~> m].
   logical :: Use_KdWork_diag = .false.  !< Logical flag to indicate if any Kd_work diagnostics are on.
   logical :: Use_N2_diag = .false.   !< Logical flag to indicate if any N2 diagnostics are on.
+
+  ! MARBL needs T & S from before the tracer_vertdiff call
+  real, allocatable, dimension(:,:,:) :: prediabatic_T  !< Temperature prior to calling diabatic driver [C ~> degC]
+  real, allocatable, dimension(:,:,:) :: prediabatic_S  !< Salinity prior to calling diabatic driver [S ~> ppt]
 
   !>@{ Diagnostic IDs
   integer :: id_ea       = -1, id_eb       = -1 ! used by layer diabatic
@@ -193,6 +200,7 @@ type, public :: diabatic_CS ; private
   integer :: id_MLD_003 = -1, id_MLD_0125 = -1, id_MLD_user = -1, id_mlotstsq = -1
   integer :: id_MLD_003_zr = -1, id_MLD_003_rr = -1
   integer :: id_MLD_EN1 = -1, id_MLD_EN2  = -1, id_MLD_EN3  = -1, id_subMLN2  = -1
+  integer :: id_BMLD_EN1 = -1, id_BMLD_EN2  = -1, id_BMLD_EN3  = -1
 
   ! These are handles to diagnostics that are only available in non-ALE layered mode.
   integer :: id_wd       = -1
@@ -502,10 +510,15 @@ subroutine diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, &
                                         ref_H_MLD=0.0, id_ref_z=-1, id_ref_rho=-1)
   endif
   if ((CS%id_MLD_EN1 > 0) .or. (CS%id_MLD_EN2 > 0) .or. (CS%id_MLD_EN3 > 0)) then
-    call diagnoseMLDbyEnergy((/CS%id_MLD_EN1, CS%id_MLD_EN2, CS%id_MLD_EN3/),&
-                             h, tv, G, GV, US, CS%MLD_En_vals, CS%diag)
+    ! Surface Mixed Layer diagnostic
+    call diagnoseMLDbyEnergy((/CS%id_MLD_EN1, CS%id_MLD_EN2, CS%id_MLD_EN3/), h, tv, G, GV, US, CS%MLD_En_vals, &
+                             (/1,nz/), CS%diag, OM4_iteration=CS%use_OM4_MLD_En_iter)
   endif
-
+  if ((CS%id_BMLD_EN1 > 0) .or. (CS%id_BMLD_EN2 > 0) .or. (CS%id_BMLD_EN3 > 0)) then
+    ! Bottom Mixed Layer diagnostic
+    call diagnoseMLDbyEnergy((/CS%id_BMLD_EN1, CS%id_BMLD_EN2, CS%id_BMLD_EN3/), h, tv, G, GV, US, CS%BMLD_En_vals, &
+                             (/nz,1/), CS%diag, OM4_iteration=.false.)
+  endif
   if (stoch_CS%do_sppt .and. stoch_CS%id_sppt_wts > 0) &
     call post_data(stoch_CS%id_sppt_wts, stoch_CS%sppt_wts, CS%diag)
 
@@ -580,7 +593,8 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     U_star, &    ! The friction velocity [Z T-1 ~> m s-1].
     KPP_temp_flux, & ! KPP effective temperature flux [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
     KPP_salt_flux, & ! KPP effective salt flux [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
-    SkinBuoyFlux ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+    SkinBuoyFlux, &  ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+    BBL_BuoyFlux     ! 2d bottom buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
 
   real, dimension(SZI_(G)) :: &
     p_i ,&      ! Pressure at the interface [R L2 T-2 ~> Pa]
@@ -637,6 +651,22 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
   showCallTree = callTree_showQuery()
   if (showCallTree) call callTree_enter("diabatic_ALE_legacy(), MOM_diabatic_driver.F90")
 
+  ! Some tracer packages require T & S from the beginning of the diabatic step to
+  ! provide forcing consistent with the passive tracer values. The initialization
+  ! routine will allocate prediabatic_T and prediabatic_S if the tracer flow control
+  ! structure indicates it is necessary. If these arrays are allocated, they will store
+  ! a copy of tv%T & tv%S before this subroutine modifies the tv structure.
+  if (allocated(CS%prediabatic_T)) then
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      CS%prediabatic_T(i,j,k) = tv%T(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+  if (allocated(CS%prediabatic_S)) then
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      CS%prediabatic_S(i,j,k) = tv%S(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+
   ! For all other diabatic subroutines, the averaging window should be the entire diabatic timestep
   call enable_averages(dt, Time_end, CS%diag)
 
@@ -644,7 +674,7 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
 
   if (CS%use_geothermal) then
     call cpu_clock_begin(id_clock_geothermal)
-    call geothermal_in_place(h, tv, dt, G, GV, US, CS%geothermal, halo=CS%halo_TS_diff)
+    call geothermal_in_place(h, tv, dt, G, GV, US, CS%geothermal, BBL_BuoyFlux, halo=CS%halo_TS_diff)
     call cpu_clock_end(id_clock_geothermal)
     if (showCallTree) call callTree_waypoint("geothermal (diabatic)")
     if (CS%debugConservation) call MOM_state_stats('geothermal', u, v, h, tv%T, tv%S, G, GV, US)
@@ -896,7 +926,7 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
 
     call find_uv_at_h(u, v, h, u_h, v_h, G, GV, US)
     call energetic_PBL(h, u_h, v_h, tv, fluxes, visc, dt, Kd_ePBL, G, GV, US, &
-                       CS%ePBL, stoch_CS, dSV_dT, dSV_dS, cTKE, SkinBuoyFlux, waves=waves)
+                       CS%ePBL, stoch_CS, dSV_dT, dSV_dS, cTKE, SkinBuoyFlux, BBL_BuoyFlux, waves=waves)
 
     call energetic_PBL_get_MLD(CS%ePBL, BLD(:,:), G, US)
     ! If visc%MLD or visc%h_ML exist, copy ePBL's BLD into them with appropriate conversions.
@@ -1192,7 +1222,8 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
                               KPP_CSp=CS%KPP_CSp, &
                               nonLocalTrans=KPP_NLTscalar, &
                               evap_CFL_limit=CS%evap_CFL_limit, &
-                              minimum_forcing_depth=CS%minimum_forcing_depth, h_BL=visc%h_ML)
+                              minimum_forcing_depth=CS%minimum_forcing_depth, h_BL=visc%h_ML, &
+                              prediabatic_T=CS%prediabatic_T, prediabatic_S=CS%prediabatic_S)
 
   call cpu_clock_end(id_clock_tracers)
 
@@ -1292,7 +1323,8 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
     U_star, &    ! The friction velocity [Z T-1 ~> m s-1].
     KPP_temp_flux, & ! KPP effective temperature flux [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
     KPP_salt_flux, & ! KPP effective salt flux [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
-    SkinBuoyFlux ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+    SkinBuoyFlux, &  ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+    BBL_BuoyFlux     ! 2d bottom buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
 
   logical, dimension(SZI_(G)) :: &
     in_boundary  ! True if there are no massive layers below, where massive is defined as
@@ -1352,6 +1384,22 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
   if (.not. (CS%useALEalgorithm)) call MOM_error(FATAL, "MOM_diabatic_driver: "// &
          "The ALE algorithm must be enabled when using MOM_diabatic_driver.")
 
+  ! Some tracer packages require T & S from the beginning of the diabatic step to
+  ! provide forcing consistent with the passive tracer values. The initialization
+  ! routine will allocate prediabatic_T and prediabatic_S if the tracer flow control
+  ! structure indicates it is necessary. If these arrays are allocated, they will store
+  ! a copy of tv%T & tv%S before this subroutine modifies the tv structure.
+  if (allocated(CS%prediabatic_T)) then
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      CS%prediabatic_T(i,j,k) = tv%T(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+  if (allocated(CS%prediabatic_S)) then
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      CS%prediabatic_S(i,j,k) = tv%S(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+
   ! For all other diabatic subroutines, the averaging window should be the entire diabatic timestep
   call enable_averages(dt, Time_end, CS%diag)
 
@@ -1359,7 +1407,7 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
 
   if (CS%use_geothermal) then
     call cpu_clock_begin(id_clock_geothermal)
-    call geothermal_in_place(h, tv, dt, G, GV, US, CS%geothermal, halo=CS%halo_TS_diff)
+    call geothermal_in_place(h, tv, dt, G, GV, US, CS%geothermal, BBL_buoyflux, halo=CS%halo_TS_diff)
     call cpu_clock_end(id_clock_geothermal)
     if (showCallTree) call callTree_waypoint("geothermal (diabatic)")
     if (CS%debugConservation) call MOM_state_stats('geothermal', u, v, h, tv%T, tv%S, G, GV, US)
@@ -1547,7 +1595,7 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
 
     call find_uv_at_h(u, v, h, u_h, v_h, G, GV, US)
     call energetic_PBL(h, u_h, v_h, tv, fluxes, visc, dt, Kd_ePBL, G, GV, US, &
-                       CS%ePBL, stoch_CS, dSV_dT, dSV_dS, cTKE, SkinBuoyFlux, waves=waves)
+                       CS%ePBL, stoch_CS, dSV_dT, dSV_dS, cTKE, SkinBuoyFlux, BBL_BuoyFlux, waves=waves)
 
     call energetic_PBL_get_MLD(CS%ePBL, BLD(:,:), G, US)
     ! If visc%MLD or visc%h_ML exist, copy ePBL's BLD into them with appropriate conversions.
@@ -1818,7 +1866,8 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
                               KPP_CSp=CS%KPP_CSp, &
                               nonLocalTrans=KPP_NLTscalar, &
                               evap_CFL_limit=CS%evap_CFL_limit, &
-                              minimum_forcing_depth=CS%minimum_forcing_depth, h_BL=visc%h_ML)
+                              minimum_forcing_depth=CS%minimum_forcing_depth, h_BL=visc%h_ML, &
+                              prediabatic_T=CS%prediabatic_T, prediabatic_S=CS%prediabatic_S)
 
   call cpu_clock_end(id_clock_tracers)
 
@@ -2928,7 +2977,6 @@ subroutine diagnose_diabatic_diff_tendency(tv, h, temp_old, saln_old, dt, G, GV,
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: work_3d ! A 3-d work array for diagnostics [various]
   real, dimension(SZI_(G),SZJ_(G))          :: work_2d ! A 2-d work array for diagnostics [various]
   real :: Idt  ! The inverse of the timestep [T-1 ~> s-1]
-  real :: ppt2mks  ! Conversion factor from S to kg/kg [S-1 ~> ppt-1].
   integer :: i, j, k, is, ie, js, je, nz
   logical :: do_saln_tend   ! Calculate salinity-based tendency diagnostics
 
@@ -2978,9 +3026,8 @@ subroutine diagnose_diabatic_diff_tendency(tv, h, temp_old, saln_old, dt, G, GV,
 
     ! salt tendency
     if (CS%id_diabatic_diff_salt_tend > 0 .or. CS%id_diabatic_diff_salt_tend_2d > 0) then
-      ppt2mks = US%S_to_ppt*0.001
       do k=1,nz ; do j=js,je ; do i=is,ie
-        work_3d(i,j,k) = h(i,j,k)*GV%H_to_RZ * ppt2mks * work_3d(i,j,k)
+        work_3d(i,j,k) = h(i,j,k) * work_3d(i,j,k)
       enddo ; enddo ; enddo
       if (CS%id_diabatic_diff_salt_tend > 0) then
         call post_data(CS%id_diabatic_diff_salt_tend, work_3d, CS%diag, alt_h=h)
@@ -3023,7 +3070,6 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: work_3d ! A 3-d work array for diagnostics [various]
   real, dimension(SZI_(G),SZJ_(G))          :: work_2d ! A 2-d work array for diagnostics [various]
   real :: Idt  ! The inverse of the timestep [T-1 ~> s-1]
-  real :: ppt2mks  ! Conversion factor from S to kg/kg [S-1 ~> ppt-1].
   integer :: i, j, k, is, ie, js, je, nz
 
   is  = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
@@ -3074,9 +3120,8 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
 
   ! salt tendency
   if (CS%id_boundary_forcing_salt_tend > 0 .or. CS%id_boundary_forcing_salt_tend_2d > 0) then
-    ppt2mks = US%S_to_ppt*0.001
     do k=1,nz ; do j=js,je ; do i=is,ie
-      work_3d(i,j,k) = GV%H_to_RZ * ppt2mks * Idt * (h(i,j,k) * tv%S(i,j,k) - h_old(i,j,k) * saln_old(i,j,k))
+      work_3d(i,j,k) = Idt * (h(i,j,k) * tv%S(i,j,k) - h_old(i,j,k) * saln_old(i,j,k))
     enddo ; enddo ; enddo
     if (CS%id_boundary_forcing_salt_tend > 0) then
       call post_data(CS%id_boundary_forcing_salt_tend, work_3d, CS%diag, alt_h=h_old)
@@ -3227,7 +3272,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
 
   ! Local variables
   real    :: Kd  ! A diffusivity used in the default for other tracer diffusivities [Z2 T-1 ~> m2 s-1]
-  logical :: use_temperature
+  logical :: use_temperature, use_MARBL_tracers
   character(len=20) :: EN1, EN2, EN3
 
   ! This "include" declares and sets the variable "version".
@@ -3246,7 +3291,12 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
   CS%diag => diag
   CS%Time => Time
 
-  if (associated(tracer_flow_CSp)) CS%tracer_flow_CSp => tracer_flow_CSp
+  if (associated(tracer_flow_CSp)) then
+    CS%tracer_flow_CSp => tracer_flow_CSp
+    call extract_tracer_flow_member(tracer_flow_CSp, use_MARBL_tracers=use_MARBL_tracers)
+    if (use_MARBL_tracers) &
+      allocate(CS%prediabatic_T(SZI_(G),SZJ_(G), SZK_(G)), CS%prediabatic_S(SZI_(G),SZJ_(G), SZK_(G)))
+  end if
   if (associated(sponge_CSp))      CS%sponge_CSp      => sponge_CSp
   if (associated(ALE_sponge_CSp))  CS%ALE_sponge_CSp  => ALE_sponge_CSp
   if (associated(oda_incupd_CSp))  CS%oda_incupd_CSp  => oda_incupd_CSp
@@ -3478,6 +3528,29 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_MLD_EN3 = register_diag_field('ocean_model', 'MLD_EN3', diag%axesT1, Time, &
          'Mixed layer depth for energy value set to '//trim(EN3)//' J/m2 (Energy set by 3rd MLD_EN_VALS)', &
          units='m', conversion=US%Z_to_m)
+    call get_param(param_file, mdl, "BMLD_EN_VALS", CS%BMLD_En_vals, &
+         "The energy values used to compute Bottom MLDs.  If not set (or all set to 0.), the "//&
+         "default will overwrite to 25., 2500., 250000.", units='J/m2', &
+         defaults=(/25., 2500., 250000./), scale=US%W_m2_to_RZ3_T3*US%s_to_T)
+    write(EN1,'(F10.2)') CS%BMLD_En_vals(1)*US%RZ3_T3_to_W_m2*US%T_to_s
+    write(EN2,'(F10.2)') CS%BMLD_En_vals(2)*US%RZ3_T3_to_W_m2*US%T_to_s
+    write(EN3,'(F10.2)') CS%BMLD_En_vals(3)*US%RZ3_T3_to_W_m2*US%T_to_s
+    CS%id_BMLD_EN1 = register_diag_field('ocean_model', 'BMLD_EN1', diag%axesT1, Time, &
+         'Bottom mixed layer depth for energy value set to '//trim(EN1)//' J/m2 (Energy set by 1st MLD_EN_VALS)', &
+         units='m', conversion=US%Z_to_m)
+    CS%id_BMLD_EN2 = register_diag_field('ocean_model', 'BMLD_EN2', diag%axesT1, Time, &
+         'Bottom mixed layer depth for energy value set to '//trim(EN2)//' J/m2 (Energy set by 2nd MLD_EN_VALS)', &
+         units='m', conversion=US%Z_to_m)
+    CS%id_BMLD_EN3 = register_diag_field('ocean_model', 'BMLD_EN3', diag%axesT1, Time, &
+         'Bottom mixed layer depth for energy value set to '//trim(EN3)//' J/m2 (Energy set by 3rd MLD_EN_VALS)', &
+         units='m', conversion=US%Z_to_m)
+    if ((CS%id_MLD_EN1>0).or. (CS%id_MLD_EN2>0).or. (CS%id_MLD_EN3>0).or. &
+         (CS%id_BMLD_EN1>0).or.(CS%id_BMLD_EN2>0).or.(CS%id_BMLD_EN3>0)) then
+       call get_param(param_file, mdl, "USE_OM4_MLD_EN_ITER", CS%use_OM4_MLD_En_iter, &
+            "If true, uses an older set of iteration coefficients in computing the PE based "//&
+            "surface MLD to reproduce OM4 era models.  False uses an updated (general) method.",&
+            default=.true.)
+    endif
     CS%id_subMLN2  = register_diag_field('ocean_model', 'subML_N2', diag%axesT1, Time, &
         'Squared buoyancy frequency below mixed layer', units='s-2', conversion=US%s_to_T**2)
     CS%id_MLD_user = register_diag_field('ocean_model', 'MLD_user', diag%axesT1, Time, &
@@ -3587,7 +3660,8 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_diabatic_diff_salt_tend = register_diag_field('ocean_model',                   &
         'diabatic_salt_tendency', diag%axesTL, Time,                                     &
         'Diabatic diffusion of salt tendency',                                           &
-        'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, cmor_field_name='osaltdiff', &
+        'kg m-2 s-1', conversion=US%S_to_ppt*0.001*GV%H_to_RZ*US%RZ_T_to_kg_m2s, &
+        cmor_field_name='osaltdiff', &
         cmor_standard_name='tendency_of_sea_water_salinity_expressed_as_salt_content_'// &
                            'due_to_parameterized_dianeutral_mixing',                     &
         cmor_long_name='Tendency of sea water salinity expressed as salt content '//     &
@@ -3614,7 +3688,8 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_diabatic_diff_salt_tend_2d = register_diag_field('ocean_model',                &
         'diabatic_salt_tendency_2d', diag%axesT1, Time,                                  &
         'Depth integrated diabatic diffusion salt tendency',                             &
-        'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, cmor_field_name='osaltdiff_2d',              &
+        'kg m-2 s-1', conversion=US%S_to_ppt*0.001*GV%H_to_RZ*US%RZ_T_to_kg_m2s, &
+        cmor_field_name='osaltdiff_2d', &
         cmor_standard_name='tendency_of_sea_water_salinity_expressed_as_salt_content_'// &
                            'due_to_parameterized_dianeutral_mixing_depth_integrated',    &
         cmor_long_name='Tendency of sea water salinity expressed as salt content '//     &
@@ -3661,7 +3736,8 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
 
     CS%id_boundary_forcing_salt_tend = register_diag_field('ocean_model',&
         'boundary_forcing_salt_tendency', diag%axesTL, Time,             &
-        'Boundary forcing salt tendency', 'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, &
+        'Boundary forcing salt tendency', &
+        'kg m-2 s-1', conversion=US%S_to_ppt*0.001*GV%H_to_RZ*US%RZ_T_to_kg_m2s, &
         v_extensive = .true.)
     if (CS%id_boundary_forcing_salt_tend > 0) then
       CS%boundary_forcing_tendency_diag = .true.
@@ -3680,7 +3756,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_boundary_forcing_salt_tend_2d = register_diag_field('ocean_model',&
         'boundary_forcing_salt_tendency_2d', diag%axesT1, Time,             &
         'Depth integrated boundary forcing of ocean salt', &
-        'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s)
+        'kg m-2 s-1', conversion=US%S_to_ppt*0.001*GV%H_to_RZ*US%RZ_T_to_kg_m2s)
     if (CS%id_boundary_forcing_salt_tend_2d > 0) then
       CS%boundary_forcing_tendency_diag = .true.
     endif
@@ -3841,6 +3917,9 @@ subroutine diabatic_driver_end(CS)
     call opacity_end(CS%opacity, CS%optics)
     deallocate(CS%optics)
   endif
+
+  if (allocated(CS%prediabatic_T)) deallocate(CS%prediabatic_T)
+  if (allocated(CS%prediabatic_S)) deallocate(CS%prediabatic_S)
 
   if (CS%debug_energy_req) &
     call diapyc_energy_req_end(CS%diapyc_en_rec_CSp)

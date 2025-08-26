@@ -101,8 +101,9 @@ type, public :: thermo_var_ptrs
   ! These arrays are accumulated fluxes for communication with other components.
   real, dimension(:,:), pointer :: frazil => NULL()
                          !< The energy needed to heat the ocean column to the
-                         !! freezing point since calculate_surface_state was2
+                         !! freezing point since calculate_surface_state was
                          !! last called [Q Z R ~> J m-2].
+  logical :: frazil_was_reset !< If true, frazil has not accumulated since it was last reset.
   real, dimension(:,:), pointer :: salt_deficit => NULL()
                          !<   The salt needed to maintain the ocean column
                          !! at a minimum salinity of MIN_SALINITY since the last time
@@ -364,7 +365,7 @@ contains
 !! the ocean model. Unused fields are unallocated.
 subroutine allocate_surface_state(sfc_state, G, use_temperature, do_integrals, &
                                   gas_fields_ocn, use_meltpot, use_iceshelves, &
-                                  omit_frazil, sfc_state_in, turns, use_marbl_tracers)
+                                  omit_frazil, sfc_state_in, turns, use_MARBL_tracers)
   type(ocean_grid_type), intent(in)    :: G                !< ocean grid structure
   type(surface),         intent(inout) :: sfc_state        !< ocean surface state type to be allocated.
   logical,     optional, intent(in)    :: use_temperature  !< If true, allocate the space for thermodynamic variables.
@@ -390,7 +391,7 @@ subroutine allocate_surface_state(sfc_state, G, use_temperature, do_integrals, &
                                               !! is present, it is used and tr_fields_in is ignored.
   integer,     optional, intent(in)    :: turns  !< If present, the number of counterclockwise quarter
                                                  !! turns to use on the new grid.
-  logical,     optional, intent(in)    :: use_marbl_tracers  !< If true, allocate the space for CO2 flux from MARBL
+  logical,     optional, intent(in)    :: use_MARBL_tracers  !< If true, allocate the space for CO2 flux from MARBL
 
   ! local variables
   logical :: use_temp, alloc_integ, use_melt_potential, alloc_iceshelves, alloc_frazil, alloc_fco2
@@ -408,7 +409,7 @@ subroutine allocate_surface_state(sfc_state, G, use_temperature, do_integrals, &
   use_melt_potential = .false. ; if (present(use_meltpot)) use_melt_potential = use_meltpot
   alloc_iceshelves = .false. ; if (present(use_iceshelves)) alloc_iceshelves = use_iceshelves
   alloc_frazil = .true. ; if (present(omit_frazil)) alloc_frazil = .not.omit_frazil
-  alloc_fco2 = .false. ; if (present(use_marbl_tracers)) alloc_fco2 = use_marbl_tracers
+  alloc_fco2 = .false. ; if (present(use_MARBL_tracers)) alloc_fco2 = use_MARBL_tracers
 
   if (sfc_state%arrays_allocated) return
 

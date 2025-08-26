@@ -526,7 +526,7 @@ subroutine register_restarts_dyn_unsplit_RK2(HI, GV, param_file, CS)
 end subroutine register_restarts_dyn_unsplit_RK2
 
 !> Initialize parameters and allocate memory associated with the unsplit RK2 dynamics module.
-subroutine initialize_dyn_unsplit_RK2(u, v, h, Time, G, GV, US, param_file, diag, CS, &
+subroutine initialize_dyn_unsplit_RK2(u, v, h, tv, Time, G, GV, US, param_file, diag, CS, &
                                       Accel_diag, Cont_diag, MIS, &
                                       OBC, update_OBC_CSp, ALE_CSp, set_visc, &
                                       visc, dirs, ntrunc, cont_stencil)
@@ -536,6 +536,7 @@ subroutine initialize_dyn_unsplit_RK2(u, v, h, Time, G, GV, US, param_file, diag
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(inout) :: u   !< The zonal velocity [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(inout) :: v   !< The meridional velocity [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: h    !< Layer thicknesses [H ~> m or kg m-2]
+  type(thermo_var_ptrs),                     intent(in)    :: tv   !< Thermodynamic type
   type(time_type),                   target, intent(in)    :: Time !< The current model time.
   type(param_file_type),                     intent(in)    :: param_file !< A structure to parse
                                                                          !! for run-time parameters.
@@ -580,9 +581,6 @@ subroutine initialize_dyn_unsplit_RK2(u, v, h, Time, G, GV, US, param_file, diag
   character(len=48) :: flux_units
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
-  logical :: use_correct_dt_visc
-  logical :: test_value  ! This is used to determine whether a logical parameter is being set explicitly.
-  logical :: explicit_bug, explicit_fix ! These indicate which parameters are set explicitly.
   integer :: isd, ied, jsd, jed, nz, IsdB, IedB, JsdB, JedB
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed ; nz = GV%ke
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
@@ -621,33 +619,6 @@ subroutine initialize_dyn_unsplit_RK2(u, v, h, Time, G, GV, US, param_file, diag
                  "predictor step with the unsplit time stepping scheme, and in the calculation "//&
                  "of the turbulent mixed layer properties for viscosity with unsplit or "//&
                  "unsplit_RK2.  If true, an older incorrect value is used.", &
-                 default=.false., do_not_log=.true.)
-  ! This is used to test whether UNSPLIT_DT_VISC_BUG is being explicitly set.
-  call get_param(param_file, mdl, "UNSPLIT_DT_VISC_BUG", test_value, default=.true., do_not_log=.true.)
-  explicit_bug = CS%dt_visc_bug .eqv. test_value
-  call get_param(param_file, mdl, "FIX_UNSPLIT_DT_VISC_BUG", use_correct_dt_visc, &
-                 "If true, use the correct timestep in the viscous terms applied in the first "//&
-                 "predictor step with the unsplit time stepping scheme, and in the calculation "//&
-                 "of the turbulent mixed layer properties for viscosity with unsplit or "//&
-                 "unsplit_RK2.", default=.true., do_not_log=.true.)
-  call get_param(param_file, mdl, "FIX_UNSPLIT_DT_VISC_BUG", test_value, default=.false., do_not_log=.true.)
-  explicit_fix = use_correct_dt_visc .eqv. test_value
-
-  if (explicit_bug .and. explicit_fix .and. (use_correct_dt_visc .eqv. CS%dt_visc_bug)) then
-    ! UNSPLIT_DT_VISC_BUG is being explicitly set, and should not be changed.
-    call MOM_error(FATAL, "UNSPLIT_DT_VISC_BUG and FIX_UNSPLIT_DT_VISC_BUG are both being set "//&
-                   "with inconsistent values.  FIX_UNSPLIT_DT_VISC_BUG is an obsolete "//&
-                   "parameter and should be removed.")
-  elseif (explicit_fix) then
-    call MOM_error(WARNING, "FIX_UNSPLIT_DT_VISC_BUG is an obsolete parameter.  "//&
-                   "Use UNSPLIT_DT_VISC_BUG instead (noting that it has the opposite sense).")
-    CS%dt_visc_bug = .not.use_correct_dt_visc
-  endif
-  call log_param(param_file, mdl, "UNSPLIT_DT_VISC_BUG", CS%dt_visc_bug, &
-                 "If false, use the correct timestep in the viscous terms applied in the first "//&
-                 "predictor step with the unsplit time stepping scheme, and in the calculation "//&
-                 "of the turbulent mixed layer properties for viscosity with unsplit or "//&
-                 "unsplit_RK2.  If true, an older incorrect value is used.", &
                  default=.false.)
 
   call get_param(param_file, mdl, "DEBUG", CS%debug, &
@@ -673,7 +644,7 @@ subroutine initialize_dyn_unsplit_RK2(u, v, h, Time, G, GV, US, param_file, diag
   call continuity_init(Time, G, GV, US, param_file, diag, CS%continuity_CSp)
   cont_stencil = continuity_stencil(CS%continuity_CSp)
   call CoriolisAdv_init(Time, G, GV, US, param_file, diag, CS%ADp, CS%CoriolisAdv)
-  if (CS%calculate_SAL) call SAL_init(G, GV, US, param_file, CS%SAL_CSp)
+  if (CS%calculate_SAL) call SAL_init(h, tv, G, GV, US, param_file, CS%SAL_CSp)
   if (CS%use_tides) call tidal_forcing_init(Time, G, US, param_file, CS%tides_CSp)
   call PressureForce_init(Time, G, GV, US, param_file, diag, CS%PressureForce_CSp, CS%ADp, &
                           CS%SAL_CSp, CS%tides_CSp)

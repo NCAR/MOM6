@@ -34,7 +34,7 @@ use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
 use MOM_tracer_initialization_from_Z, only : MOM_initialize_tracer_from_Z
 use MOM_tracer_Z_init,   only : read_Z_edges
 use MOM_unit_scaling,    only : unit_scale_type
-use MOM_variables,       only : surface, thermo_var_ptrs
+use MOM_variables,       only : surface
 use MOM_verticalGrid,    only : verticalGrid_type
 use MOM_diag_mediator,   only : register_diag_field, post_data!, safe_alloc_ptr
 
@@ -1270,15 +1270,13 @@ end subroutine setup_saved_state
 
 !> This subroutine applies diapycnal diffusion and any other column
 !! tracer physics or chemistry to the tracers from this file.
-subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV, US, CS, tv, &
-    KPP_CSp, nonLocalTrans, evap_CFL_limit, minimum_forcing_depth)
+subroutine MARBL_tracers_column_physics(h_old, ea, eb, fluxes, dt, G, GV, US, CS, &
+    prediabatic_T, prediabatic_S, KPP_CSp, nonLocalTrans, evap_CFL_limit, minimum_forcing_depth)
 
   type(ocean_grid_type),   intent(in) :: G    !< The ocean's grid structure
   type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)), &
                            intent(in) :: h_old !< Layer thickness before entrainment [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(G)), &
-                           intent(in) :: h_new !< Layer thickness after entrainment [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)), &
                            intent(in) :: ea   !< an array to which the amount of fluid entrained
                                               !! from the layer above during this call will be
@@ -1293,7 +1291,9 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
   type(unit_scale_type),   intent(in) :: US   !< A dimensional unit scaling type
   type(MARBL_tracers_CS),     pointer :: CS   !< The control structure returned by a previous
                                               !! call to register_MARBL_tracers.
-  type(thermo_var_ptrs),   intent(in) :: tv   !< A structure pointing to various thermodynamic variables
+  real, dimension(:,:,:),  intent(in) :: prediabatic_T   !< Temperature prior to calling diabatic driver [C ~> degC]
+  real, dimension(:,:,:),  intent(in) :: prediabatic_S   !< Salinity prior to calling diabatic driver [S ~> ppt]
+
   type(KPP_CS),  optional, pointer    :: KPP_CSp  !< KPP control structure
   real,          optional, intent(in) :: nonLocalTrans(:,:,:) !< Non-local transport [1]
   real,          optional, intent(in) :: evap_CFL_limit !< Limit on the fraction of the water that can
@@ -1322,11 +1322,13 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
 
   if (.not.associated(CS)) return
 
-  ! (1) Compute surface fluxes
+  ! (1) Compute surface fluxes and interior tendencies
   ! FIXME: MARBL can handle computing surface fluxes for all columns simultaneously
   !        I was just thinking going column-by-column at first might be easier
+  bot_flux_to_tend(:, :, :) = 0.
   do j=js,je
     do i=is,ie
+      ! Surface fluxes
       ! i. only want ocean points in this loop
       if (G%mask2dT(i,j) == 0) cycle
 
@@ -1336,9 +1338,9 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
       !       TODO: if top layer is vanishly thin, do we actually want (e.g.) top 5m average temp / salinity?
       !             How does MOM pass SST and SSS to GFDL coupler? (look in core.F90?)
       if (CS%sss_ind > 0) &
-        MARBL_instances%surface_flux_forcings(CS%sss_ind)%field_0d(1) = tv%S(i,j,1) * US%S_to_ppt
+        MARBL_instances%surface_flux_forcings(CS%sss_ind)%field_0d(1) = prediabatic_S(i,j,1) * US%S_to_ppt
       if (CS%sst_ind > 0) &
-        MARBL_instances%surface_flux_forcings(CS%sst_ind)%field_0d(1) = tv%T(i,j,1) * US%C_to_degC
+        MARBL_instances%surface_flux_forcings(CS%sst_ind)%field_0d(1) = prediabatic_T(i,j,1) * US%C_to_degC
       if (CS%ifrac_ind > 0) &
         MARBL_instances%surface_flux_forcings(CS%ifrac_ind)%field_0d(1) = fluxes%ice_fraction(i,j)
 
@@ -1404,7 +1406,7 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
         call MARBL_instances%StatusLog%log_error_trace("MARBL_instances%surface_flux_compute()", &
             "MARBL_tracers_column_physics")
       endif
-      call print_marbl_log(MARBL_instances%StatusLog)
+      call print_marbl_log(MARBL_instances%StatusLog, G, i, j)
       call MARBL_instances%StatusLog%erase()
 
       ! iv. Copy output that MOM6 needs to hold on to
@@ -1430,158 +1432,15 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
         CS%SFO(i,j,m) = MARBL_instances%surface_flux_output%outputs_for_GCM(m)%forcing_field_0d(1)
       enddo
 
-    enddo
-  enddo
-
-  if (associated(fluxes%salt_flux)) then
-    ! convert salt flux to tracer fluxes and add to STF
-    do j=js,je ; do i=is,ie
-      net_salt_rate(i,j) = (1000.0*US%ppt_to_S * fluxes%salt_flux(i,j)) * GV%RZ_to_H
-    enddo ; enddo
-
-    ! DIC related tracers
-    do j=js,je ; do i=is,ie
-      flux_from_salt_flux(i,j) = (CS%DIC_salt_ratio * GV%H_to_Z) * net_salt_rate(i,j)
-    enddo ; enddo
-    m = CS%tracer_inds%dic_ind
-    if (m > 0) then
-      do j=js,je ; do i=is,ie
-        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
-      enddo ; enddo
-      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
-        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
-    endif
-    m = CS%tracer_inds%dic_alt_co2_ind
-    if (m > 0) then
-      do j=js,je ; do i=is,ie
-        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
-      enddo ; enddo
-      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
-        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
-    endif
-    m = CS%tracer_inds%abio_dic_ind
-    if (m > 0) then
-      do j=js,je ; do i=is,ie
-        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
-      enddo ; enddo
-      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
-        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
-    endif
-    m = CS%tracer_inds%abio_di14c_ind
-    if (m > 0) then
-      do j=js,je ; do i=is,ie
-        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
-      enddo ; enddo
-      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
-        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
-    endif
-
-    ! ALK related tracers
-    do j=js,je ; do i=is,ie
-      flux_from_salt_flux(i,j) = (CS%ALK_salt_ratio * GV%H_to_Z) * net_salt_rate(i,j)
-    enddo ; enddo
-    m = CS%tracer_inds%alk_ind
-    if (m > 0) then
-      do j=js,je ; do i=is,ie
-        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
-      enddo ; enddo
-      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
-        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
-    endif
-    m = CS%tracer_inds%alk_alt_co2_ind
-    if (m > 0) then
-      do j=js,je ; do i=is,ie
-        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
-      enddo ; enddo
-      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
-        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
-    endif
-  endif
-
-  if (CS%debug) then
-    do m=1,CS%ntr
-      call hchksum(CS%STF(:,:,m), &
-          trim(MARBL_instances%tracer_metadata(m)%short_name)//" sfc_flux", G%HI, &
-          scale=US%Z_to_m*US%s_to_T)
-    enddo
-  endif
-
-  ! (2) Post surface fluxes and their diagnostics (currently all 2D)
-  do m=1,CS%ntr
-    if (CS%id_surface_flux_out(m) > 0) &
-      call post_data(CS%id_surface_flux_out(m), CS%STF(:,:,m), CS%diag)
-  enddo
-  do m=1,size(CS%surface_flux_diags)
-    if (CS%surface_flux_diags(m)%id > 0) &
-      call post_data(CS%surface_flux_diags(m)%id, CS%surface_flux_diags(m)%field_2d(:,:), CS%diag)
-  enddo
-
-  ! (3) Apply surface fluxes via vertical diffusion
-  ! Compute KPP nonlocal term if necessary
-  if (present(KPP_CSp)) then
-    if (associated(KPP_CSp) .and. present(nonLocalTrans)) then
-      do m=1,CS%ntr
-        call KPP_NonLocalTransport(KPP_CSp, G, GV, h_old, nonLocalTrans, CS%STF(:,:,m), dt, &
-            CS%diag, CS%tracer_data(m)%tr_ptr, CS%tracer_data(m)%tr(:,:,:), &
-            flux_scale=GV%Z_to_H)
-      enddo
-    endif
-    if (CS%debug) then
-      do m=1,CS%ntr
-        call hchksum(CS%tracer_data(m)%tr(:,:,m), &
-            trim(MARBL_instances%tracer_metadata(m)%short_name)//' post KPP', G%HI)
-      enddo
-    endif
-  endif
-
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    do m=1,CS%ntr
-      do k=1,nz ;do j=js,je ; do i=is,ie
-        h_work(i,j,k) = h_old(i,j,k)
-      enddo ; enddo ; enddo
-      ! CS%RIV_FLUXES is conc m/s, in_flux_optional expects time-integrated flux (conc H)
-      do j=js,je ; do i=is,ie
-        riv_flux_loc(i,j) = (CS%RIV_FLUXES(i,j,m) * (dt*US%T_to_s)) * GV%m_to_H
-      enddo ; enddo
-      if (CS%debug) &
-        call hchksum(riv_flux_loc(:,:), &
-            trim(MARBL_instances%tracer_metadata(m)%short_name)//' riv flux', G%HI, scale=GV%H_to_m)
-      call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_data(m)%tr(:,:,:) , dt, fluxes, h_work, &
-          evap_CFL_limit, minimum_forcing_depth, in_flux_optional=riv_flux_loc)
-      call tracer_vertdiff(h_work, ea, eb, dt, CS%tracer_data(m)%tr(:,:,:), G, GV, &
-          sfc_flux=GV%Rho0 * CS%STF(:,:,m))
-    enddo
-  else
-    do m=1,CS%ntr
-      call tracer_vertdiff(h_old, ea, eb, dt, CS%tracer_data(m)%tr(:,:,:), G, GV, &
-          sfc_flux=GV%Rho0 * CS%STF(:,:,m))
-    enddo
-  endif
-
-  if (CS%debug) then
-    do m=1,CS%ntr
-      call hchksum(CS%tracer_data(m)%tr(:,:,m), &
-          trim(MARBL_instances%tracer_metadata(m)%short_name)//' post tracer_vertdiff', G%HI)
-    enddo
-  endif
-
-  ! (4) Compute interior tendencies
-
-  bot_flux_to_tend(:, :, :) = 0.
-  do j=js,je
-    do i=is,ie
-      ! i. only want ocean points in this loop
-      if (G%mask2dT(i,j) == 0) cycle
-
-      ! ii. Set up vertical domain and bot_flux_to_tend
+      ! interior tendencies
+      ! i. Set up vertical domain and bot_flux_to_tend
       ! Calculate depth of interface by building up thicknesses from the bottom (top interface is always 0)
       ! MARBL wants this to be positive-down
       zi(GV%ke) = G%bathyT(i,j)
       MARBL_instances%bot_flux_to_tend(:) = 0.
       cum_bftt_dz = 0.
       do k = GV%ke, 1, -1
-        ! TODO: if we move this above vertical mixing, use h_old
-        dz(k) = h_new(i,j,k) ! cell thickness
+        dz(k) = h_old(i,j,k) ! cell thickness
         zc(k) = zi(k) - 0.5 * (dz(k)*GV%H_to_Z)
         zi(k-1) = zi(k) - (dz(k)*GV%H_to_Z)
         if (G%bathyT(i,j) - zi(k-1) <= CS%bot_flux_mix_thickness) then
@@ -1603,22 +1462,22 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
       MARBL_instances%domain%zt(:) = US%Z_to_m * zc(:)
       MARBL_instances%domain%delta_z(:) = GV%H_to_m * dz(:)
 
-      ! iii. Load proper column data
-      !      * Forcing Fields
+      ! ii. Load proper column data
+      !     * Forcing Fields
       !       These fields are getting the correct data
       if (CS%potemp_ind > 0) &
-        MARBL_instances%interior_tendency_forcings(CS%potemp_ind)%field_1d(1,:) = tv%T(i,j,:) * US%C_to_degC
+        MARBL_instances%interior_tendency_forcings(CS%potemp_ind)%field_1d(1,:) = prediabatic_T(i,j,:) * US%C_to_degC
       if (CS%salinity_ind > 0) &
-        MARBL_instances%interior_tendency_forcings(CS%salinity_ind)%field_1d(1,:) = tv%S(i,j,:) * US%S_to_ppt
+        MARBL_instances%interior_tendency_forcings(CS%salinity_ind)%field_1d(1,:) = prediabatic_S(i,j,:) * US%S_to_ppt
 
-      !       This are okay, but need option to read in from file
+      !       This is okay, but need option to read in from file
       !       (Same as dust_dep_ind for surface_flux_forcings)
       if (CS%dustflux_ind > 0) &
         MARBL_instances%interior_tendency_forcings(CS%dustflux_ind)%field_0d(1) = &
             fluxes%dust_flux(i,j) * US%RZ_T_to_kg_m2s
 
-      !        TODO: Support PAR (currently just using single subcolumn)
-      !              (Look for Pen_sw_bnd?)
+      !       TODO: Support PAR (currently just using single subcolumn)
+      !             (Look for Pen_sw_bnd?)
       if (CS%PAR_col_frac_ind > 0) then
         ! second index is num_subcols, not depth
         !MARBL_instances%interior_tendency_forcings(CS%PAR_col_frac_ind)%field_1d(1,:) = fluxes%fracr_cat(i,j,:)
@@ -1692,7 +1551,7 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
             CS%interior_tendency_saved_state(m)%field_3d(i,j,:)
       enddo
 
-      ! iv. Compute interior tendencies in MARBL
+      ! iii. Compute interior tendencies in MARBL
       call MARBL_instances%interior_tendency_compute()
       if (MARBL_instances%StatusLog%labort_marbl) then
         call MARBL_instances%StatusLog%log_error_trace(&
@@ -1701,21 +1560,21 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
       call print_marbl_log(MARBL_instances%StatusLog, G, i, j)
       call MARBL_instances%StatusLog%erase()
 
-      ! v. Apply tendencies immediately
-      !    First pass - Euler step; if stability issues, we can do something different (subcycle?)
+      ! iv. Apply tendencies immediately
+      !     First pass - Euler step; if stability issues, we can do something different (subcycle?)
       do m=1,CS%ntr
         CS%tracer_data(m)%tr(i,j,:) = CS%tracer_data(m)%tr(i,j,:) + (dt * US%T_to_s) * &
             MARBL_instances%interior_tendencies(m,:)
       enddo
 
-      ! vi. Copy output that MOM6 needs to hold on to
-      !     * saved state
+      ! v. Copy output that MOM6 needs to hold on to
+      !    * saved state
       do m=1,size(MARBL_instances%interior_tendency_saved_state%state)
         CS%interior_tendency_saved_state(m)%field_3d(i,j,:) = &
             MARBL_instances%interior_tendency_saved_state%state(m)%field_3d(:,1)
       enddo
 
-      !     * diagnostics
+      !    * diagnostics
       do m=1,size(MARBL_instances%interior_tendency_diags%diags)
         if (CS%interior_tendency_diags(m)%id > 0) then
           if (allocated(CS%interior_tendency_diags(m)%field_2d)) then
@@ -1731,7 +1590,7 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
         endif
       enddo
 
-      !     * tendency values themselves (and vertical integrals of them)
+      !  * tendency values themselves (and vertical integrals of them)
       do m=1,CS%ntr
         if (allocated(CS%interior_tendency_out(m)%field_3d)) &
           CS%interior_tendency_out(m)%field_3d(i,j,:) = MARBL_instances%interior_tendencies(m,:)
@@ -1759,7 +1618,7 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
         endif
       enddo
 
-      !     * Interior tendency output
+      !  * Interior tendency output
       do m=1,CS%ito_cnt
         CS%ITO(i,j,:,m) = &
             MARBL_instances%interior_tendency_output%outputs_for_GCM(m)%forcing_field_1d(1,:)
@@ -1775,10 +1634,147 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
     enddo
   endif
 
-  ! (5) Post diagnostics from our buffer
-  !     i. Interior tendency diagnostics (mix of 2D and 3D)
-  !     ii. Interior tendencies themselves
-  !     iii. Forcing fields
+  if (associated(fluxes%salt_flux)) then
+    ! convert salt flux to tracer fluxes and add to STF
+    do j=js,je ; do i=is,ie
+      net_salt_rate(i,j) = (1000.0*US%ppt_to_S * fluxes%salt_flux(i,j)) * GV%RZ_to_H
+    enddo ; enddo
+
+    ! DIC related tracers
+    do j=js,je ; do i=is,ie
+      flux_from_salt_flux(i,j) = (CS%DIC_salt_ratio * GV%H_to_Z) * net_salt_rate(i,j)
+    enddo ; enddo
+    m = CS%tracer_inds%dic_ind
+    if (m > 0) then
+      do j=js,je ; do i=is,ie
+        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
+      enddo ; enddo
+      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
+        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
+    endif
+    m = CS%tracer_inds%dic_alt_co2_ind
+    if (m > 0) then
+      do j=js,je ; do i=is,ie
+        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
+      enddo ; enddo
+      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
+        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
+    endif
+    m = CS%tracer_inds%abio_dic_ind
+    if (m > 0) then
+      do j=js,je ; do i=is,ie
+        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
+      enddo ; enddo
+      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
+        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
+    endif
+    m = CS%tracer_inds%abio_di14c_ind
+    if (m > 0) then
+      do j=js,je ; do i=is,ie
+        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
+      enddo ; enddo
+      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
+        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
+    endif
+
+    ! ALK related tracers
+    do j=js,je ; do i=is,ie
+      flux_from_salt_flux(i,j) = (CS%ALK_salt_ratio * GV%H_to_Z) * net_salt_rate(i,j)
+    enddo ; enddo
+    m = CS%tracer_inds%alk_ind
+    if (m > 0) then
+      do j=js,je ; do i=is,ie
+        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
+      enddo ; enddo
+      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
+        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
+    endif
+    m = CS%tracer_inds%alk_alt_co2_ind
+    if (m > 0) then
+      do j=js,je ; do i=is,ie
+        CS%STF(i,j,m) = CS%STF(i,j,m) + flux_from_salt_flux(i,j)
+      enddo ; enddo
+      if (CS%id_surface_flux_from_salt_flux(m) > 0) &
+        call post_data(CS%id_surface_flux_from_salt_flux(m), flux_from_salt_flux, CS%diag)
+    endif
+  endif
+
+  if (CS%debug) then
+    do m=1,CS%ntr
+      call hchksum(CS%STF(:,:,m), &
+          trim(MARBL_instances%tracer_metadata(m)%short_name)//" sfc_flux", G%HI, &
+          unscale=US%Z_to_m*US%s_to_T)
+    enddo
+  endif
+
+  ! (2) Apply surface fluxes via vertical diffusion
+  ! Compute KPP nonlocal term if necessary
+  if (present(KPP_CSp)) then
+    if (associated(KPP_CSp) .and. present(nonLocalTrans)) then
+      do m=1,CS%ntr
+        call KPP_NonLocalTransport(KPP_CSp, G, GV, h_old, nonLocalTrans, CS%STF(:,:,m), dt, &
+            CS%diag, CS%tracer_data(m)%tr_ptr, CS%tracer_data(m)%tr(:,:,:), &
+            flux_scale=GV%Z_to_H)
+      enddo
+    endif
+    if (CS%debug) then
+      do m=1,CS%ntr
+        call hchksum(CS%tracer_data(m)%tr(:,:,m), &
+            trim(MARBL_instances%tracer_metadata(m)%short_name)//' post KPP', G%HI)
+      enddo
+    endif
+  endif
+
+  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
+    do m=1,CS%ntr
+      do k=1,nz ;do j=js,je ; do i=is,ie
+        h_work(i,j,k) = h_old(i,j,k)
+      enddo ; enddo ; enddo
+      ! CS%RIV_FLUXES is conc m/s, in_flux_optional expects time-integrated flux (conc H)
+      do j=js,je ; do i=is,ie
+        riv_flux_loc(i,j) = (CS%RIV_FLUXES(i,j,m) * (dt*US%T_to_s)) * GV%m_to_H
+      enddo ; enddo
+      if (CS%debug) &
+        call hchksum(riv_flux_loc(:,:), &
+            trim(MARBL_instances%tracer_metadata(m)%short_name)//' riv flux', G%HI, unscale=GV%H_to_m)
+      call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_data(m)%tr(:,:,:) , dt, fluxes, h_work, &
+          evap_CFL_limit, minimum_forcing_depth, in_flux_optional=riv_flux_loc)
+      call tracer_vertdiff(h_work, ea, eb, dt, CS%tracer_data(m)%tr(:,:,:), G, GV, &
+          sfc_flux=GV%Rho0 * CS%STF(:,:,m))
+    enddo
+  else
+    ! TODO: do we want to support these options? does not apply river fluxes!
+    !       an alternative would be to require evap_CFL_limit and minimum_forcing_depth.
+    !       Much like we now require prediabatic_T and prediabatic_S, we can abort
+    !       in tracer flow control if they are not present.
+    do m=1,CS%ntr
+      call tracer_vertdiff(h_old, ea, eb, dt, CS%tracer_data(m)%tr(:,:,:), G, GV, &
+          sfc_flux=GV%Rho0 * CS%STF(:,:,m))
+    enddo
+  endif
+
+  if (CS%debug) then
+    do m=1,CS%ntr
+      call hchksum(CS%tracer_data(m)%tr(:,:,m), &
+          trim(MARBL_instances%tracer_metadata(m)%short_name)//' post tracer_vertdiff', G%HI)
+    enddo
+  endif
+
+  ! (3) Post diagnostics from our buffer
+  !     i.   surface fluxes and their diagnostics (currently all 2D)
+  !     ii.  Interior tendency diagnostics (mix of 2D and 3D)
+  !     iii. Interior tendencies themselves
+  !     iv.  Forcing fields
+  do m=1,CS%ntr
+    if (CS%id_surface_flux_out(m) > 0) &
+      call post_data(CS%id_surface_flux_out(m), CS%STF(:,:,m), CS%diag)
+  enddo
+
+  do m=1,size(CS%surface_flux_diags)
+    if (CS%surface_flux_diags(m)%id > 0) &
+      call post_data(CS%surface_flux_diags(m)%id, CS%surface_flux_diags(m)%field_2d(:,:), CS%diag)
+  enddo
+
   if (CS%bot_flux_to_tend_id > 0) &
     call post_data(CS%bot_flux_to_tend_id, bot_flux_to_tend(:, :, :), CS%diag)
 
