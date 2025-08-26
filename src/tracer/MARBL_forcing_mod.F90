@@ -55,7 +55,7 @@ type, public :: marbl_forcing_CS ; private
 
   type(marbl_forcing_diag_ids) :: diag_ids  !< used for registering and posting some MARBL forcing fields as diagnostics
 
-  logical :: use_marbl_tracers    !< most functions can return immediately
+  logical :: use_MARBL_tracers    !< most functions can return immediately
                                   !! MARBL tracers are turned off
   integer :: atm_co2_iopt         !< Integer version of atm_co2_opt, which determines source of atm_co2
   integer :: atm_alt_co2_iopt     !< Integer version of atm_alt_co2_opt, which determines source of atm_alt_co2
@@ -69,14 +69,14 @@ integer, parameter :: atm_co2_diagnostic_iopt = 2   !< module parameter denoting
 
 contains
 
-  subroutine MARBL_forcing_init(G, US, param_file, diag, day, inputdir, use_marbl, CS)
+  subroutine MARBL_forcing_init(G, US, param_file, diag, day, inputdir, use_MARBL_tracers, CS)
     type(ocean_grid_type),           intent(in)    :: G           !< The ocean's grid structure
     type(unit_scale_type),           intent(in)    :: US          !< A dimensional unit scaling type
     type(param_file_type),           intent(in)    :: param_file  !< A structure to parse for run-time parameters
     type(diag_ctrl), target,         intent(in)    :: diag        !< Structure used to regulate diagnostic output.
     type(time_type), target,         intent(in)    :: day         !< Time of the start of the run.
     character(len=*),                intent(in)    :: inputdir    !< Directory containing input files
-    logical,                         intent(in)    :: use_marbl   !< Is MARBL tracer package active?
+    logical,                         intent(in)    :: use_MARBL_tracers   !< Is MARBL tracer package active?
     type(marbl_forcing_CS), pointer, intent(inout) :: CS          !< A pointer that is set to point to control
                                                                   !! structure for MARBL forcing
 
@@ -92,9 +92,9 @@ contains
     allocate(CS)
     CS%diag => diag
 
-    CS%use_marbl_tracers = .true.
-    if (.not. use_marbl) then
-      CS%use_marbl_tracers = .false.
+    CS%use_MARBL_tracers = .true.
+    if (.not. use_MARBL_tracers) then
+      CS%use_MARBL_tracers = .false.
       return
     endif
 
@@ -229,7 +229,7 @@ contains
     real :: ndep_conversion          !< Factor to convert nitrogen deposition from kg m-2 s-1 -> mmol m-3 (m s-1)
                                      !! [s m2 kg-1 conc Z T-1 ~> mmol kg-1]
 
-    if (.not. CS%use_marbl_tracers) return
+    if (.not. CS%use_MARBL_tracers) return
 
     is   = G%isc   ; ie   = G%iec    ; js   = G%jsc   ; je   = G%jec
     ndep_conversion = (1.e6/14.) * (US%m_to_Z * US%T_to_s)
