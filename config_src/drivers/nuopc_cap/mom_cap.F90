@@ -74,6 +74,7 @@ use ESMF,  only: ESMF_STATEITEM_NOTFOUND, ESMF_FieldWrite
 use ESMF,  only: ESMF_END_ABORT, ESMF_Finalize
 use ESMF,  only: ESMF_REDUCE_MAX, ESMF_REDUCE_MIN, ESMF_VMAllReduce
 use ESMF,  only: operator(==), operator(/=), operator(+), operator(-)
+use ESMF,  only: ESMF_STATEITEM_NOTFOUND, ESMF_StateItem_Flag
 
 ! TODO ESMF_GridCompGetInternalState does not have an explicit Fortran interface.
 !! Model does not compile with "use ESMF,  only: ESMF_GridCompGetInternalState"
@@ -2281,11 +2282,17 @@ subroutine State_SetScalar(value, scalar_id, State, mytask, scalar_name, scalar_
 
   ! local variables
   type(ESMF_Field)                :: field
+  type(ESMF_StateItem_Flag)       :: itemType
   real(ESMF_KIND_R8), pointer     :: farrayptr(:,:)
   character(len=*), parameter     :: subname='(MOM_cap:State_SetScalar)'
   !--------------------------------------------------------
 
   rc = ESMF_SUCCESS
+
+  call ESMF_StateGet(State, itemName=trim(scalar_name), itemType=itemType, rc=rc)
+  if (ChkErr(rc,__LINE__,u_FILE_u)) return
+
+  if (itemType == ESMF_STATEITEM_NOTFOUND) return
 
   call ESMF_StateGet(State, itemName=trim(scalar_name), field=field, rc=rc)
   if (ChkErr(rc,__LINE__,u_FILE_u)) return
