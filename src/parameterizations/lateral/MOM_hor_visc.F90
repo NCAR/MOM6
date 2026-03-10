@@ -132,6 +132,7 @@ type, public :: hor_visc_CS ; private
   logical :: use_cont_thick_bug  !< If true, retain an answer-changing bug for thickness at velocity points.
   type(ZB2020_CS) :: ZB2020  !< Zanna-Bolton 2020 control structure.
   logical :: use_ZB2020      !< If true, use Zanna-Bolton 2020 parameterization.
+  logical :: use_circulation !< If true, use circulation theorem to compute vorticity (for ZB20 or Leith)
 
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: Kh_bg_xx
                       !< The background Laplacian viscosity at h points [L2 T-1 ~> m2 s-1].
@@ -977,9 +978,18 @@ subroutine horizontal_viscosity(u, v, h, uh, vh, diffu, diffv, MEKE, VarMix, G, 
           vort_xy(I,J) = (2.0-G%mask2dBu(I,J)) * ( dvdx(I,J) - dudy(I,J) )
         enddo ; enddo
       else
-        do J=js_vort,je_vort ; do I=is_vort,ie_vort
-          vort_xy(I,J) = G%mask2dBu(I,J) * ( dvdx(I,J) - dudy(I,J) )
-        enddo ; enddo
+        if (CS%use_circulation) then
+          do J=js_vort,je_vort ; do I=is_vort,ie_vort
+            vort_xy(I,J) = G%mask2dBu(I,J) * G%IareaBu(I,J) * (  &
+              ((v(i+1,J,k)*G%dyCv(i+1,J)) - (v(i,J,k)*G%dyCv(i,J)))  &
+            - ((u(I,j+1,k)*G%dxCu(I,j+1)) - (u(I,j,k)*G%dxCu(I,j)))  &
+             )
+          enddo ; enddo
+        else
+          do J=js_vort,je_vort ; do I=is_vort,ie_vort
+            vort_xy(I,J) = G%mask2dBu(I,J) * ( dvdx(I,J) - dudy(I,J) )
+          enddo ; enddo
+        endif
       endif
     endif
 
@@ -1338,7 +1348,7 @@ subroutine horizontal_viscosity(u, v, h, uh, vh, diffu, diffv, MEKE, VarMix, G, 
             endif
             if (CS%taper_leithy) then
               ! Multiply m_leithy by taper function of depth
-              m_leithy(:,:) = m_leithy(:,:) * leithy_taper_function(CS, zc(:,:,k))
+              m_leithy(i,j) = m_leithy(i,j) * leithy_taper_function(CS, zc(i,j,k))
             endif
           enddo ; enddo
 
@@ -2393,6 +2403,10 @@ subroutine hor_visc_init(Time, G, GV, US, param_file, diag, CS, ADp)
   ! Read parameters and write them to the model log.
   call log_version(param_file, mdl, version, "")
 
+  call get_param(param_file, mdl, "USE_CIRCULATION_IN_HORVISC", CS%use_circulation, &
+                 "Use circulation theorem to compute vorticity in horvisc module (for ZB20 or Leith)", &
+                 default=.False.)
+
   ! All parameters are read in all cases to enable parameter spelling checks.
   call get_param(param_file, mdl, "DEFAULT_ANSWER_DATE", default_answer_date, &
                  "This sets the default value for the various _ANSWER_DATE parameters.", &
@@ -3304,20 +3318,20 @@ end subroutine hor_visc_init
 !! leithy_depth+leithy_width; and an interpolating cubic spline in between.
 function leithy_taper_function(CS, zc)
   type(hor_visc_CS), intent(in) :: CS      !< Control structure for horizontal viscosity
-  real,              intent(in) :: zc(:,:) !< depth of h-cell centersi [Z ~> m]
-  real :: leithy_taper_function(size(zc,dim=1),size(zc,dim=2)) ! Taper function evaluated at zc [nondim]
+  real,              intent(in) :: zc      !< depth of h-cell centersi [Z ~> m]
+  real :: leithy_taper_function            ! Taper function evaluated at zc [nondim]
 
   ! Local variables
-  real :: x(size(zc,dim=1),size(zc,dim=2)) ! 0 at top of transition and 1 at bottom [nondim]
+  real :: x                                ! 0 at top of transition and 1 at bottom [nondim]
 
   x = (zc - CS%leithy_depth) / CS%leithy_width
-  where (zc <= CS%leithy_depth)
+  if (zc <= CS%leithy_depth) then
     leithy_taper_function = 1.0
-  elsewhere (zc >= CS%leithy_depth + CS%leithy_width)
+  elseif (zc >= CS%leithy_depth + CS%leithy_width) then
     leithy_taper_function = 0.0
-  elsewhere
+  else
     leithy_taper_function = (x - 1.0)**2 * (1.0 + 2 * x)
-  end where
+  endif
 end function leithy_taper_function
 
 !> hor_visc_vel_stencil returns the horizontal viscosity input velocity stencil size
