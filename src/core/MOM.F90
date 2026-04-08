@@ -2476,7 +2476,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
                  'If True, use Stokes Similarity package.', &
                  default=.False., do_not_log=.true.)
   call closeParameterBlock(param_file)
-  call openParameterBlock(param_file,'MLE') ! Prepend MLE% to all parameters
+  call openParameterBlock(param_file,'MLE')
   call get_param(param_file, '', "WAVE_ENHANCED_USTAR", CS%wave_enhanced_ustar, &
              "If true, enhance ustar in Bodner23.", default=.false., do_not_log=.true.)
   call closeParameterBlock(param_file)
