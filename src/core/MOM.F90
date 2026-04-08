@@ -34,6 +34,7 @@ use MOM_error_handler,        only : MOM_error, MOM_mesg, FATAL, WARNING, is_roo
 use MOM_error_handler,        only : MOM_set_verbosity, callTree_showQuery
 use MOM_error_handler,        only : callTree_enter, callTree_leave, callTree_waypoint
 use MOM_file_parser,          only : read_param, get_param, log_version, param_file_type
+use MOM_file_parser,          only : openParameterBlock, closeParameterBlock
 use MOM_forcing_type,         only : forcing, mech_forcing, find_ustar
 use MOM_forcing_type,         only : MOM_forcing_chksum, MOM_mech_forcing_chksum
 use MOM_get_input,            only : Get_MOM_Input, directories
@@ -2469,12 +2470,16 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
     call MOM_error(FATAL, "initialize_MOM: "//&
        "FPMIX=True only works when SPLIT=True.")
   endif
-  ! STOKES_MOST and  needed to
+  ! STOKES_MOST
+  call openParameterBlock(param_file, 'KPP', do_not_log=.true.)
   call get_param(param_file, '', 'STOKES_MOST', CS%StokesMOST, &
                  'If True, use Stokes Similarity package.', &
                  default=.False., do_not_log=.true.)
+  call closeParameterBlock(param_file)
+  call openParameterBlock(param_file,'MLE') ! Prepend MLE% to all parameters
   call get_param(param_file, '', "WAVE_ENHANCED_USTAR", CS%wave_enhanced_ustar, &
              "If true, enhance ustar in Bodner23.", default=.false., do_not_log=.true.)
+  call closeParameterBlock(param_file)
   call get_param(param_file, "MOM", "BOUSSINESQ", Boussinesq, &
                  "If true, make the Boussinesq approximation.", default=.true., do_not_log=.true.)
   call get_param(param_file, "MOM", "SEMI_BOUSSINESQ", semi_Boussinesq, &
