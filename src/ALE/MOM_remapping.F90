@@ -1,7 +1,10 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Provides column-wise vertical remapping functions
 module MOM_remapping
 
-! This file is part of MOM6. See LICENSE.md for the license.
 ! Original module written by Laurent White, 2008.06.09
 
 use MOM_error_handler, only : MOM_error, FATAL
@@ -2095,22 +2098,22 @@ logical function remapping_unit_tests(verbose, num_comp_samp)
   integer :: om4 ! Loop parameter, 0 or 1
   integer :: ntests ! Number of iterations when brute force testing
   character(len=4) :: om4_tag ! Generated label
-  type(PCM) :: PCM
-  type(PLM_CW) :: PLM_CW
-  type(PLM_hybgen) :: PLM_hybgen
-  type(MPLM_WA) :: MPLM_WA
-  type(EMPLM_WA) :: EMPLM_WA
-  type(MPLM_WA_poly) :: MPLM_WA_poly
-  type(EMPLM_WA_poly) :: EMPLM_WA_poly
-  type(PLM_CWK) :: PLM_CWK
-  type(MPLM_CWK) :: MPLM_CWK
-  type(EMPLM_CWK) :: EMPLM_CWK
-  type(PPM_H4_2019) :: PPM_H4_2019
-  type(PPM_H4_2018) :: PPM_H4_2018
-  type(PPM_CW) :: PPM_CW
-  type(PPM_hybgen) :: PPM_hybgen
-  type(PPM_CWK) :: PPM_CWK
-  type(EPPM_CWK) :: EPPM_CWK
+  type(PCM) :: PCM_instance
+  type(PLM_CW) :: PLM_CW_instance
+  type(PLM_hybgen) :: PLM_hybgen_instance
+  type(MPLM_WA) :: MPLM_WA_instance
+  type(EMPLM_WA) :: EMPLM_WA_instance
+  type(MPLM_WA_poly) :: MPLM_WA_poly_instance
+  type(EMPLM_WA_poly) :: EMPLM_WA_poly_instance
+  type(PLM_CWK) :: PLM_CWK_instance
+  type(MPLM_CWK) :: MPLM_CWK_instance
+  type(EMPLM_CWK) :: EMPLM_CWK_instance
+  type(PPM_H4_2019) :: PPM_H4_2019_instance
+  type(PPM_H4_2018) :: PPM_H4_2018_instance
+  type(PPM_CW) :: PPM_CW_instance
+  type(PPM_hybgen) :: PPM_hybgen_instance
+  type(PPM_CWK) :: PPM_CWK_instance
+  type(EPPM_CWK) :: EPPM_CWK_instance
 
   call test%set( verbose=verbose ) ! Sets the verbosity flag in test
 ! call test%set( stop_instantly=.true. ) ! While debugging
@@ -2724,22 +2727,22 @@ logical function remapping_unit_tests(verbose, num_comp_samp)
                      3, (/0.,0.,0./), (/0.,0.,0./) )
 
   if (verbose) write(test%stdout,*) '- - - - - - - - - - Recon1d PCM tests  - - - - - - - - -'
-  call test%test( PCM%unit_tests(verbose, test%stdout, test%stderr), 'PCM unit test')
-  call test%test( MPLM_WA%unit_tests(verbose, test%stdout, test%stderr), 'MPLM_WA unit test')
-  call test%test( EMPLM_WA%unit_tests(verbose, test%stdout, test%stderr), 'EMPLM_WA unit test')
-  call test%test( MPLM_WA_poly%unit_tests(verbose, test%stdout, test%stderr), 'MPLM_WA_poly unit test')
-  call test%test( EMPLM_WA_poly%unit_tests(verbose, test%stdout, test%stderr), 'EMPLM_WA_poly unit test')
-  call test%test( PLM_hybgen%unit_tests(verbose, test%stdout, test%stderr), 'PLM_hybgen unit test')
-  call test%test( PLM_CW%unit_tests(verbose, test%stdout, test%stderr), 'PLM_CW unit test')
-  call test%test( PLM_CWK%unit_tests(verbose, test%stdout, test%stderr), 'PLM_CWK unit test')
-  call test%test( MPLM_CWK%unit_tests(verbose, test%stdout, test%stderr), 'MPLM_CWK unit test')
-  call test%test( EMPLM_CWK%unit_tests(verbose, test%stdout, test%stderr), 'EMPLM_CWK unit test')
-  call test%test( PPM_H4_2019%unit_tests(verbose, test%stdout, test%stderr), 'PPM_H4_2019 unit test')
-  call test%test( PPM_H4_2018%unit_tests(verbose, test%stdout, test%stderr), 'PPM_H4_2018 unit test')
-  call test%test( PPM_hybgen%unit_tests(verbose, test%stdout, test%stderr), 'PPM_hybgen unit test')
-  call test%test( PPM_CW%unit_tests(verbose, test%stdout, test%stderr), 'PPM_CW unit test')
-  call test%test( PPM_CWK%unit_tests(verbose, test%stdout, test%stderr), 'PPM_CWK unit test')
-  call test%test( EPPM_CWK%unit_tests(verbose, test%stdout, test%stderr), 'EPPM_CWK unit test')
+  call test%test( PCM_instance%unit_tests(verbose, test%stdout, test%stderr), 'PCM unit test')
+  call test%test( MPLM_WA_instance%unit_tests(verbose, test%stdout, test%stderr), 'MPLM_WA unit test')
+  call test%test( EMPLM_WA_instance%unit_tests(verbose, test%stdout, test%stderr), 'EMPLM_WA unit test')
+  call test%test( MPLM_WA_poly_instance%unit_tests(verbose, test%stdout, test%stderr), 'MPLM_WA_poly unit test')
+  call test%test( EMPLM_WA_poly_instance%unit_tests(verbose, test%stdout, test%stderr), 'EMPLM_WA_poly unit test')
+  call test%test( PLM_hybgen_instance%unit_tests(verbose, test%stdout, test%stderr), 'PLM_hybgen unit test')
+  call test%test( PLM_CW_instance%unit_tests(verbose, test%stdout, test%stderr), 'PLM_CW unit test')
+  call test%test( PLM_CWK_instance%unit_tests(verbose, test%stdout, test%stderr), 'PLM_CWK unit test')
+  call test%test( MPLM_CWK_instance%unit_tests(verbose, test%stdout, test%stderr), 'MPLM_CWK unit test')
+  call test%test( EMPLM_CWK_instance%unit_tests(verbose, test%stdout, test%stderr), 'EMPLM_CWK unit test')
+  call test%test( PPM_H4_2019_instance%unit_tests(verbose, test%stdout, test%stderr), 'PPM_H4_2019 unit test')
+  call test%test( PPM_H4_2018_instance%unit_tests(verbose, test%stdout, test%stderr), 'PPM_H4_2018 unit test')
+  call test%test( PPM_hybgen_instance%unit_tests(verbose, test%stdout, test%stderr), 'PPM_hybgen unit test')
+  call test%test( PPM_CW_instance%unit_tests(verbose, test%stdout, test%stderr), 'PPM_CW unit test')
+  call test%test( PPM_CWK_instance%unit_tests(verbose, test%stdout, test%stderr), 'PPM_CWK unit test')
+  call test%test( EPPM_CWK_instance%unit_tests(verbose, test%stdout, test%stderr), 'EPPM_CWK unit test')
 
   ! Randomized, brute force tests
   ntests = 3000
