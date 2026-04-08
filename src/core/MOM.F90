@@ -2470,7 +2470,6 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
     call MOM_error(FATAL, "initialize_MOM: "//&
        "FPMIX=True only works when SPLIT=True.")
   endif
-  ! STOKES_MOST
   call openParameterBlock(param_file, 'KPP', do_not_log=.true.)
   call get_param(param_file, '', 'STOKES_MOST', CS%StokesMOST, &
                  'If True, use Stokes Similarity package.', &
