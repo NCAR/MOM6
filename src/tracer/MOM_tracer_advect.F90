@@ -802,21 +802,6 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
           endif ; enddo ; endif
         endif ! the case of flux_type not equal 0, 1, or 2 is caught in advect_tracer above.
       endif ! advect_this_tracer
-
-      ! diagnostics
-      if (associated(Tr(m)%ad_x)) then ; do I=is-1,ie ; if (do_i(i,j) .or. do_i(i+1,j)) then
-        Tr(m)%ad_x(I,j,k) = Tr(m)%ad_x(I,j,k) + flux_x(I,j,m)*Idt
-      endif ; enddo ; endif
-
-      ! diagnose convergence of flux_x (do not use the Ihnew(i) part of the logic).
-      ! division by areaT to get into W/m2 for heat and kg/(s*m2) for salt.
-      if (associated(Tr(m)%advection_xy)) then
-        do i=is,ie ; if (do_i(i,j)) then
-          Tr(m)%advection_xy(i,j,k) = Tr(m)%advection_xy(i,j,k) - &
-                                          (flux_x(I,j,m) - flux_x(I-1,j,m)) * &
-                                          Idt * G%IareaT(i,j)
-        endif ; enddo
-      endif
     enddo
 
   endif ; enddo ! End of j-loop.
