@@ -405,9 +405,9 @@ type, public :: MOM_control_struct ; private
                                                 !! separating the tracer flux due to resolved and parameterized flow
   logical :: do_resolved_advection = .false.    !< If true, calculate advection by resolved flow
   logical :: do_param_advection = .false.       !< If true, calculate advection by parameterized flow
-  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEM_,NKMEM_) :: &
+  real, allocatable, dimension(:,:,:) :: &
     uhtr_resolved   !< accumulated zonal thickness fluxes due to resolved flow to advect tracers [H L2 ~> m3 or kg]
-  real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_,NKMEM_) :: &
+  real, allocatable, dimension(:,:,:) :: &
     vhtr_resolved   !< accumulated meridional thickness fluxes due to resolved flow to advect tracers [H L2 ~> m3 or kg]
 
   ! The remainder of this type provides pointers to child module control structures.
@@ -3723,8 +3723,8 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
     endif
   enddo
   if (CS%accumulate_resolved_flux) then
-    ALLOC_(CS%uhtr_resolved(IsdB:IedB,jsd:jed,nz)) ; CS%uhtr_resolved(:,:,:) = 0.0
-    ALLOC_(CS%vhtr_resolved(isd:ied,JsdB:JedB,nz)) ; CS%vhtr_resolved(:,:,:) = 0.0
+    allocate(CS%uhtr_resolved(IsdB:IedB,jsd:jed,nz), source=0.0)
+    allocate(CS%vhtr_resolved(isd:ied,JsdB:JedB,nz), source=0.0)
   endif
 
 
@@ -4621,9 +4621,8 @@ subroutine MOM_end(CS)
 
   DEALLOC_(CS%uhtr) ; DEALLOC_(CS%vhtr)
 
-  if (CS%accumulate_resolved_flux) then
-    DEALLOC_(CS%uhtr_resolved) ; DEALLOC_(CS%vhtr_resolved)
-  endif
+  if (allocated(CS%uhtr_resolved)) deallocate(CS%uhtr_resolved)
+  if (allocated(CS%vhtr_resolved)) deallocate(CS%vhtr_resolved)
 
   if (associated(CS%Hml)) deallocate(CS%Hml)
   if (associated(CS%tv%salt_deficit)) deallocate(CS%tv%salt_deficit)
