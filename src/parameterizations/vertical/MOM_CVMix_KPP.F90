@@ -133,10 +133,14 @@ type, public :: KPP_CS ; private
   real    :: KPP_ER_Cu                 !< Entrainment Rule TKE shear production weight [nondim]
   logical :: STOKES_MIXING             !< Flag if model is mixing down Stokes gradient
                                        !! This is relevant for which current to use in RiB
+  logical :: OBL_depth_bounds_bug      !< If true, limit the KPP boundary layer depth relative to
+                                       !! the top of the bottommost layer instead of the seafloor.
   integer :: answer_date               !< The vintage of the order of arithmetic in the CVMix KPP
                                        !! calculations.  Values below 20240501 recover the answers
                                        !! from early in 2024, while higher values use expressions
-                                       !! that have been refactored for rotational symmetry.
+                                       !! that have been refactored for rotational symmetry.  Values
+                                       !! of 20260101 or higher replace some divisions with
+                                       !! multiplication by reciprocals.
 
   !> CVMix parameters
   type(CVMix_kpp_params_type), pointer :: KPP_params => NULL()
@@ -192,7 +196,7 @@ type, public :: KPP_CS ; private
   real, allocatable, dimension(:,:)   :: ERdepth   !< Percent use ER boundary layer depth [nondim]
   real, allocatable, dimension(:,:)   :: RNdepth   !< Percent use Ri Number boundary layer depth [nondim]
   real, allocatable, dimension(:,:)   :: StokesXI  !< Stokes similarity parameter  [nondim]
-  real, allocatable, dimension(:,:)   :: BEdE_ER   !< Enrtainment Rule's Parameterized BEdE [ m3 s-3 ]
+  real, allocatable, dimension(:,:)   :: BEdE_ER   !< Entrainment Rule's Parameterized BEdE [ m3 s-3 ]
   ! Other arrays
   real, allocatable, dimension(:,:)   :: kOBL      !< Level (+fraction) of OBL extent [nondim]
   real, allocatable, dimension(:,:)   :: OBLdepthprev !< previous Depth (positive) of OBL [Z ~> m]
@@ -370,7 +374,7 @@ logical function KPP_init(paramFile, G, GV, US, diag, Time, CS, passive)
                  'Over-rides the result from CVMix.  Allowed values are: \n'//                 &
                  '\t CVMix     - Uses the profiles from CVMix specified by MATCH_TECHNIQUE\n'//&
                  '\t LINEAR    - A linear profile, 1-sigma\n'//                                &
-                 '\t PARABOLIC - A parablic profile, (1-sigma)^2\n'//                          &
+                 '\t PARABOLIC - A parabolic profile, (1-sigma)^2\n'//                         &
                  '\t CUBIC     - A cubic profile, (1-sigma)^2(1+2*sigma)\n'//                  &
                  '\t CUBIC_LMD - The original KPP profile',                                    &
                  default='CVMix')
@@ -438,10 +442,10 @@ logical function KPP_init(paramFile, G, GV, US, diag, Time, CS, passive)
 !/BGR: New options for including Langmuir effects
 !/ 1. Options related to enhancing the mixing coefficient
   call get_param(paramFile, mdl, "USE_KPP_LT_K", CS%LT_K_Enhancement, &
-       'Flag for Langmuir turbulence enhancement of turbulent'//&
+       'Flag for Langmuir turbulence enhancement of turbulent '//&
        'mixing coefficient.', Default=.false.)
   call get_param(paramFile, mdl, "STOKES_MIXING", CS%Stokes_Mixing, &
-       'Flag for Langmuir turbulence enhancement of turbulent'//&
+       'Flag for Langmuir turbulence enhancement of turbulent '//&
        'mixing coefficient.', Default=.false.)
   if (CS%LT_K_Enhancement) then
     call get_param(paramFile, mdl, 'KPP_LT_K_SHAPE', string,                 &
@@ -488,7 +492,7 @@ logical function KPP_init(paramFile, G, GV, US, diag, Time, CS, passive)
   endif
 !/ 2. Options related to enhancing the unresolved Vt2/entrainment in Rib
   call get_param(paramFile, mdl, "USE_KPP_LT_VT2", CS%LT_Vt2_Enhancement, &
-       'Flag for Langmuir turbulence enhancement of Vt2'//&
+       'Flag for Langmuir turbulence enhancement of Vt2 '//&
        'in Bulk Richardson Number.', Default=.false.)
   if (CS%LT_Vt2_Enhancement) then
     call get_param(paramFile, mdl, "KPP_LT_VT2_METHOD",string ,                  &
@@ -548,10 +552,15 @@ logical function KPP_init(paramFile, G, GV, US, diag, Time, CS, passive)
                  'Entrainment Rule TKE shear production weight', &
                  units="nondim", default=0.023)
 
+  call get_param(paramFile, mdl, "KPP_OBL_DEPTH_BOUNDS_BUG", CS%OBL_depth_bounds_bug, &
+                 "If true, limit the KPP boundary layer depth relative to the top of the "//&
+                 "bottommost layer instead of the seafloor.", &
+                 default=.false.)
   call get_param(paramFile, mdl, "ANSWER_DATE", CS%answer_date, &
                  "The vintage of the order of arithmetic in the CVMix KPP calculations.  Values "//&
                  "below 20240501 recover the answers from early in 2024, while higher values "//&
-                 "use expressions that have been refactored for rotational symmetry.", &
+                 "use expressions that have been refactored for rotational symmetry.  Values of "//&
+                 "20260101 or higher replace some divisions with multiplication by reciprocals.", &
                  default=default_answer_date)
 
   call closeParameterBlock(paramFile)
@@ -935,7 +944,7 @@ subroutine KPP_calculate(CS, G, GV, US, h, tv, uStar, buoyFlux, Kt, Ks, Kv, &
 
           call MOM_error(FATAL,"KPP_calculate, after CVMix_coeffs_kpp: "// &
                    "Negative vertical viscosity or diffusivity has been detected. " // &
-                   "This is likely related to the choice of MATCH_TECHNIQUE and INTERP_TYPE2." //&
+                   "This is likely related to the choice of MATCH_TECHNIQUE and INTERP_TYPE2. " //&
                    "You might consider using the default options for these parameters." )
         endif
       enddo
@@ -1134,13 +1143,13 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
   real, dimension(GV%ke+1) :: uS_Hi, vS_Hi      ! Stokes Drift components at interfaces [L T-1 ~> m s-1]
   real :: uS_SL, vS_SL                          ! Stokes at Surface Layer Depth       [L T-1 ~> m s-1]
   real :: uSb_SL, vSb_SL                        ! Average Stokes to Surface Layer Depths [L T-1 ~> m s-1]
+  real :: uS_Hi_mag    ! The magnitude of the Stokes drift at interfaces in MKS units [m s-1]
   real :: StokesXI     ! Stokes similarity parameter [nondim]
   real :: BEdE_ER      ! Entrainment Rule  [ m3 s-3 ]
   real :: PU_TKE, PS_TKE, PB_TKE ! Shear, Stokes, Buoyancy TKE production rate  [ m3 s-3 ]
   real, dimension( GV%ke )   :: StokesXI_1d ! Parameters of TKE production ratio [nondim]
-  real, dimension( GV%ke )   :: BEdE_ER_1d  ! Entrainment Rule parameterized  [Z^3 T-3 ~> m s-1]
+  real, dimension( GV%ke )   :: BEdE_ER_1d  ! Entrainment Rule parameterized  [m3 s-3]
   real :: ERdepth ! Entrainment Rule Boundary layer depth  CVMix_kpp_compute_ER_depth in MKS units [m]
-  real :: check ! Entrainment Rule Boundary layer depth  CVMix_kpp_compute_ER_depth in MKS units [m]
   real :: Llimit  ! Stable boundary Layer Limit =  vonk Lstar [Z ~> m]
   integer :: kbl  ! index of cell containing boundary layer depth [nondim]
   real    :: Lam2_max ! Upper bound for Lam2 [nondim]
@@ -1160,9 +1169,9 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
   ! some constants
   GoRho = US%Z_to_m*US%s_to_T**2 * (GV%g_Earth_Z_T2 / GV%Rho0)
   if (GV%Boussinesq) then
-    GoRho_Z_L2 = US%L_to_Z**2 * GV%Z_to_H * GV%g_Earth / GV%Rho0
+    GoRho_Z_L2 = GV%Z_to_H * GV%g_Earth_Z_T2 / GV%Rho0
   else
-    GoRho_Z_L2 = US%L_to_Z**2 * GV%g_Earth * GV%RZ_to_H
+    GoRho_Z_L2 = GV%g_Earth_Z_T2 * GV%RZ_to_H
   endif
   buoy_scale = US%L_to_m**2*US%s_to_T**3
 
@@ -1185,7 +1194,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
   !$OMP                           BEdE_ER_1d, ERdepth, BEdE_ER, PU_TKE, PS_TKE, PB_TKE, kbl), &
   !$OMP                           shared(G, GV, CS, US, uStar, h, dz, buoy_scale, buoyFlux, &
   !$OMP                           Temp, Salt, waves, tv, GoRho, GoRho_Z_L2, u, v, lamult,   &
-  !$OMP                           Vt_layer, Lam2_max)
+  !$OMP                           Vt_layer, uS_Hi_mag, Lam2_max)
 
   do j = G%jsc, G%jec
     do i = G%isc, G%iec ; if (G%mask2dT(i,j) > 0.0) then
@@ -1200,7 +1209,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
       if (CS%StokesMOST) then
         ! Load surface Stokes uS_Hi(1), vS_Hi(1); 1.0 is a dummy number
         call Compute_StokesDrift(i, j, 1.0, iFaceHeight(1),        &
-              0.5*h(i,j,1), iFaceHeight(1), -h(i,j,1),             & ! zBL, zSLtop, zSL
+              0.5*dz(i,j,1), iFaceHeight(1), -dz(i,j,1),           & ! zBL, zSLtop, zSL
               uS_Hi(1), vS_Hi(1), uS_H(1), vS_H(1), uS_SL, vS_SL,  &
               uSbar_H(1), vSbar_H(1), uSb_SL, vSb_SL, waves)
       endif
@@ -1261,6 +1270,8 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
           uE_H(k) = U_H(k) - 0.5 * (Waves%US_x(I,j,k)+Waves%US_x(I-1,j,k))
           vE_H(k) = V_H(k) - 0.5 * (Waves%US_y(i,J,k)+Waves%US_y(i,J-1,k))
 
+          ! ToDo: Explore whether it is problematic that most of the velocities are being passed
+          ! into cvmix_kpp_compute_StokesXi() in scaled units of [L T-1 ~> m s-1].
           call cvmix_kpp_compute_StokesXi( iFaceHeight, CellHeight, ksfc ,SLdepth_0d, surfBuoyFlux, &
                surfBuoy_NS,surfFricVel,waves%omega_w2x(i,j), uE_H, vE_H, uS_Hi, vS_Hi, uSbar_H, vSbar_H, &
                uS_SL, vS_SL, uSb_SL, vSb_SL, StokesXI, BEdE_ER, PU_TKE, PS_TKE, PB_TKE, &
@@ -1321,13 +1332,22 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
             endif
 
           enddo
-          I_hTot = 1./hTot
-          surfTemp = surfHtemp * I_hTot
-          surfSalt = surfHsalt * I_hTot
-          surfU    = surfHu    * I_hTot
-          surfV    = surfHv    * I_hTot
-          surfUs   = surfHus   * I_hTot
-          surfVs   = surfHvs   * I_hTot
+          if (CS%answer_date < 20260101) then
+            surfTemp = surfHtemp / hTot
+            surfSalt = surfHsalt / hTot
+            surfU    = surfHu    / hTot
+            surfV    = surfHv    / hTot
+            surfUs   = surfHus   / hTot
+            surfVs   = surfHvs   / hTot
+          else
+            I_hTot = 1./hTot
+            surfTemp = surfHtemp * I_hTot
+            surfSalt = surfHsalt * I_hTot
+            surfU    = surfHu    * I_hTot
+            surfV    = surfHv    * I_hTot
+            surfUs   = surfHus   * I_hTot
+            surfVs   = surfHvs   * I_hTot
+          endif
 
           ! vertical shear between present layer and surface layer averaged surfU and surfV.
           ! C-grid average to get Uk and Vk on T-points.
@@ -1392,7 +1412,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
         if (GV%Boussinesq .or. GV%semi_Boussinesq) then
           deltaBuoy(k) = GoRho*(rho_1D(kk+2) - rho_1D(kk+1))
         else
-          deltaBuoy(k) = (US%Z_to_m*US%s_to_T**2) * (US%L_to_Z**2 * GV%g_Earth) * &
+          deltaBuoy(k) = (US%Z_to_m*US%s_to_T**2) * GV%g_Earth_Z_T2 * &
               ( (rho_1D(kk+2) - rho_1D(kk+1)) / (0.5 * (rho_1D(kk+2) + rho_1D(kk+1))) )
         endif
         N2_1d(k)    = (GoRho_Z_L2 * (rho_1D(kk+2) - rho_1D(kk+3)) ) / &
@@ -1413,7 +1433,12 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
       enddo
 
       ! Use CS%deepOBLoffset (<-0.1*iFaceHeight(GV%ke+1)) to avoid vanishingly small layers near the bottom.
-      zBottomMinusOffset = iFaceHeight(GV%ke) + min( max(CS%deepOBLoffset,0.0), -0.1*iFaceHeight(GV%ke+1))
+      if (CS%OBL_depth_bounds_bug) then
+        zBottomMinusOffset = iFaceHeight(GV%ke) + min( max(CS%deepOBLoffset,0.0), -0.1*iFaceHeight(GV%ke+1))
+      else
+        zBottomMinusOffset = iFaceHeight(GV%ke+1) + min( max(CS%deepOBLoffset,0.0), -0.1*iFaceHeight(GV%ke+1))
+        zBottomMinusOffset = min(zBottomMinusOffset, iFaceHeight(2)) ! no shallower than top layer
+      endif
 
       ! use these to check if all points are convered
       CS%ERdepth(i,j) = 0.0
@@ -1505,6 +1530,8 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
                   CVMix_kpp_params_user=CS%KPP_params ) ! KPP parameters
 
           CS%OBLdepth(i,j) = US%m_to_Z * KPP_OBL_depth
+          if (.not.CS%OBL_depth_bounds_bug) &
+            CS%OBLdepth(i,j) = max( CS%OBLdepth(i,j), -iFaceHeight(2) )  ! no shallower than top layer
           CS%RNdepth(i,j) = 100. ! check and diagnostic
         endif  ! KPP_OBL_depth
 
@@ -1531,13 +1558,20 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
                 uS_Hi(kbl+1), vS_Hi(kbl+1), uS_H(kbl), vS_H(kbl), uS_SL, vS_SL, &
                 uSbar_H(kbl), vSbar_H(kbl), uSb_SL, vSb_SL, waves)
 
+        ! ToDo: Explore whether it is problematic that most of the velocities are being passed
+        ! into cvmix_kpp_compute_StokesXi() in scaled units of [L T-1 ~> m s-1].
         call cvmix_kpp_compute_StokesXi(iFaceHeight, CellHeight, ksfc ,SLdepth_0d, surfBuoyFlux, &
                 surfBuoy_NS,surfFricVel,waves%omega_w2x(i,j), uE_H, vE_H, uS_Hi, vS_Hi, &
                 uSbar_H, vSbar_H, uS_SL, vS_SL, uSb_SL, vSb_SL, &
                 StokesXI,BEdE_ER,PU_TKE,PS_TKE,PB_TKE,CVMix_kpp_params_user=CS%KPP_params )
 
-        CS%Lam2(i,j)   = sqrt(US_Hi(1)**2+VS_Hi(1)**2) / surfFricVel
-        CS%Lam2(i,j)   = MIN(CS%Lam2(i,j), Lam2_max)
+        ! The expression setting CS%Lam2 is slightly convoluted, but it avoids division by 0.
+        uS_Hi_mag = US%L_T_to_m_s * sqrt((US_Hi(1)**2) + (VS_Hi(1)**2))
+        if (uS_Hi_mag >= surfFricVel*Lam2_max) then
+          CS%Lam2(i,j) = Lam2_max
+        else
+          CS%Lam2(i,j) = uS_Hi_mag / surfFricVel
+        endif
         CS%PU_TKE(i,j) = PU_TKE
         CS%PS_TKE(i,j) = PS_TKE
         CS%PB_TKE(i,j) = PB_TKE
@@ -1547,7 +1581,6 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
 
       ! recompute unresolved squared velocity, wscale  and  BulkRi  for known boundary layer depth
       ! compute unresolved squared velocity for diagnostics
-      ! recompute wscale for diagnostics,
       !BGR consider if LTEnhancement is wanted for diagnostics
       if ( (CS%id_Ws > 0) .or. (CS%id_Vt2 > 0) .or. (CS%id_BulkRi > 0) ) then
         call CVMix_kpp_compute_turbulent_scales( &
@@ -1669,7 +1702,7 @@ subroutine KPP_smooth_BLD(CS, G, GV, US, dz)
         ! This code replicates the interface height calculations below.  It could be simpler, as shown below.
         dh = dz(i,j,k)   ! Nominal thickness to use for increment
         dh = dh + h_cor(i) ! Take away the accumulated error (could temporarily make dh<0)
-        h_cor(i) = min( dh - CS%min_thickness, 0. ) ! If inflating then hcorr<0
+        h_cor(i) = min( dh - CS%min_thickness, 0. ) ! If inflating then h_cor<0
         dh = max( dh, CS%min_thickness ) ! Limit increment dh>=min_thickness
         total_depth(i,j) = total_depth(i,j) + dh
       endif ; enddo
@@ -1902,28 +1935,28 @@ end subroutine KPP_NonLocalTransport_saln
 subroutine Compute_StokesDrift(i ,j, ztop, zbot, zBL, zSLtop, zSL, uS_i, vS_i, uS_k, vS_k, uS_SL, vS_SL, &
                                uSbar, vSbar, uSb_SL, vSb_SL, waves)
   type(wave_parameters_CS), pointer  :: waves           !< Wave CS for Langmuir turbulence
-  real,                intent(in)    :: ztop !< boundary layer cellheight top (<0)                  [m]
-  real,                intent(in)    :: zbot !< boundary layer cellheight bottom (<0)               [m]
-  real,                intent(in)    :: zBL  !< boundary layer cellheight center (<0)               [m]
-  real,                intent(in)    :: zSLtop !< surface layer cell top                            [m]
-  real,                intent(in)    :: zSL    !< surface layer cell depth                          [m]
-  real,                intent(inout) :: uS_i   !< Zonal Stokes velocity at zbot interface       [m s-1]
-  real,                intent(inout) :: vS_i   !< Meridional Stokes velocity at zbot interface  [m s-1]
-  real,                intent(inout) :: uS_k   !< Zonal Stokes velocity at zbl                  [m s-1]
-  real,                intent(inout) :: vS_k   !< Meridional Stokes velocity at zbl             [m s-1]
-  real,                intent(inout) :: uS_SL  !< Zonal Stokes velocity at zSL                  [m s-1]
-  real,                intent(inout) :: vS_SL  !< Meridional Stokes velocity at zSL             [m s-1]
-  real,                intent(inout) :: uSbar  !< Mean zonal Stokes velocity at ztop            [m s-1]
-  real,                intent(inout) :: vSbar  !< Mean meridional Stokes velocity at zbot       [m s-1]
-  real,                intent(inout) :: uSb_SL !< Mean zonal Stokes velocity at zSLtop          [m s-1]
-  real,                intent(inout) :: vSb_SL !< Mean meridional Stokes velocity at zSL        [m s-1]
+  real,                intent(in)    :: ztop !< boundary layer cellheight top (<0)             [Z ~> m]
+  real,                intent(in)    :: zbot !< boundary layer cellheight bottom (<0)          [Z ~> m]
+  real,                intent(in)    :: zBL  !< boundary layer cellheight center (<0)          [Z ~> m]
+  real,                intent(in)    :: zSLtop !< surface layer cell top                       [Z ~> m]
+  real,                intent(in)    :: zSL    !< surface layer cell depth                     [Z ~> m]
+  real,                intent(inout) :: uS_i   !< Zonal Stokes velocity at zbot interface      [L T-1 ~> m s-1]
+  real,                intent(inout) :: vS_i   !< Meridional Stokes velocity at zbot interface [L T-1 ~> m s-1]
+  real,                intent(inout) :: uS_k   !< Zonal Stokes velocity at zbl                 [L T-1 ~> m s-1]
+  real,                intent(inout) :: vS_k   !< Meridional Stokes velocity at zbl            [L T-1 ~> m s-1]
+  real,                intent(inout) :: uS_SL  !< Zonal Stokes velocity at zSL                 [L T-1 ~> m s-1]
+  real,                intent(inout) :: vS_SL  !< Meridional Stokes velocity at zSL            [L T-1 ~> m s-1]
+  real,                intent(inout) :: uSbar  !< Mean zonal Stokes velocity at ztop           [L T-1 ~> m s-1]
+  real,                intent(inout) :: vSbar  !< Mean meridional Stokes velocity at zbot      [L T-1 ~> m s-1]
+  real,                intent(inout) :: uSb_SL !< Mean zonal Stokes velocity at zSLtop         [L T-1 ~> m s-1]
+  real,                intent(inout) :: vSb_SL !< Mean meridional Stokes velocity at zSL       [L T-1 ~> m s-1]
   integer,             intent(in)    :: i      !< Meridional index of H-point                  [nondim]
   integer,             intent(in)    :: j      !< Zonal index of H-point                       [nondim]
 
   ! local variables
   integer                            ::   b     !< wavenumber band index
-  real                               :: fexp    !< dummy exponential function
-  real                               :: WaveNum !< Wavenumber
+  real                               :: fexp    !< dummy exponential function [nondim]
+  real                               :: WaveNum !< Wavenumber [Z-1 ~> m-1]
 
   ! initialize variables
   uS_i   = 0.0
