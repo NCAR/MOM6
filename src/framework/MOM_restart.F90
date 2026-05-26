@@ -1590,7 +1590,7 @@ subroutine save_restart(directory, time, G, CS, time_stamped, filename, GV, num_
   type(MOM_field) :: fields(CS%max_fields) ! Opaque types containing metadata describing
                                         ! each variable that will be written.
   character(len=512) :: restartpath     ! The restart file path (dir/file).
-  character(len=256) :: restartname     ! The restart file name (no dir).
+  character(len=512) :: restartname     ! The restart file name (no dir).
   character(len=8)   :: suffix          ! A suffix (like _2) that is appended
                                         ! to the name of files after the first.
   integer(kind=int64) :: var_sz, size_in_file ! The size in bytes of each variable
