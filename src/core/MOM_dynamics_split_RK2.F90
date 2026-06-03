@@ -469,41 +469,37 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
     ! Update OBC ramp value as function of time
     call update_OBC_ramp(Time_local, CS%OBC, US)
 
-    ! === OBC-exterior h fix: rebuild the zero-gradient OBC-exterior h halo, which is ===
-    ! not reconstructed bit-for-bit across an exact restart. vertvisc_coef projects
-    ! thickness outward across OBCs and reads this exterior h/dz, so a stale/inconsistent
-    ! exterior value seeds a last-bit velocity difference that breaks exact restart.
-    ! Two passes (E/W exterior columns, then N/S exterior rows) so diagonal corner cells
-    ! trace back to the bit-perfect interior h rather than a stale exterior cell.
-    ! Pass 1: E/W segments -- fill exterior column from the first interior column.
-    do n=1,CS%OBC%number_of_segments
-      segment => CS%OBC%segment(n)
-      if (.not. segment%on_pe) cycle
-      if (.not. segment%is_E_or_W) cycle
-      I = segment%HI%IsdB
-      do k=1,nz ; do j=segment%HI%jsd,segment%HI%jed
-        if (segment%direction == OBC_DIRECTION_W) then
-          h(I,j,k)   = h(I+1,j,k)
-        elseif (segment%direction == OBC_DIRECTION_E) then
-          h(I+1,j,k) = h(I,j,k)
+    ! === OBC-exterior h fix (minimal): the OBC-exterior h halo is not reconstructed
+    ! bit-for-bit across an exact restart, and vertvisc_coef reads it (zero-gradient
+    ! projection across OBCs), seeding a last-bit velocity divergence. Rebuild it here with a
+    ! single in-place zero-gradient fill over all segments: copy the first interior thickness
+    ! into the exterior ghost cell. u-points (E/W) and v-points (N/S) only read same-row /
+    ! same-column neighbours, never the diagonal corner, so no corner handling is needed.
+    if (associated(CS%OBC)) then
+      do n=1,CS%OBC%number_of_segments
+        segment => CS%OBC%segment(n)
+        if (.not. segment%on_pe) cycle
+        if (segment%is_E_or_W) then
+          I = segment%HI%IsdB
+          do k=1,nz ; do j=segment%HI%jsd,segment%HI%jed
+            if (segment%direction == OBC_DIRECTION_W) then
+              h(I,j,k)   = h(I+1,j,k)
+            elseif (segment%direction == OBC_DIRECTION_E) then
+              h(I+1,j,k) = h(I,j,k)
+            endif
+          enddo ; enddo
+        elseif (segment%is_N_or_S) then
+          J = segment%HI%JsdB
+          do k=1,nz ; do i=segment%HI%isd,segment%HI%ied
+            if (segment%direction == OBC_DIRECTION_S) then
+              h(i,J,k)   = h(i,J+1,k)
+            elseif (segment%direction == OBC_DIRECTION_N) then
+              h(i,J+1,k) = h(i,J,k)
+            endif
+          enddo ; enddo
         endif
-      enddo ; enddo
-    enddo
-    ! Pass 2: N/S segments -- fill exterior row; corner cells pick up the E/W-filled
-    ! (interior-traced) column from pass 1.
-    do n=1,CS%OBC%number_of_segments
-      segment => CS%OBC%segment(n)
-      if (.not. segment%on_pe) cycle
-      if (.not. segment%is_N_or_S) cycle
-      J = segment%HI%JsdB
-      do k=1,nz ; do i=segment%HI%isd,segment%HI%ied
-        if (segment%direction == OBC_DIRECTION_S) then
-          h(i,J,k)   = h(i,J+1,k)
-        elseif (segment%direction == OBC_DIRECTION_N) then
-          h(i,J+1,k) = h(i,J,k)
-        endif
-      enddo ; enddo
-    enddo
+      enddo
+    endif
     ! === end OBC-exterior h fix ===
 
     do k=1,nz ; do j=G%jsd,G%jed ; do I=G%IsdB,G%IedB
