@@ -1,10 +1,8 @@
-! This file is part of MOM6, the Modular Ocean Model version 6.
-! See the LICENSE file for licensing information.
-! SPDX-License-Identifier: Apache-2.0
-
 !> Provides functions for some diabatic processes such as frazil, brine rejection,
 !! tendency due to surface flux divergence.
 module MOM_diabatic_aux
+
+! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_cpu_clock,     only : cpu_clock_id, cpu_clock_begin, cpu_clock_end
 use MOM_cpu_clock,     only : CLOCK_MODULE_DRIVER, CLOCK_MODULE, CLOCK_ROUTINE
@@ -25,6 +23,7 @@ use MOM_opacity,       only : set_opacity, opacity_CS, extract_optics_slice, ext
 use MOM_opacity,       only : optics_type, optics_nbands, absorbRemainingSW, sumSWoverBands
 use MOM_tracer_flow_control, only : get_chl_from_model, tracer_flow_control_CS
 use MOM_unit_scaling,  only : unit_scale_type
+use MOM_EBM,           only : EBM_init, calculate_EBM, EBM_cs
 use MOM_variables,     only : thermo_var_ptrs
 use MOM_verticalGrid,  only : verticalGrid_type
 
@@ -75,6 +74,8 @@ type, public :: diabatic_aux_CS ; private
   integer :: brine_plume_n   !< The exponent in the brine plume parameterization.
   real :: plume_strength     !< Fraction of the available brine to take to the bottom of the mixed
                              !! layer [nondim].
+  logical :: use_EBM = .false. !< If true, use the estuary box model parameterization.
+  type(EBM_cs) :: EBM_CS       !< Control structure for the estuary box model.
 
   type(time_type), pointer :: Time => NULL() !< A pointer to the ocean model's clock.
   type(diag_ctrl), pointer :: diag !< Structure used to regulate timing of diagnostic output
@@ -650,7 +651,7 @@ subroutine set_pen_shortwave(optics, fluxes, G, GV, US, CS, opacity, tracer_flow
       do j=js,je ; do i=is,ie
         if ((G%mask2dT(i,j) > 0.0) .and. (chl_2d(i,j) < 0.0)) then
           write(mesg,'(" Time_interp negative chl of ",(1pe12.4)," at i,j = ",&
-                    & I0,", ",I0," lon/lat = ",(1pe12.4)," E ", (1pe12.4), " N.")') &
+                    & 2(i3), "lon/lat = ",(1pe12.4)," E ", (1pe12.4), " N.")') &
                      chl_2d(i,j), i, j, G%geoLonT(i,j), G%geoLatT(i,j)
           call MOM_error(FATAL, "MOM_diabatic_aux set_pen_shortwave: "//trim(mesg))
         endif
@@ -1003,6 +1004,13 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
     do i=is,ie
       if (G%mask2dT(i,j) > 0.) then
 
+        ! Distributes river runoff vertically and apply the estuary box model
+        ! parameterization if enabled.
+        ! This only works if aggregate_FW_forcing = False.
+        if (CS%use_EBM) &
+          call calculate_EBM(CS%EBM_CS, fluxes%lrunoff(i,j), tv%S(i,j,nz), EnthalpyConst, &
+                             netMassIn(i), T2d(i,1:4), tv%S(i,j,1:4), h2d(i,1:4))
+
         ! A/ Update mass, temp, and salinity due to incoming mass flux.
         do k=1,1
 
@@ -1339,7 +1347,7 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
     enddo
 
     if (numberOfGroundings - maxGroundings > 0) then
-      write(mesg, '(I0)') numberOfGroundings - maxGroundings
+      write(mesg, '(i4)') numberOfGroundings - maxGroundings
       call MOM_error(WARNING, "MOM_diabatic_aux:F90, applyBoundaryFluxesInOut(): "//&
                               trim(mesg) // " groundings remaining")
     endif
@@ -1452,6 +1460,9 @@ subroutine diabatic_aux_init(Time, G, GV, US, param_file, diag, CS, useALEalgori
   call get_param(param_file, mdl, "BRINE_PLUME_FRACTION", CS%plume_strength, &
                  "Fraction of the available brine to mix down using the brine plume parameterization.", &
                  units="nondim", default=1.0, do_not_log=.not.CS%do_brine_plume)
+
+  call get_param(param_file, mdl, "USE_EBM", CS%use_EBM, default=.false., do_not_log=.true.)
+  if (CS%use_EBM) CS%use_EBM = EBM_init(param_file, CS%EBM_CS)
 
   if (useALEalgorithm) then
     CS%id_createdH = register_diag_field('ocean_model',"created_H",diag%axesT1, &
