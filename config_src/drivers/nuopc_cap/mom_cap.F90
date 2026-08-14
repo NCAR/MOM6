@@ -82,7 +82,6 @@ use ESMF,  only: ESMF_STATEITEM_NOTFOUND, ESMF_FieldWrite
 use ESMF,  only: ESMF_END_ABORT, ESMF_Finalize
 use ESMF,  only: ESMF_REDUCE_MAX, ESMF_REDUCE_MIN, ESMF_VMAllReduce
 use ESMF,  only: operator(==), operator(/=), operator(+), operator(-)
-use ESMF,  only: ESMF_STATEITEM_NOTFOUND, ESMF_StateItem_Flag
 
 ! TODO ESMF_GridCompGetInternalState does not have an explicit Fortran interface.
 !! Model does not compile with "use ESMF,  only: ESMF_GridCompGetInternalState"
