@@ -23,6 +23,7 @@ use MOM_interpolate,     only : forcing_timeseries_dataset
 use MOM_interpolate,     only : forcing_timeseries_set_time_type_vars
 use MOM_interpolate,     only : map_model_time_to_forcing_time
 use MOM_io,              only : file_exists, MOM_read_data, slasher, vardesc, var_desc, query_vardesc
+use MOM_io,              only : MOM_infra_file, READONLY_FILE
 use MOM_open_boundary,   only : ocean_OBC_type
 use MOM_remapping,       only : reintegrate_column
 use MOM_remapping,       only : remapping_CS, initialize_remapping, remapping_core_h
@@ -35,6 +36,7 @@ use MOM_tracer_types,    only : tracer_type, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
 use MOM_tracer_initialization_from_Z, only : MOM_initialize_tracer_from_Z
 use MOM_tracer_Z_init,   only : read_Z_edges
+use MOM_tracer_share,    only : MOM_tracer_read_lines, MOM_IO_handles_find_name
 use MOM_unit_scaling,    only : unit_scale_type
 use MOM_variables,       only : surface
 use MOM_verticalGrid,    only : verticalGrid_type
@@ -122,9 +124,11 @@ type, public :: MARBL_tracers_CS ; private
   integer :: ice_ncat                   !< Number of ice categories when use_ice_category_fields = True
   real    :: IC_min                     !< Minimum value for tracer initial conditions
                                         !! (when initializing from Z) [CU ~> conc]
-  character(len=200) :: IC_file         !< The file in which the age-tracer initial values cam be found.
-  logical :: ongrid                     !< True if IC_file is already interpolated to MOM grid
-  logical :: Z_IC_file                  !< True if IC_file has Z coordinates
+  character(len=:), allocatable :: IC_files(:) !< Files that tracer initial values are read from.
+  logical :: ongrid                     !< True if fields in IC_files are already interpolated laterally to MOM grid
+  logical :: Z_IC_file                  !< True if fields in IC_files have Z coordinates
+  logical :: marbl_enforce_tracer_zint  !< If True, rescale MARBL tracers so that their vertical integrals match
+                                        !! the vertical integrals in IC_file. Only implemented for Z_IC_file.
   type(tracer_registry_type), pointer :: tr_Reg => NULL() !< A pointer to the tracer registry
   type(MARBL_tracer_data), dimension(:), allocatable :: tracer_data  !< type containing tracer data and pointer
                                                                      !! into tracer registry
@@ -587,6 +591,8 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
   character(len=40)  :: mdl = "MARBL_tracers" ! This module's name.
   character(len=256) :: log_message
   character(len=200) :: inputdir ! The directory where the input files are.
+  character(len=200) :: IC_file ! File that tracer initial values are read from.
+  character(len=200) :: IC_file_override_pointer ! File containing tracer IC filenames overriding IC_file.
   character(len=48)  :: var_name ! The variable's name.
   character(len=128) :: desc_name ! The variable's descriptor.
   character(len=48)  :: units ! The variable's units.
@@ -621,23 +627,41 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
   ! ** Input directory
   call get_param(param_file, mdl, "INPUTDIR", inputdir, default=".")
   ! ** Tracer initial conditions
-  call get_param(param_file, mdl, "MARBL_TRACERS_IC_FILE", CS%IC_file, &
-      "The file in which the MARBL tracers initial values can be found.", &
+  call get_param(param_file, mdl, "MARBL_TRACERS_IC_FILE", IC_file, &
+      "File that tracer initial values are read from.", &
       default="ecosys_jan_IC_omip_latlon_1x1_180W_c230331.nc")
-  if (scan(CS%IC_file,'/') == 0) then
-    ! Add the directory if CS%IC_file is not already a complete path.
-    CS%IC_file = trim(slasher(inputdir))//trim(CS%IC_file)
-    call log_param(param_file, mdl, "INPUTDIR/MARBL_TRACERS_IC_FILE", CS%IC_file)
+  if (scan(IC_file,'/') == 0) then
+    ! Add the directory if IC_file is not already a complete path.
+    IC_file = trim(slasher(inputdir))//trim(IC_file)
+    call log_param(param_file, mdl, "INPUTDIR/MARBL_TRACERS_IC_FILE", IC_file)
+  endif
+  call get_param(param_file, mdl, "MARBL_TRACERS_IC_FILE_OVERRIDE_POINTER", &
+      IC_file_override_pointer, &
+      "File containing tracer IC filenames overriding MARBL_TRACERS_IC_FILE.", &
+      default="")
+  if (len_trim(IC_file_override_pointer) > 0) then
+    call MOM_tracer_read_lines(IC_file_override_pointer, CS%IC_files)
+  else
+    allocate(character(len=len_trim(IC_file)) :: CS%IC_files(1))
+    CS%IC_files(1) = trim(IC_file)
   endif
   call get_param(param_file, mdl, "MARBL_TRACERS_IC_FILE_IS_Z", CS%Z_IC_file, &
       "If true, MARBL_TRACERS_IC_FILE_IS_Z is in depth space, not layer space.", &
       default=.true.)
   if (CS%Z_IC_file) then
-      ! When reading IC files on Z grid, want to impose minimum value
-      call get_param(param_file, mdl, "MARBL_IC_MIN_VAL", CS%IC_min, &
-          "Minimum value of tracer initial conditions (when initializing from Z)", &
-          default=0., units="tracer units")
+    ! When reading IC files on Z grid, want to impose minimum value
+    call get_param(param_file, mdl, "MARBL_IC_MIN_VAL", CS%IC_min, &
+        "Minimum value of tracer initial conditions (when initializing from Z)", &
+        default=0., units="tracer units")
   endif
+  call get_param(param_file, mdl, "MARBL_ENFORCE_TRACER_ZINT", CS%marbl_enforce_tracer_zint, &
+      "If True, rescale MARBL tracers so that their vertical integrals match "//&
+      "the vertical integrals in IC_files. Only implemented for .not. Z_IC_file.", default=.false.)
+  if (CS%marbl_enforce_tracer_zint .and. CS%Z_IC_file) then
+    call MOM_error(FATAL, &
+        "MARBL_ENFORCE_TRACER_ZINT implementation assumes .not. MARBL_TRACERS_IC_FILE_IS_Z")
+  endif
+
   call get_param(param_file, mdl, "MARBL_TRACERS_MAY_REINIT", CS%tracers_may_reinit, &
       "If true, tracers may go through the initialization code if they are not found in the "//&
       "restart files. Otherwise it is a fatal error if tracers are not found in the "//&
@@ -877,7 +901,7 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   type(ocean_grid_type),                 intent(inout) :: G            !< The ocean's grid structure
   type(verticalGrid_type),               intent(in)    :: GV           !< The ocean's vertical grid structure
   type(unit_scale_type),                 intent(in)    :: US           !< A dimensional unit scaling type
-  real, dimension(NIMEM_,NJMEM_,NKMEM_), intent(in)    :: h            !< Layer thicknesses [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in):: h            !< Layer thicknesses [H ~> m or kg m-2]
   type(param_file_type),                 intent(in)    :: param_file   !< A structure to parse for run-time parameters
   type(diag_ctrl), target,               intent(in)    :: diag         !< Structure used to regulate diagnostic output.
   type(ocean_OBC_type),                  pointer       :: OBC          !< This open boundary condition type specifies
@@ -896,9 +920,17 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   character(len=48) :: flux_units ! The units for age tracer fluxes, either
                                   ! years m3 s-1 or years kg s-1.
   character(len=48) :: tracer_name
-  logical :: fesedflux_has_edges, fesedflux_use_missing, tracer_init_from_Z
+  logical :: read_tracers
+  logical :: fesedflux_has_edges, fesedflux_use_missing
   real    :: fesedflux_missing  ! required argument for read_Z_edges() [CU ~> conc]
   integer :: i, j, k, kbot, m, diag_size
+
+  type(MOM_infra_file) :: IO_handles(size(CS%IC_files))
+  integer :: file_ind
+
+  type(remapping_CS) :: IC_remapCS  ! remapping of IC if Z_IC_file==.false.
+  real, allocatable :: h_IC(:,:,:)  ! h from IC_files, needed if Z_IC_file==.false.
+  real, allocatable :: tr_IC(:,:,:) ! tracer read from IC_files if Z_IC_file==.false.
 
   if (.not.associated(CS)) return
   if (CS%ntr < 1) return
@@ -974,49 +1006,90 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
       diag%axesTL, & ! T=> tracer grid? L => layer center
       day, "Conversion Factor for Bottom Flux -> Tend", "1/m")
 
-  ! Initialize tracers (if they weren't initialized from restart file)
-  tracer_init_from_Z = .false.
+  ! Determine if any tracers need to be read in
+  read_tracers = .false.
   do m=1,CS%ntr
     call query_vardesc(CS%tr_desc(m), name=name, caller="initialize_MARBL_tracers")
     if ((.not. restart) .or. &
         (CS%tracers_may_reinit .and. &
          .not. query_initialized(CS%tracer_data(m)%tr(:,:,:), name, CS%restart_CSp))) then
-      ! TODO: added the ongrid optional argument, but is there a good way to detect if the file is on grid?
-      if (CS%Z_IC_file) then
-        call MOM_initialize_tracer_from_Z(h, CS%tracer_data(m)%tr, G, GV, US, param_file, &
-            CS%IC_file, name, ongrid=CS%ongrid)
-        tracer_init_from_Z = .true.
-      else
-        call MOM_read_data(CS%IC_file, trim(name), CS%tracer_data(m)%tr, G%Domain)
-      end if
-      call set_initialized(CS%tracer_data(m)%tr, name, CS%restart_CSp)
-      do k=1,GV%ke ; do j=G%jsc, G%jec ; do i=G%isc, G%iec
-      enddo ; enddo ; enddo
+      read_tracers = .true.
+      exit
     endif
   enddo
-  if (tracer_init_from_Z) then
-    ! For each column, enforce consistency in MARBL tracers:
-    ! 1. Apply minimum IC value
-    ! 2. For a given autotroph, if one tracer is 0 they all are
-    call MOM_error(NOTE, 'Enforcing consistency across autotroph tracer initial conditions')
-    do j=G%jsc, G%jec ; do i=G%isc, G%iec
-      do k=1,GV%ke; do m=1, CS%ntr
-        ! Ensure tracer concentrations are at / above minimum value
-        if (CS%tracer_data(m)%tr(i,j,k) < CS%IC_min) CS%tracer_data(m)%tr(i,j,k) = CS%IC_min
 
-        ! Copy tracer data into flat array
-        MARBL_instances%tracers(m,k) = CS%tracer_data(m)%tr(i,j,k)
+  if (read_tracers) then
+    ! Open IC_files to enable metadata access
+    do file_ind = 1, size(CS%IC_files)
+      call IO_handles(file_ind)%open(trim(CS%IC_files(file_ind)), READONLY_FILE, &
+          MOM_domain=G%Domain)
+    enddo
+
+    ! read thickness from IC_files if needed
+    if (.not. CS%Z_IC_file) then
+      call initialize_remapping(IC_remapCS, "PPM_IH4", answer_date=99991231)
+      allocate(h_IC(SZI_(G),SZJ_(G),SZK_(GV)))
+      file_ind = MOM_IO_handles_find_name(IO_handles, "h")
+      if (file_ind == 0) call MOM_error(FATAL, "h not found in IC_files")
+      call MOM_read_data(CS%IC_files(file_ind), "h", h_IC, G%Domain)
+      allocate(tr_IC(SZI_(G),SZJ_(G),SZK_(GV)))
+    endif
+
+    ! Initialize tracers (if they weren't initialized from restart file)
+    do m=1,CS%ntr
+      call query_vardesc(CS%tr_desc(m), name=name, caller="initialize_MARBL_tracers")
+      if ((.not. restart) .or. &
+          (CS%tracers_may_reinit .and. &
+           .not. query_initialized(CS%tracer_data(m)%tr(:,:,:), name, CS%restart_CSp))) then
+        file_ind = MOM_IO_handles_find_name(IO_handles, name)
+        if (file_ind == 0) call MOM_error(FATAL, trim(name) // " not found in IC_files")
+        if (CS%Z_IC_file) then
+          ! TODO: added the ongrid optional argument, but is there a good way to detect if the file is on grid?
+          call MOM_initialize_tracer_from_Z(h, CS%tracer_data(m)%tr, G, GV, US, param_file, &
+              CS%IC_files(file_ind), name, ongrid=CS%ongrid)
+        else
+          call MOM_read_data(CS%IC_files(file_ind), trim(name), tr_IC, G%Domain)
+          do j=G%jsc, G%jec ; do i=G%isc, G%iec
+            if (G%mask2dT(i,j) == 0) cycle
+            call remapping_core_h(IC_remapCS, GV%ke, h_IC(i,j,:), tr_IC(i,j,:), &
+                GV%ke, h(i,j,:), CS%tracer_data(m)%tr(i,j,:))
+          enddo ; enddo
+
+          if (CS%marbl_enforce_tracer_zint) &
+              call MARBL_enforce_tracer_zint(G, GV, h_IC, tr_IC, h, name, CS%tracer_data(m)%tr)
+        end if
+        call set_initialized(CS%tracer_data(m)%tr, name, CS%restart_CSp)
+      endif
+    enddo
+
+    do file_ind = 1, size(CS%IC_files)
+      call IO_handles(file_ind)%close()
+    enddo
+
+    if (CS%Z_IC_file) then
+      ! For each column, enforce consistency in MARBL tracers:
+      ! 1. Apply minimum IC value
+      ! 2. For a given autotroph, if one tracer is 0 they all are
+      call MOM_error(NOTE, 'Enforcing consistency across autotroph tracer initial conditions')
+      do j=G%jsc, G%jec ; do i=G%isc, G%iec
+        do k=1,GV%ke; do m=1, CS%ntr
+          ! Ensure tracer concentrations are at / above minimum value
+          if (CS%tracer_data(m)%tr(i,j,k) < CS%IC_min) CS%tracer_data(m)%tr(i,j,k) = CS%IC_min
+
+          ! Copy tracer data into flat array
+          MARBL_instances%tracers(m,k) = CS%tracer_data(m)%tr(i,j,k)
+        end do ; end do
+
+        ! call consistency enforcement
+        call MARBL_instances%autotroph_tracer_consistency_enforce()
+
+        ! Copy tracer data out of flat array
+        do k=1,GV%ke; do m=1, CS%ntr
+          CS%tracer_data(m)%tr(i,j,k) = MARBL_instances%tracers(m,k)
+        end do ; end do
       end do ; end do
-
-      ! call consistency enforcement
-      call MARBL_instances%autotroph_tracer_consistency_enforce()
-
-      ! Copy tracer data out of flat array
-      do k=1,GV%ke; do m=1, CS%ntr
-        CS%tracer_data(m)%tr(i,j,k) = MARBL_instances%tracers(m,k)
-      end do ; end do
-    end do ; end do
-  end if
+    end if
+  endif
 
   ! Initialize total chlorophyll to get SW Pen correct (if it wasn't initialized from restart file)
   if ((CS%total_Chl_ind > 0) .and. &
@@ -1215,6 +1288,54 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   endif
 
 end subroutine initialize_MARBL_tracers
+
+!> This subroutine rescales MARBL tracers so that their vertical integrals match
+!! the vertical integrals in IC_files.
+subroutine MARBL_enforce_tracer_zint(G, GV, h_IC, tr_IC, h, name, tr)
+
+  use MOM_spatial_means,     only : global_area_integral
+
+  type(ocean_grid_type),                     intent(in)    :: G     !< The ocean's grid structure
+  type(verticalGrid_type),                   intent(in)    :: GV    !< The ocean's vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_IC  !< Layer thicknesses from IC_files [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: tr_IC !< Tracer from IC_files
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h     !< Layer thicknesses [H ~> m or kg m-2]
+  character(len=*),                          intent(in)    :: name  !< Tracer name, for log messages
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: tr    !< Tracer remapped to h
+
+  ! Local variables
+  real, dimension(SZI_(G),SZJ_(G))          :: tracer_zint_IC ! Vertical integral of tracer using h_IC
+  real, dimension(SZI_(G),SZJ_(G))          :: tracer_zint    ! Vertical integral of tracer using current thickness
+  real                                      :: tracer_scale   ! value to scale tracer by to recover previous vertical integral
+
+  character(len=256) :: log_message
+  integer :: i, j, k, is, ie, js, je, nz, m
+
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+
+  ! compute tracer vertical integral with thickness from IC and current thickness
+  tracer_zint_IC(:,:) = 0.0
+  tracer_zint(:,:) = 0.0
+  do k=1,nz ; do j=js,je ; do i=is,ie
+    if (G%mask2dT(i,j) == 0) cycle
+    tracer_zint_IC(i,j) = tracer_zint_IC(i,j) + h_IC(i,j,k) * tr_IC(i,j,k)
+    tracer_zint(i,j) = tracer_zint(i,j) + h(i,j,k) * tr(i,j,k)
+  enddo ; enddo ; enddo
+
+  tracer_scale = &
+      global_area_integral(tracer_zint_IC, G) / global_area_integral(tracer_zint, G)
+
+  if (is_root_PE()) then
+    write(log_message, "(A, F20.16)") "tracer_scale-1.0 for "//trim(name)//" = ", tracer_scale-1.0
+    call MOM_error(NOTE, log_message)
+  endif
+
+  do j=js,je ; do i=is,ie
+    if (G%mask2dT(i,j) == 0) cycle
+    tr(i,j,:) = tracer_scale * tr(i,j,:)
+  enddo ; enddo
+
+end subroutine MARBL_enforce_tracer_zint
 
 !> This subroutine is used to register tracer fields and subroutines
 !! to be used with MOM.
@@ -2102,12 +2223,12 @@ end subroutine MARBL_tracers_set_forcing
 !! returning the number of stocks it has calculated.  If the stock_index
 !! is present, only the stock corresponding to that coded index is returned.
 function MARBL_tracers_stock(h, stocks, G, GV, CS, names, units, stock_index)
-  real, dimension(NIMEM_,NJMEM_,NKMEM_), intent(in)    :: h      !< Layer thicknesses [H ~> m or kg m-2]
+  type(ocean_grid_type),                 intent(in)    :: G      !< The ocean's grid structure
+  type(verticalGrid_type),               intent(in)    :: GV     !< The ocean's vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in):: h      !< Layer thicknesses [H ~> m or kg m-2]
   type(EFP_type), dimension(:),          intent(out)   :: stocks !< the mass-weighted integrated amount of
                                                                  !! each tracer, in kg times concentration units
                                                                  !! [kg conc].
-  type(ocean_grid_type),                 intent(in)    :: G      !< The ocean's grid structure
-  type(verticalGrid_type),               intent(in)    :: GV     !< The ocean's vertical grid structure
   type(MARBL_tracers_CS),                pointer       :: CS     !< The control structure returned by a
                                                                  !! previous call to register_MARBL_tracers.
   character(len=*), dimension(:),        intent(out)   :: names  !< the names of the stocks calculated.
