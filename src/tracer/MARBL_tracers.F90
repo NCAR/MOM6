@@ -1297,16 +1297,17 @@ subroutine MARBL_enforce_tracer_zint(G, GV, h_IC, tr_IC, h, name, tr)
 
   type(ocean_grid_type),                     intent(in)    :: G     !< The ocean's grid structure
   type(verticalGrid_type),                   intent(in)    :: GV    !< The ocean's vertical grid structure
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_IC  !< Layer thicknesses from IC_files [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_IC  !< Layer thicknesses from IC_files
+                                                                    !! [H ~> m or kg m-2]
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: tr_IC !< Tracer from IC_files
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h     !< Layer thicknesses [H ~> m or kg m-2]
   character(len=*),                          intent(in)    :: name  !< Tracer name, for log messages
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: tr    !< Tracer remapped to h
 
   ! Local variables
-  real, dimension(SZI_(G),SZJ_(G))          :: tracer_zint_IC ! Vertical integral of tracer using h_IC
-  real, dimension(SZI_(G),SZJ_(G))          :: tracer_zint    ! Vertical integral of tracer using current thickness
-  real                                      :: tracer_scale   ! value to scale tracer by to recover previous vertical integral
+  real, dimension(SZI_(G),SZJ_(G)) :: tracer_zint_IC ! Vertical integral of tracer using h_IC
+  real, dimension(SZI_(G),SZJ_(G)) :: tracer_zint    ! Vertical integral of tracer using current thickness
+  real                             :: tracer_scale   ! value to scale tracer by to recover previous vertical integral
 
   character(len=256) :: log_message
   integer :: i, j, k, is, ie, js, je, nz, m
