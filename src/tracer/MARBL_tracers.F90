@@ -127,6 +127,8 @@ type, public :: MARBL_tracers_CS ; private
   character(len=:), allocatable :: IC_files(:) !< Files that tracer initial values are read from.
   logical :: ongrid                     !< True if fields in IC_files are already interpolated laterally to MOM grid
   logical :: Z_IC_file                  !< True if fields in IC_files have Z coordinates
+  logical :: remap_non_Z_IC             !< If true, and Z_IC_file is false, then remap IC vals to
+                                        !! current model thicknesses. The default is false.
   logical :: marbl_enforce_tracer_zint  !< If True, rescale MARBL tracers so that their vertical integrals match
                                         !! the vertical integrals in IC_file. Only implemented for Z_IC_file.
   type(tracer_registry_type), pointer :: tr_Reg => NULL() !< A pointer to the tracer registry
@@ -441,7 +443,7 @@ subroutine configure_MARBL_tracers(GV, US, param_file, CS)
       CS%sfo_cnt = CS%sfo_cnt + 1
     else if (trim(field_source) == "interior_tendency") then
       CS%ito_cnt = CS%ito_cnt + 1
-    end if
+    endif
 
     ! Total 3D Chlorophyll
     call MARBL_instances%add_output_for_GCM(num_elements=1, num_levels=nz, field_name="total_Chl", &
@@ -450,8 +452,8 @@ subroutine configure_MARBL_tracers(GV, US, param_file, CS)
       CS%sfo_cnt = CS%sfo_cnt + 1
     else if (trim(field_source) == "interior_tendency") then
       CS%ito_cnt = CS%ito_cnt + 1
-    end if
-  end if
+    endif
+  endif
 
   ! (5) Initialize forcing fields
   !     i. store all surface forcing indices
@@ -654,6 +656,9 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
         "Minimum value of tracer initial conditions (when initializing from Z)", &
         default=0., units="tracer units")
   endif
+  call get_param(param_file, mdl, "MARBL_REMAP_NON_Z_IC", CS%remap_non_Z_IC, &
+      "If true, and MARBL_IC_FILE_IS_Z is false, then remap IC vals to current model thicknesses.",&
+      default=.false.)
   call get_param(param_file, mdl, "MARBL_ENFORCE_TRACER_ZINT", CS%marbl_enforce_tracer_zint, &
       "If True, rescale MARBL tracers so that their vertical integrals match "//&
       "the vertical integrals in IC_files. Only implemented for .not. Z_IC_file.", default=.false.)
@@ -1026,8 +1031,8 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
     enddo
 
     ! read thickness from IC_files if needed
-    if (.not. CS%Z_IC_file) then
-      call initialize_remapping(IC_remapCS, "PPM_IH4", answer_date=99991231)
+    if (.not. CS%Z_IC_file .and. (CS%remap_non_Z_IC .or. CS%marbl_enforce_tracer_zint)) then
+      if (CS%remap_non_Z_IC) call initialize_remapping(IC_remapCS, "PPM_IH4", answer_date=99991231)
       allocate(h_IC(SZI_(G),SZJ_(G),SZK_(GV)))
       file_ind = MOM_IO_handles_find_name(IO_handles, "h")
       if (file_ind == 0) call MOM_error(FATAL, "h not found in IC_files")
@@ -1048,16 +1053,23 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
           call MOM_initialize_tracer_from_Z(h, CS%tracer_data(m)%tr, G, GV, US, param_file, &
               CS%IC_files(file_ind), name, ongrid=CS%ongrid)
         else
-          call MOM_read_data(CS%IC_files(file_ind), trim(name), tr_IC, G%Domain)
-          do j=G%jsc, G%jec ; do i=G%isc, G%iec
-            if (G%mask2dT(i,j) == 0) cycle
-            call remapping_core_h(IC_remapCS, GV%ke, h_IC(i,j,:), tr_IC(i,j,:), &
-                GV%ke, h(i,j,:), CS%tracer_data(m)%tr(i,j,:))
-          enddo ; enddo
-
-          if (CS%marbl_enforce_tracer_zint) &
-              call MARBL_enforce_tracer_zint(G, GV, h_IC, tr_IC, h, name, CS%tracer_data(m)%tr)
-        end if
+          if (CS%remap_non_Z_IC .or. CS%marbl_enforce_tracer_zint) then
+            call MOM_read_data(CS%IC_files(file_ind), trim(name), tr_IC, G%Domain)
+            if (CS%remap_non_Z_IC) then
+              do j=G%jsc, G%jec ; do i=G%isc, G%iec
+                if (G%mask2dT(i,j) == 0) cycle
+                call remapping_core_h(IC_remapCS, GV%ke, h_IC(i,j,:), tr_IC(i,j,:), &
+                    GV%ke, h(i,j,:), CS%tracer_data(m)%tr(i,j,:))
+              enddo ; enddo
+            else
+              CS%tracer_data(m)%tr(:,:,:) = tr_IC(:,:,:)
+            endif
+            if (CS%marbl_enforce_tracer_zint) &
+                call MARBL_enforce_tracer_zint(G, GV, h_IC, tr_IC, h, name, CS%tracer_data(m)%tr)
+          else
+            call MOM_read_data(CS%IC_files(file_ind), trim(name), CS%tracer_data(m)%tr, G%Domain)
+          endif
+        endif
         call set_initialized(CS%tracer_data(m)%tr, name, CS%restart_CSp)
       endif
     enddo
@@ -1072,23 +1084,23 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
       ! 2. For a given autotroph, if one tracer is 0 they all are
       call MOM_error(NOTE, 'Enforcing consistency across autotroph tracer initial conditions')
       do j=G%jsc, G%jec ; do i=G%isc, G%iec
-        do k=1,GV%ke; do m=1, CS%ntr
+        do k=1,GV%ke ; do m=1, CS%ntr
           ! Ensure tracer concentrations are at / above minimum value
           if (CS%tracer_data(m)%tr(i,j,k) < CS%IC_min) CS%tracer_data(m)%tr(i,j,k) = CS%IC_min
 
           ! Copy tracer data into flat array
           MARBL_instances%tracers(m,k) = CS%tracer_data(m)%tr(i,j,k)
-        end do ; end do
+        enddo ; enddo
 
         ! call consistency enforcement
         call MARBL_instances%autotroph_tracer_consistency_enforce()
 
         ! Copy tracer data out of flat array
-        do k=1,GV%ke; do m=1, CS%ntr
+        do k=1,GV%ke ; do m=1, CS%ntr
           CS%tracer_data(m)%tr(i,j,k) = MARBL_instances%tracers(m,k)
-        end do ; end do
-      end do ; end do
-    end if
+        enddo ; enddo
+      enddo ; enddo
+    endif
   endif
 
   ! Initialize total chlorophyll to get SW Pen correct (if it wasn't initialized from restart file)

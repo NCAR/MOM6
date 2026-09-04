@@ -50,6 +50,8 @@ type, public :: ideal_age_tracer_CS ; private
                     !! can be found, or an empty string for internal initialization.
   character(len=:), allocatable :: IC_files(:) !< Files that tracer initial values can be read from.
   logical :: Z_IC_file !< If true, the IC_file is in Z-space.  The default is false.
+  logical :: remap_non_Z_IC !< If true, and Z_IC_file is false, then remap IC vals to current model thicknesses.
+                            !! The default is false.
   type(time_type), pointer :: Time => NULL() !< A pointer to the ocean model's clock.
   type(tracer_registry_type), pointer :: tr_Reg => NULL() !< A pointer to the tracer registry
   real, pointer :: tr(:,:,:,:) => NULL()   !< The array of tracers used in this package [years] or other units
@@ -158,6 +160,9 @@ function register_ideal_age_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS)
   call get_param(param_file, mdl, "AGE_IC_FILE_IS_Z", CS%Z_IC_file, &
                  "If true, AGE_IC_FILE is in depth space, not layer space", &
                  default=.false.)
+  call get_param(param_file, mdl, "AGE_REMAP_NON_Z_IC", CS%remap_non_Z_IC, &
+      "If true, and AGE_IC_FILE_IS_Z is false, then remap IC vals to current model thicknesses.", &
+      default=.false.)
   call get_param(param_file, mdl, "TRACERS_MAY_REINIT", CS%tracers_may_reinit, &
                  "If true, tracers may go through the initialization code "//&
                  "if they are not found in the restart files.  Otherwise "//&
@@ -299,7 +304,7 @@ subroutine initialize_ideal_age_tracer(restart, day, G, GV, US, h, diag, OBC, CS
     enddo
 
     ! read thickness from IC_files if needed
-    if (.not. CS%Z_IC_file) then
+    if (.not. CS%Z_IC_file .and. CS%remap_non_Z_IC) then
       call initialize_remapping(IC_remapCS, "PPM_IH4", answer_date=99991231)
       allocate(h_IC(SZI_(G),SZJ_(G),SZK_(GV)))
       file_ind = MOM_IO_handles_find_name(IO_handles, "h")
@@ -331,12 +336,16 @@ subroutine initialize_ideal_age_tracer(restart, day, G, GV, US, h, diag, OBC, CS
                     trim(CS%IC_files(file_ind))//".")
           endif
         else
-          call MOM_read_data(CS%IC_files(file_ind), trim(name), tr_IC, G%Domain)
-          do j=js,je ; do i=is,ie
-            if (G%mask2dT(i,j) == 0) cycle
-            call remapping_core_h(IC_remapCS, nz, h_IC(i,j,:), tr_IC(i,j,:), &
-                nz, h(i,j,:), CS%tr(i,j,:,m))
-          enddo ; enddo
+          if (CS%remap_non_Z_IC) then
+            call MOM_read_data(CS%IC_files(file_ind), trim(name), tr_IC, G%Domain)
+            do j=js,je ; do i=is,ie
+              if (G%mask2dT(i,j) == 0) cycle
+              call remapping_core_h(IC_remapCS, nz, h_IC(i,j,:), tr_IC(i,j,:), &
+                  nz, h(i,j,:), CS%tr(i,j,:,m))
+            enddo ; enddo
+          else
+            call MOM_read_data(CS%IC_files(file_ind), trim(name), CS%tr(:,:,:,m), G%Domain)
+          endif
         endif
       else
         do k=1,nz ; do j=js,je ; do i=is,ie
