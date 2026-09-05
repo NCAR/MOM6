@@ -1212,6 +1212,13 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
               0.5*dz(i,j,1), iFaceHeight(1), -dz(i,j,1),           & ! zBL, zSLtop, zSL
               uS_Hi(1), vS_Hi(1), uS_H(1), vS_H(1), uS_SL, vS_SL,  &
               uSbar_H(1), vSbar_H(1), uSb_SL, vSb_SL, waves)
+
+        ! Set the Eulerian velocities for the whole column here before the
+        ! cvmix_kpp_compute_StokesXi() call below, which reads k+1 too.
+        do k=1,GV%ke
+          uE_H(k) = U_H(k) - 0.5 * (Waves%US_x(I,j,k)+Waves%US_x(I-1,j,k))
+          vE_H(k) = V_H(k) - 0.5 * (Waves%US_y(i,J,k)+Waves%US_y(i,J-1,k))
+        enddo
       endif
 
       ! things independent of position within the column
@@ -1245,7 +1252,9 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
         dh = max( dh, CS%min_thickness ) ! Limit increment dh>=min_thickness
         cellHeight(k)    = iFaceHeight(k) - 0.5 * dh
         iFaceHeight(k+1) = iFaceHeight(k) - dh
+      enddo
 
+      do k=1,GV%ke
         ! find ksfc for cell where "surface layer" sits
         SLdepth_0d = CS%surf_layer_ext*max( max(-cellHeight(k),-iFaceHeight(2) ), CS%minOBLdepth )
         ksfc = k
@@ -1267,8 +1276,6 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
               cellHeight(k),iFaceHeight(ksfc),-SLdepth_0d, &
               uS_Hi(k+1), vS_Hi(k+1), uS_H(k), vS_H(k), uS_SL, vS_SL, &
               uSbar_H(k), vSbar_H(k), uSb_SL, vSb_SL, waves)
-          uE_H(k) = U_H(k) - 0.5 * (Waves%US_x(I,j,k)+Waves%US_x(I-1,j,k))
-          vE_H(k) = V_H(k) - 0.5 * (Waves%US_y(i,J,k)+Waves%US_y(i,J-1,k))
 
           call cvmix_kpp_compute_StokesXi( &
                iFaceHeight*US%Z_to_m,      & ! (in) Cell interface height [m]
