@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> MOM6 interface to netCDF operations
 module MOM_netcdf
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use, intrinsic :: iso_fortran_env, only : real32, real64
 
@@ -799,7 +801,7 @@ subroutine check_netcdf_call(ncerr, header, message)
   character(len=:), allocatable :: errmsg
     ! Full error message, including netCDF message
 
-  if (ncerr /= nf90_noerr) then
+  if (ncerr /= NF90_NOERR) then
     errmsg = trim(header) // ": " // trim(message) // new_line('/') &
       // trim(nf90_strerror(ncerr))
     call MOM_error(FATAL, errmsg)

@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> This module is used to check the dimensional scaling factors used by the MOM6 ocean model
 module MOM_check_scaling
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_error_handler,        only : MOM_error, MOM_mesg, FATAL, WARNING, assert, MOM_get_verbosity
 use MOM_unique_scales,        only : check_scaling_uniqueness, scales_to_powers
@@ -126,7 +128,7 @@ subroutine compose_dimension_list(ns, des, wts)
   call add_scaling(ns, des, wts, "[S H ~> ppt m or ppt kg m-2]", 8) ! Depth integrated salinity
   call add_scaling(ns, des, wts, "[Z2 T-2 ~> m2 s-2]", 8)     ! Turbulent kinetic energy
   call add_scaling(ns, des, wts, "[R L2 Z T-2 ~> Pa m]", 7)   ! Vertically integrated pressure anomalies
-  call add_scaling(ns, des, wts, "[Z2 T-1 / Z3 T-3 = T2 Z-1 ~> s2 m-1]", 7) ! (TKE_to_Kd)
+  call add_scaling(ns, des, wts, "[T2 Z-1 ~> s2 m-1]", 7)     ! (TKE_to_Kd)
   call add_scaling(ns, des, wts, "[L4 T-1 ~> m4 s-1]", 7)     ! Biharmonic viscosity
   call add_scaling(ns, des, wts, "[L3 ~> m3]", 7)             ! Metric dependent constants for viscosity
   call add_scaling(ns, des, wts, "[L2 T-3 ~> m2 s-3]", 7)     ! Buoyancy flux or MEKE sources [L2 T-3 ~> W kg-1]

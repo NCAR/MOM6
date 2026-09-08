@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Implements sponge regions in isopycnal mode
 module MOM_sponge
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_coms,          only : sum_across_PEs
 use MOM_diag_mediator, only : post_data, query_averaging_enabled, register_diag_field
@@ -518,7 +520,7 @@ subroutine apply_sponge(h, tv, dt, G, GV, US, ea, eb, CS, Rcv_ml)
         enddo
       enddo
 
-      wpb = 0.0; wb = 0.0
+      wpb = 0.0 ; wb = 0.0
       do k=nz,nkmb+1,-1
         if (GV%Rlay(k) > Rcv_ml(i,j)) then
           w = MIN((((e(K)-e0) - e_str*CS%Ref_eta(K,c)) * damp)*dz_to_h(K), &

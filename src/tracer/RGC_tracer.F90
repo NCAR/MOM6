@@ -1,3 +1,7 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> This module contains the routines used to set up a
 !! dynamically passive tracer.
 !! Set up and use passive tracers requires the following:
@@ -10,8 +14,6 @@
 !*********+*********+*********+*********+*********+*********+***********
 
 module RGC_tracer
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_diag_mediator, only : diag_ctrl
 use MOM_error_handler, only : MOM_error, FATAL, WARNING
@@ -295,9 +297,9 @@ subroutine RGC_tracer_column_physics(h_old, h_new,  ea,  eb, fluxes, dt, G, GV, 
 
   if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
     do m=1,NTR
-      do k=1,nz ;do j=js,je ; do i=is,ie
+      do k=1,nz ; do j=js,je ; do i=is,ie
         h_work(i,j,k) = h_old(i,j,k)
-      enddo ; enddo ; enddo;
+      enddo ; enddo ; enddo
       call applyTracerBoundaryFluxesInOut(G, GV, CS%tr(:,:,:,m) , dt, fluxes, h_work, &
                                           evap_CFL_limit, minimum_forcing_depth)
 

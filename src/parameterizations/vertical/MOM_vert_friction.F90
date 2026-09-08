@@ -1,7 +1,10 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Implements vertical viscosity (vertvisc)
 module MOM_vert_friction
 
-! This file is part of MOM6. See LICENSE.md for the license.
 use MOM_domains,       only : pass_var, To_All, Omit_corners
 use MOM_domains,       only : pass_vector, Scalar_Pair
 use MOM_diag_mediator, only : post_data, register_diag_field, safe_alloc_ptr
@@ -21,7 +24,7 @@ use MOM_open_boundary, only : ocean_OBC_type, OBC_NONE, OBC_DIRECTION_E
 use MOM_open_boundary, only : OBC_DIRECTION_W, OBC_DIRECTION_N, OBC_DIRECTION_S
 use MOM_PointAccel,    only : write_u_accel, write_v_accel, PointAccel_init
 use MOM_PointAccel,    only : PointAccel_CS
-use MOM_time_manager,  only : time_type, time_type_to_real, operator(-)
+use MOM_time_manager,  only : time_type, time_minus_signed
 use MOM_unit_scaling,  only : unit_scale_type
 use MOM_variables,     only : thermo_var_ptrs, vertvisc_type
 use MOM_variables,     only : cont_diag_ptrs, accel_diag_ptrs
@@ -40,7 +43,7 @@ implicit none ; private
 public vertvisc, vertvisc_remnant, vertvisc_coef
 public vertvisc_limit_vel, vertvisc_init, vertvisc_end
 public updateCFLtruncationValue
-public vertFPmix
+public vertNLstress
 
 ! A note on unit descriptions in comments: MOM6 uses units that can be rescaled for dimensional
 ! consistency testing. These are noted in comments with units like Z, H, L, and T, along with
@@ -79,8 +82,6 @@ type, public :: vertvisc_CS ; private
                              !! [H Z T ~> m2 s or kg s m-1]
   real    :: vel_underflow   !< Velocity components smaller than vel_underflow
                              !! are set to 0 [L T-1 ~> m s-1].
-  logical :: CFL_based_trunc !< If true, base truncations on CFL numbers, not
-                             !! absolute velocities.
   real    :: CFL_trunc       !< Velocity components will be truncated when they
                              !! are large enough that the corresponding CFL number
                              !! exceeds this value [nondim].
@@ -157,10 +158,6 @@ type, public :: vertvisc_CS ; private
                             !! u-accelerations are written if velocity truncations occur.
   character(len=200) :: v_trunc_file !< The complete path to a file in which a column of
                             !! v-accelerations are written if velocity truncations occur.
-  logical :: StokesMixing   !< If true, do Stokes drift mixing via the Lagrangian current
-                            !! (Eulerian plus Stokes drift).  False by default and set
-                            !! via STOKES_MIXING_COMBINED.
-
   type(diag_ctrl), pointer :: diag !< A structure that is used to regulate the
                                    !! timing of diagnostic output.
   real, allocatable, dimension(:,:) :: kappa_gl90_2d !< 2D kappa_gl90 at h-points [L2 H Z-1 T-1 ~> m2 s-1 or Pa s]
@@ -171,10 +168,8 @@ type, public :: vertvisc_CS ; private
   integer :: id_au_vv = -1, id_av_vv = -1, id_au_gl90_vv = -1, id_av_gl90_vv = -1
   integer :: id_du_dt_str = -1, id_dv_dt_str = -1
   integer :: id_h_u = -1, id_h_v = -1, id_hML_u = -1 , id_hML_v = -1
-  integer :: id_Omega_w2x = -1, id_FPtau2s  = -1 , id_FPtau2w = -1
+  integer :: id_NLtau2s = -1, id_NLtau2w = -1, id_NLs2w = -1
   integer :: id_uE_h  = -1, id_vE_h  = -1
-  integer :: id_uStk  = -1, id_vStk  = -1
-  integer :: id_uStk0 = -1, id_vStk0 = -1
   integer :: id_uInc_h= -1, id_vInc_h= -1
   integer :: id_taux_bot = -1, id_tauy_bot = -1
   integer :: id_Kv_slow = -1, id_Kv_u = -1, id_Kv_v = -1
@@ -194,38 +189,31 @@ end type vertvisc_CS
 
 contains
 
-!> Add nonlocal stress increments to ui^n and vi^n.
-subroutine vertFPmix(ui, vi, uold, vold, hbl_h, h, forces, dt, lpost, Cemp_NL, G, GV, US, CS, OBC, Waves)
+!> Add nonlocal stress increments to ui and vi.
+subroutine vertNLstress(ui, vi, hbl_h, h, forces, dt, lpost, Cemp_NL, G, GV, US, CS, OBC, Waves)
   type(ocean_grid_type),   intent(in)    :: G      !< Ocean grid structure
   type(verticalGrid_type), intent(in)    :: GV     !< Ocean vertical grid structure
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
-                           intent(inout) :: ui     !< Zonal velocity after vertvisc [L T-1 ~> m s-1]
+                           intent(inout) :: ui     !< Zonal velocity to be incremented [L T-1 ~> m s-1]
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
-                           intent(inout) :: vi     !< Meridional velocity after vertvisc [L T-1 ~> m s-1]
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
-                           intent(inout) :: uold   !< Old Zonal velocity [L T-1 ~> m s-1]
-  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
-                           intent(inout) :: vold   !< Old Meridional velocity [L T-1 ~> m s-1]
+                           intent(inout) :: vi     !< Meridional velocity to be incremented [L T-1 ~> m s-1]
   real, dimension(SZI_(G),SZJ_(G)), intent(inout) :: hbl_h !<  boundary layer depth [H ~> m]
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                            intent(in) :: h       !< Layer thicknesses [H ~> m or kg m-2]
   type(mech_forcing),      intent(in) :: forces  !< A structure with the driving mechanical forces
   real,                    intent(in) :: dt      !< Time increment [T ~> s]
   real,                    intent(in) :: Cemp_NL !< empirical coefficient of non-local momentum mixing [nondim]
-  logical,                 intent(in) :: lpost   !< Compute and make available FPMix diagnostics
+  logical,                 intent(in) :: lpost   !< Compute and make available vertNLstress diagnostics
   type(unit_scale_type),   intent(in) :: US      !< A dimensional unit scaling type
   type(vertvisc_CS),       pointer    :: CS      !< Vertical viscosity control structure
   type(ocean_OBC_type),    pointer    :: OBC     !< Open boundary condition structure
-  type(wave_parameters_CS), &
-                   optional, pointer  :: Waves   !< Container for wave/Stokes information
+  type(wave_parameters_CS), pointer   :: Waves   !< Container for wave/Stokes information
 
   ! local variables
   real, dimension(SZIB_(G),SZJ_(G))  :: hbl_u   !< boundary layer depth (u-pts) [H ~> m]
   real, dimension(SZI_(G),SZJB_(G))  :: hbl_v   !< boundary layer depth (v-pts) [H ~> m]
-  real, dimension(SZIB_(G),SZJ_(G))  :: taux_u  !< kinematic zonal wind stress (u-pts) [L2 T-2 ~> m2 s-2]
-  real, dimension(SZI_(G),SZJB_(G))  :: tauy_v  !< kinematic merid wind stress (v-pts) [L2 T-2 ~> m2 s-2]
-  real, dimension(SZI_(G),SZJ_(G))   :: uS0     !< surface zonal Stokes drift h-pts [L T-1 ~> m s-1]
-  real, dimension(SZI_(G),SZJ_(G))   :: vS0     !< surface zonal Stokes drift h-pts [L T-1 ~> m s-1]
+  real, dimension(SZIB_(G),SZJ_(G))  :: taux_u  !< kinematic zonal wind stress (u-pts) [L Z T-2 ~> m2 s-2]
+  real, dimension(SZI_(G),SZJB_(G))  :: tauy_v  !< kinematic merid wind stress (v-pts) [L Z T-2 ~> m2 s-2]
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)) :: uE_u    !< zonal Eulerian u-pts [L T-1 ~> m s-1]
   real, dimension(SZI_(G) ,SZJ_(G),SZK_(GV)) :: uE_h    !< zonal Eulerian h-pts [L T-1 ~> m s-1]
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)) :: vE_v    !< merid Eulerian v-pts [L T-1 ~> m s-1]
@@ -234,24 +222,25 @@ subroutine vertFPmix(ui, vi, uold, vold, hbl_h, h, forces, dt, lpost, Cemp_NL, G
   real, dimension(SZI_(G) ,SZJ_(G),SZK_(GV)) :: uInc_h  !< zonal Eulerian h-pts [L T-1 ~> m s-1]
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)) :: vInc_v  !< merid Eulerian v-pts [L T-1 ~> m s-1]
   real, dimension(SZI_(G) ,SZJ_(G),SZK_(GV)) :: vInc_h  !< merid Eulerian h-pts [L T-1 ~> m s-1]
-  real, dimension(SZI_(G) ,SZJ_(G),SZK_(GV)) :: uStk    !< zonal Stokes Drift (h-pts) [L T-1 ~> m s-1]
-  real, dimension(SZI_(G) ,SZJ_(G),SZK_(GV)) :: vStk    !< merid Stokes Drift (h-pts) [L T-1 ~> m s-1]
-  real, dimension(SZI_(G) ,SZJ_(G),SZK_(GV)+1) :: omega_tau2s !< angle stress to shear (h-pts) [rad]
-  real, dimension(SZI_(G) ,SZJ_(G),SZK_(GV)+1) :: omega_tau2w !< angle stress to wind  (h-pts) [rad]
-  real :: omega_tmp, omega_s2x, omega_tau2x                    !< temporary angle wrt the x axis [rad]
-  real :: Irho0        !< Inverse of the mean density rescaled to [Z L-1 R-1 ~> m3 kg-1]
+  real, dimension(SZI_(G) ,SZJ_(G),SZK_(GV)+1) :: Omega_tau2s !< angle stress to shear (h-pts) [rad]
+  real, dimension(SZI_(G) ,SZJ_(G),SZK_(GV)+1) :: Omega_tau2w !< angle stress to wind  (h-pts) [rad]
+  real, dimension(SZI_(G) ,SZJ_(G),SZK_(GV)+1) :: Omega_s2w   !< angle Eulerian shear to wind (h-pts) [rad]
+  real :: omega_tmp, omega_s2x, omega_tau2x                   !< temporary angle wrt the x axis [rad]
+  real :: Irho0        !< Inverse of the mean density [R-1 ~> m3 kg-1]
   real :: pi           !< ! The ratio of the circumference of a circle to its diameter [nondim]
   real :: tmp_u, tmp_v !< temporary ocean mask weights on u and v points [nondim]
-  real :: fexp         !< temporary exponential function [nondim]
   real :: sigma        !< temporary normalize boundary layer coordinate [nondim]
   real :: Gat1, Gsig, dGdsig !< Shape parameters [nondim]
   real :: du, dv       !< Intermediate velocity differences [L T-1 ~> m s-1]
   real :: depth        !< Cumulative of thicknesses [H ~> m]
-  integer :: b, kbld, kp1, k, nz !< band and vertical indices
+  integer :: kp1, k, nz !< vertical indices
   integer :: i, j, is, ie, js, je, Isq, Ieq, Jsq, Jeq !< horizontal indices
 
-  is = G%isc ; ie = G%iec; js = G%jsc; je = G%jec
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB ; nz = GV%ke
+
+  if (.not.associated(Waves)) call MOM_error(FATAL, "MOM_vert_friction, vertNLstress: "//&
+      "an associated Waves control structure is required (e.g., USE_WAVES=True).")
 
   pi = 4. * atan2(1.,1.)
   Irho0 = 1.0 / GV%Rho0
@@ -281,15 +270,15 @@ subroutine vertFPmix(ui, vi, uold, vold, hbl_h, h, forces, dt, lpost, Cemp_NL, G
           uE_u(I,j,k) = ui(I,j,k) - waves%Us_x(I,j,k)
           if ( depth < hbl_u(I,j) )     then
             sigma = depth / hbl_u(i,j)
-            ! cell bottom
-            depth = depth + 0.5*CS%h_u(I,j,k)
             call cvmix_kpp_composite_Gshape(sigma,Gat1,Gsig,dGdsig)
             ! nonlocal boundary-layer increment
-            uInc_u(I,j,k)  = dt * Cemp_NL * taux_u(I,j) * dGdsig / hbl_u(I,j)
+            uInc_u(I,j,k)  = -dt * Cemp_NL * taux_u(I,j) * dGdsig / (hbl_u(I,j) * GV%H_to_Z)
             ui(I,j,k) = ui(I,j,k) + uInc_u(I,j,k)
           else
             uInc_u(I,j,k) = 0.0
           endif
+          ! cell bottom
+          depth = depth + 0.5*CS%h_u(I,j,k)
         enddo
       else
         do k=1, nz
@@ -315,15 +304,15 @@ subroutine vertFPmix(ui, vi, uold, vold, hbl_h, h, forces, dt, lpost, Cemp_NL, G
           vE_v(i,J,k) = vi(i,J,k) - waves%Us_y(i,J,k)
           if ( depth < hbl_v(i,J) )    then
             sigma = depth / hbl_v(i,J)
-            ! cell bottom
-            depth = depth + 0.5* CS%h_v(i,J,k)
             call cvmix_kpp_composite_Gshape(sigma,Gat1,Gsig,dGdsig)
             ! nonlocal boundary-layer increment
-            vInc_v(i,J,k) = dt * Cemp_NL * tauy_v(i,J) * dGdsig / hbl_v(i,J)
+            vInc_v(i,J,k) = -dt * Cemp_NL * tauy_v(i,J) * dGdsig / (hbl_v(i,J) * GV%H_to_Z)
             vi(i,J,k) = vi(i,J,k) + vInc_v(i,J,k)
           else
             vInc_v(i,J,k)  = 0.0
           endif
+          ! cell bottom
+          depth = depth + 0.5* CS%h_v(i,J,k)
         enddo
       else
         do k=1, nz
@@ -337,10 +326,11 @@ subroutine vertFPmix(ui, vi, uold, vold, hbl_h, h, forces, dt, lpost, Cemp_NL, G
   if (lpost)  then
     call pass_vector(uE_u  ,  vE_v  , G%Domain, To_All)
     call pass_vector(uInc_u, vInc_v , G%Domain, To_All)
-    uStk = 0.0
-    vStk = 0.0
-    uS0  = 0.0
-    vS0  = 0.0
+    ! Wind, stress and shear are aligned at the surface (k=1); the angles at the interfaces
+    ! below are only computed at wet h-points.
+    Omega_s2w(:,:,:)   = 0.0
+    Omega_tau2w(:,:,:) = 0.0
+    Omega_tau2s(:,:,:) = 0.0
 
     do j = js,je
       do i = is,ie
@@ -355,14 +345,16 @@ subroutine vertFPmix(ui, vi, uold, vold, hbl_h, h, forces, dt, lpost, Cemp_NL, G
             vE_h(i,j,k)   = (G%mask2dCv(i,j) *   vE_v(i,j,k) + G%mask2dCv(i,j-1) *   vE_v(i,j-1,k)) / tmp_v
             vInc_h(i,j,k) = (G%mask2dCv(i,j) * vInc_v(i,j,k) + G%mask2dCv(i,j-1) * vInc_v(i,j-1,k)) / tmp_v
           enddo
-          ! Wind, Stress and Shear align at surface
-          Omega_tau2w(i,j,:) = 0.0
-          Omega_tau2s(i,j,:) = 0.0
           do k = 1,nz
             kp1 = min( nz , k+1)
             du = uE_h(i,j,k) - uE_h(i,j,kp1)
             dv = vE_h(i,j,k) - vE_h(i,j,kp1)
             omega_s2x = atan2(dv, du)
+
+            omega_tmp = omega_s2x - forces%omega_w2x(i,j)
+            if ( (omega_tmp  >   pi   ) ) omega_tmp = omega_tmp - 2.*pi
+            if ( (omega_tmp  < (0.-pi)) ) omega_tmp = omega_tmp + 2.*pi
+            Omega_s2w(i,j,kp1) = omega_tmp
 
             du = du + uInc_h(i,j,k) - uInc_h(i,j,kp1)
             dv = dv + vInc_h(i,j,k) - vInc_h(i,j,kp1)
@@ -380,42 +372,21 @@ subroutine vertFPmix(ui, vi, uold, vold, hbl_h, h, forces, dt, lpost, Cemp_NL, G
 
           enddo
         endif
-
-        ! Stokes drift
-        do b=1,waves%NumBands
-          uS0(i,j)  = uS0(i,j) + waves%UStk_Hb(i,j,b)    ! or forces%UStkb(i,j,b)
-          vS0(i,j)  = vS0(i,j) + waves%VStk_Hb(i,j,b)    ! or forces%VStkb(i,j,b)
-        enddo
-        depth = 0.0
-        do k = 1,nz
-          do b  = 1, waves%NumBands
-            ! cell center
-            fexp = exp(-2. * waves%WaveNum_Cen(b) * (depth+0.5*h(i,j,k)) )
-            uStk(i,j,k) = uStk(i,j,k) + waves%UStk_Hb(i,j,b) * fexp
-            vStk(i,j,k) = vStk(i,j,k) + waves%VStk_Hb(i,j,b) * fexp
-          enddo
-          ! cell bottom
-          depth = depth + h(i,j,k)
-        enddo
       enddo
     enddo
 
-    ! post FPmix diagnostics
-    if (CS%id_uE_h    > 0) call post_data(CS%id_uE_h     , uE_h   , CS%diag)
+    ! post vertNLstress diagnostics
+    if (CS%id_uE_h    > 0) call post_data(CS%id_uE_h   , uE_h   , CS%diag)
     if (CS%id_vE_h    > 0) call post_data(CS%id_vE_h   , vE_h   , CS%diag)
     if (CS%id_uInc_h  > 0) call post_data(CS%id_uInc_h , uInc_h , CS%diag)
     if (CS%id_vInc_h  > 0) call post_data(CS%id_vInc_h , vInc_h , CS%diag)
-    if (CS%id_FPtau2s > 0) call post_data(CS%id_FPtau2s, Omega_tau2s, CS%diag)
-    if (CS%id_FPtau2w > 0) call post_data(CS%id_FPtau2w, Omega_tau2w, CS%diag)
-    if (CS%id_uStk0   > 0) call post_data(CS%id_uStk0  , uS0 , CS%diag)
-    if (CS%id_vStk0   > 0) call post_data(CS%id_vStk0  , vS0    , CS%diag)
-    if (CS%id_uStk    > 0) call post_data(CS%id_uStk   , uStk   , CS%diag)
-    if (CS%id_vStk    > 0) call post_data(CS%id_vStk   , vStk   , CS%diag)
-    if (CS%id_Omega_w2x > 0) call post_data(CS%id_Omega_w2x, forces%omega_w2x, CS%diag)
+    if (CS%id_NLtau2s > 0) call post_data(CS%id_NLtau2s, Omega_tau2s, CS%diag)
+    if (CS%id_NLtau2w > 0) call post_data(CS%id_NLtau2w, Omega_tau2w, CS%diag)
+    if (CS%id_NLs2w   > 0) call post_data(CS%id_NLs2w  , Omega_s2w  , CS%diag)
 
   endif
 
-end subroutine vertFPmix
+end subroutine vertNLstress
 
 
 !> Compute coupling coefficient associated with vertical viscosity parameterization as in Greatbatch and Lamb
@@ -539,7 +510,7 @@ end subroutine find_coupling_coef_gl90
 !! There is an additional stress term on the right-hand side
 !! if DIRECT_STRESS is true, applied to the surface layer.
 subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
-                    taux_bot, tauy_bot, fpmix, Waves)
+                    taux_bot, tauy_bot, Waves)
   type(ocean_grid_type),   intent(in)    :: G      !< Ocean grid structure
   type(verticalGrid_type), intent(in)    :: GV     !< Ocean vertical grid structure
   type(unit_scale_type),   intent(in)    :: US     !< A dimensional unit scaling type
@@ -563,7 +534,6 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   real, dimension(SZI_(G),SZJB_(G)), &
                    optional, intent(out) :: tauy_bot !< Meridional bottom stress from ocean to
                                                      !! rock [R L Z T-2 ~> Pa]
-  logical,         optional, intent(in)  :: fpmix !< fpmix along Eulerian shear
   type(wave_parameters_CS), &
                    optional, pointer     :: Waves !< Container for wave/Stokes information
 
@@ -608,11 +578,12 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   real, allocatable, dimension(:,:,:) :: KE_v ! The area integral of a KE term in a layer at v-points
                                               ! [H L4 T-3 ~> m5 s-3 or kg m2 s-3]
 
-  logical :: DoStokesMixing
-  logical :: lfpmix
+  logical :: mixEulerianShear  ! If true, remove the Stokes drift from the velocities before
+                               ! the implicit vertical viscosity solver and restore it
+                               ! afterward, so that the mixing acts on the Eulerian shear.
 
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz, n
-  is = G%isc ; ie = G%iec; js = G%jsc; je = G%jec
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB ; nz = GV%ke
 
   if (.not.associated(CS)) call MOM_error(FATAL,"MOM_vert_friction(visc): "// &
@@ -639,30 +610,19 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
 
   accel_underflow = CS%vel_underflow * Idt
 
-  !Check if Stokes mixing allowed if requested (present and associated)
-  DoStokesMixing=.false.
-  if (CS%StokesMixing) then
-    if (present(Waves)) DoStokesMixing = associated(Waves)
-    if (.not. DoStokesMixing) &
-      call MOM_error(FATAL,"Stokes Mixing called without allocated"//&
-                     "Waves Control Structure")
-  endif
-  lfpmix = .false.
-  if ( present(fpmix) ) lfpmix = fpmix
+  ! Determine whether the implicit vertical mixing should act on the Eulerian shear,
+  ! which is obtained by removing the Stokes drift from the model (Lagrangian mean)
+  ! velocities before the solver and restoring it afterward.
+  mixEulerianShear = .false.
+  if (present(Waves)) then ; if (associated(Waves)) then
+    if (Waves%UseWaves) mixEulerianShear = .not. Waves%LagrangianMixing
+  endif ; endif
 
   !   Update the zonal velocity component using a modification of a standard
   ! tridiagonal solver.
 
-  ! WGL: Brandon Reichl says the following is obsolete. u(I,j,k) already
-  ! includes Stokes.
-  ! When mixing down Eulerian current + Stokes drift add before calling solver
-  if (DoStokesMixing) then
-    do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
-      u(I,j,k) = u(I,j,k) + Waves%Us_x(I,j,k)
-    endif ; enddo ; enddo ; enddo
-  endif
-
-  if (lfpmix) then
+  ! When mixing down the Eulerian shear, remove the Stokes drift before calling the solver
+  if (mixEulerianShear) then
     do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
       u(I,j,k) = u(I,j,k) - Waves%Us_x(I,j,k)
     endif ; enddo ; enddo ; enddo
@@ -671,7 +631,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   if (associated(ADp%du_dt_visc)) then
     do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq
       ADp%du_dt_visc(I,j,k) = u(I,j,k)
-    enddo ; enddo; enddo
+    enddo ; enddo ; enddo
   endif
 
   if (associated(ADp%du_dt_visc_gl90)) then
@@ -860,14 +820,8 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     endif
   endif
 
-  ! When mixing down Eulerian current + Stokes drift subtract after calling solver
-  if (DoStokesMixing) then
-    do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
-      u(I,j,k) = u(I,j,k) - Waves%Us_x(I,j,k)
-    endif ; enddo ; enddo ; enddo
-  endif
-
-  if (lfpmix) then
+  ! When mixing down the Eulerian shear, restore the Stokes drift after calling the solver
+  if (mixEulerianShear) then
     do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
       u(I,j,k) = u(I,j,k) + Waves%Us_x(I,j,k)
     endif ; enddo ; enddo ; enddo
@@ -875,14 +829,8 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
 
   ! == Now work on the meridional velocity component.
 
-  ! When mixing down Eulerian current + Stokes drift add before calling solver
-  if (DoStokesMixing) then
-    do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
-      v(i,j,k) = v(i,j,k) + Waves%Us_y(i,j,k)
-    endif ; enddo ; enddo ; enddo
-  endif
-
-  if (lfpmix) then
+  ! When mixing down the Eulerian shear, remove the Stokes drift before calling the solver
+  if (mixEulerianShear) then
     do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
       v(i,j,k) = v(i,j,k) - Waves%Us_y(i,j,k)
     endif ; enddo ; enddo ; enddo
@@ -1043,7 +991,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   if (present(tauy_bot)) then
     do J=Jsq,Jeq ; do i=is,ie
       tauy_bot(i,J) = GV%H_to_RZ * (v(i,J,nz) * CS%a_v(i,J,nz+1))
-    enddo; enddo
+    enddo ; enddo
 
     if (allocated(visc%Ray_v)) then
       do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
@@ -1052,14 +1000,8 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     endif
   endif
 
-  ! When mixing down Eulerian current + Stokes drift subtract after calling solver
-  if (DoStokesMixing) then
-    do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
-      v(i,J,k) = v(i,J,k) - Waves%Us_y(i,J,k)
-    endif ; enddo ; enddo ; enddo
-  endif
-
-  if (lfpmix) then
+  ! When mixing down the Eulerian shear, restore the Stokes drift after calling the solver
+  if (mixEulerianShear) then
     do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
       v(i,J,k) = v(i,J,k) + Waves%Us_y(i,J,k)
     endif ; enddo ; enddo ; enddo
@@ -1366,7 +1308,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   logical :: do_any_shelf
   integer :: zi_dir
     ! A ternary logical indicating which thickness to use for finding z_clear.
-  integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz, ij
+  integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB ; nz = GV%ke
@@ -2442,7 +2384,7 @@ subroutine find_coupling_coef(a_cpl, hvel, i, j, h_harm, bbl_thick, kv_bbl, z_i,
       enddo
     elseif (CS%fixed_LOTW_ML .or. CS%apply_LOTW_floor) then
       ! Determine which interfaces are within CS%Hmix of the surface, and set the viscous
-      ! boundary layer thickness to the the smaller of CS%Hmix and the depth of the ocean.
+      ! boundary layer thickness to the smaller of CS%Hmix and the depth of the ocean.
       h_ml = 0.0
       do k=1,nz
         can_exit = .true.
@@ -2547,6 +2489,7 @@ subroutine find_coupling_coef(a_cpl, hvel, i, j, h_harm, bbl_thick, kv_bbl, z_i,
   endif
 end subroutine find_coupling_coef
 
+
 !> Velocity components which exceed a threshold for physically reasonable values are truncated,
 !! and the running sum of the number of trunctionas within the non-symmetric memory computational
 !! domain is incremented.  Optionally, any column with excessive velocities may be sent
@@ -2575,6 +2518,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
   real :: u_old(SZIB_(G),SZJ_(G),SZK_(GV)) ! The previous u-velocity [L T-1 ~> m s-1]
   real :: v_old(SZI_(G),SZJB_(G),SZK_(GV)) ! The previous v-velocity [L T-1 ~> m s-1]
   logical :: trunc_any, dowrite(SZIB_(G),SZJB_(G))
+  logical :: do_any_write
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
@@ -2582,45 +2526,55 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
   H_report = 3.0 * GV%Angstrom_H
 
   if (len_trim(CS%u_trunc_file) > 0) then
-    !$OMP parallel do default(shared) private(trunc_any,CFL)
-    do j=js,je
-      trunc_any = .false.
-      do I=Isq,Ieq ; dowrite(I,j) = .false. ; enddo
-      do I=Isq,Ieq ; vel_report(i,j) = 3.0e8*US%m_s_to_L_T ; enddo ! Speed of light default.
-      do k=1,nz ; do I=Isq,Ieq
-        if (abs(u(I,j,k)) < CS%vel_underflow) u(I,j,k) = 0.0
-        if (u(I,j,k) < 0.0) then
-          CFL = (-u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i+1,j))
-        else
-          CFL = (u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i,j))
-        endif
-        if (CFL > CS%CFL_trunc) trunc_any = .true.
-        if (CFL > CS%CFL_report) then
-          dowrite(I,j) = .true.
-          vel_report(I,j) = MIN(vel_report(I,j), abs(u(I,j,k)))
-        endif
-      enddo ; enddo
+    do_any_write = .false.
+    trunc_any = .false.
 
-      do I=Isq,Ieq ; if (dowrite(I,j)) then
-        u_old(I,j,:) = u(I,j,:)
-      endif ; enddo
+    do j=js,je ; do I=Isq,Ieq
+      dowrite(I,j) = .false.
+      vel_report(I,j) = 3.0e8 * US%m_s_to_L_T
+    enddo ; enddo
 
-      if (trunc_any) then
-        do k=1,nz ; do I=Isq,Ieq
-          if ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
-            u(I,j,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i+1,j) / (dt * G%dy_Cu(I,j)))
-            if (((I >= G%isc) .and. (I <= G%iec) .and. (j >= G%jsc) .and. (j <= G%jec)) .and. &
-                (CS%h_u(I,j,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
-          elseif ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i,j) > CS%CFL_trunc) then
-            u(I,j,k) = (0.9*CS%CFL_trunc) * (G%areaT(i,j) / (dt * G%dy_Cu(I,j)))
-            if (((I >= G%isc) .and. (I <= G%iec) .and. (j >= G%jsc) .and. (j <= G%jec)) .and. &
-                (CS%h_u(I,j,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
-          endif
-        enddo ; enddo
+    do k=1,nz ; do j=js,je ; do I=Isq,Ieq
+      if (abs(u(I,j,k)) < CS%vel_underflow) u(I,j,k) = 0.0
+      if (u(I,j,k) < 0.0) then
+        CFL = (-u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i+1,j))
+      else
+        CFL = (u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i,j))
       endif
-    enddo ! j-loop
+      if (CFL > CS%CFL_trunc) trunc_any = .true.
+      if (CFL > CS%CFL_report) then
+        dowrite(I,j) = .true.
+        do_any_write = .true.
+        vel_report(I,j) = min(vel_report(I,j), abs(u(I,j,k)))
+      endif
+    enddo ; enddo ; enddo
+
+    do j=js,je ; do I=Isq,Ieq ; if (dowrite(I,j)) then
+      u_old(I,j,:) = u(I,j,:)
+    endif ; enddo ; enddo
+
+    if (trunc_any) then
+      do k=1,nz ; do j=js,je ; do I=Isq,Ieq
+        if ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
+          u(I,j,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i+1,j) / (dt * G%dy_Cu(I,j)))
+          if (((I >= G%isc) .and. (I <= G%iec) .and. (j >= G%jsc) .and. (j <= G%jec)) .and. &
+              (CS%h_u(I,j,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
+        elseif ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i,j) > CS%CFL_trunc) then
+          u(I,j,k) = (0.9*CS%CFL_trunc) * (G%areaT(i,j) / (dt * G%dy_Cu(I,j)))
+          if (((I >= G%isc) .and. (I <= G%iec) .and. (j >= G%jsc) .and. (j <= G%jec)) .and. &
+              (CS%h_u(I,j,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
+        endif
+      enddo ; enddo ; enddo
+    endif
+
+    if (do_any_write) then
+      do j=js,je ; do I=Isq,Ieq ; if (dowrite(I,j)) then
+        ! Call a diagnostic reporting subroutines are called if unphysically large values are found.
+        call write_u_accel(I, j, u_old, h, ADp, CDp, dt, G, GV, US, CS%PointAccel_CSp, &
+                           vel_report(I,j), forces%taux(I,j), a=CS%a_u, hv=CS%h_u)
+      endif ; enddo ; enddo
+    endif
   else  ! Do not report accelerations leading to large velocities.
-    !$OMP parallel do default(shared)
     do k=1,nz ; do j=js,je ; do I=Isq,Ieq
       if (abs(u(I,j,k)) < CS%vel_underflow) then ; u(I,j,k) = 0.0
       elseif ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
@@ -2635,54 +2589,57 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     enddo ; enddo ; enddo
   endif
 
-  if (len_trim(CS%u_trunc_file) > 0) then
-    do j=js,je ; do I=Isq,Ieq ; if (dowrite(I,j)) then
-      ! Call a diagnostic reporting subroutines are called if unphysically large values are found.
-      call write_u_accel(I, j, u_old, h, ADp, CDp, dt, G, GV, US, CS%PointAccel_CSp, &
-                         vel_report(I,j), forces%taux(I,j), a=CS%a_u, hv=CS%h_u)
-    endif ; enddo ; enddo
-  endif
-
   if (len_trim(CS%v_trunc_file) > 0) then
-    !$OMP parallel do default(shared) private(trunc_any,CFL)
-    do J=Jsq,Jeq
-      trunc_any = .false.
-      do i=is,ie ; dowrite(i,J) = .false. ; enddo
-      do i=is,ie ; vel_report(i,J) = 3.0e8*US%m_s_to_L_T ; enddo ! Speed of light default.
-      do k=1,nz ; do i=is,ie
-        if (abs(v(i,J,k)) < CS%vel_underflow) v(i,J,k) = 0.0
-        if (v(i,J,k) < 0.0) then
-          CFL = (-v(i,J,k) * dt) * (G%dx_Cv(i,J) * G%IareaT(i,j+1))
-        else
-          CFL = (v(i,J,k) * dt) * (G%dx_Cv(i,J) * G%IareaT(i,j))
-        endif
-        if (CFL > CS%CFL_trunc) trunc_any = .true.
-        if (CFL > CS%CFL_report) then
-          dowrite(i,J) = .true.
-          vel_report(i,J) = MIN(vel_report(i,J), abs(v(i,J,k)))
-        endif
-      enddo ; enddo
+    do_any_write =.false.
+    trunc_any = .false.
 
-      do i=is,ie ; if (dowrite(i,J)) then
-        v_old(i,J,:) = v(i,J,:)
-      endif ; enddo
 
-      if (trunc_any) then
-        do k=1,nz ; do i=is,ie
-          if ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j+1) < -CS%CFL_trunc) then
-            v(i,J,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i,j+1) / (dt * G%dx_Cv(i,J)))
-            if (((i >= G%isc) .and. (i <= G%iec) .and. (J >= G%jsc) .and. (J <= G%jec)) .and. &
-                (CS%h_v(i,J,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
-          elseif ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j) > CS%CFL_trunc) then
-            v(i,J,k) = (0.9*CS%CFL_trunc) * (G%areaT(i,j) / (dt * G%dx_Cv(i,J)))
-            if (((i >= G%isc) .and. (i <= G%iec) .and. (J >= G%jsc) .and. (J <= G%jec)) .and. &
-                (CS%h_v(i,J,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
-          endif
-        enddo ; enddo
+    do J=Jsq,Jeq ; do i=is,ie
+      dowrite(i,J) = .false.
+      vel_report(i,J) = 3.0e8 * US%m_s_to_L_T
+    enddo ; enddo
+
+    do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
+      if (abs(v(i,J,k)) < CS%vel_underflow) v(i,J,k) = 0.0
+      if (v(i,J,k) < 0.0) then
+        CFL = (-v(i,J,k) * dt) * (G%dx_Cv(i,J) * G%IareaT(i,j+1))
+      else
+        CFL = (v(i,J,k) * dt) * (G%dx_Cv(i,J) * G%IareaT(i,j))
       endif
-    enddo ! J-loop
+      if (CFL > CS%CFL_trunc) trunc_any = .true.
+      if (CFL > CS%CFL_report) then
+        dowrite(i,J) = .true.
+        do_any_write = .true.
+        vel_report(i,J) = min(vel_report(i,J), abs(v(i,J,k)))
+      endif
+    enddo ; enddo ; enddo
+
+    do J=Jsq,Jeq ; do i=is,ie ; if (dowrite(i,J)) then
+      v_old(i,J,:) = v(i,J,:)
+    endif ; enddo ; enddo
+
+    if (trunc_any) then
+      do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
+        if ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j+1) < -CS%CFL_trunc) then
+          v(i,J,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i,j+1) / (dt * G%dx_Cv(i,J)))
+          if (((i >= G%isc) .and. (i <= G%iec) .and. (J >= G%jsc) .and. (J <= G%jec)) .and. &
+              (CS%h_v(i,J,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
+        elseif ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j) > CS%CFL_trunc) then
+          v(i,J,k) = (0.9*CS%CFL_trunc) * (G%areaT(i,j) / (dt * G%dx_Cv(i,J)))
+          if (((i >= G%isc) .and. (i <= G%iec) .and. (J >= G%jsc) .and. (J <= G%jec)) .and. &
+              (CS%h_v(i,J,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
+        endif
+      enddo ; enddo ; enddo
+    endif
+
+    if (do_any_write) then
+      do J=Jsq,Jeq ; do i=is,ie ; if (dowrite(i,J)) then
+        ! Call a diagnostic reporting subroutines are called if unphysically large values are found.
+        call write_v_accel(i, J, v_old, h, ADp, CDp, dt, G, GV, US, CS%PointAccel_CSp, &
+                           vel_report(i,J), forces%tauy(i,J), a=CS%a_v, hv=CS%h_v)
+      endif ; enddo ; enddo
+    endif
   else  ! Do not report accelerations leading to large velocities.
-    !$OMP parallel do default(shared)
     do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
       if (abs(v(i,J,k)) < CS%vel_underflow) then ; v(i,J,k) = 0.0
       elseif ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j+1) < -CS%CFL_trunc) then
@@ -2697,19 +2654,12 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     enddo ; enddo ; enddo
   endif
 
-  if (len_trim(CS%v_trunc_file) > 0) then
-    do J=Jsq,Jeq ; do i=is,ie ; if (dowrite(i,J)) then
-      ! Call a diagnostic reporting subroutines are called if unphysically large values are found.
-      call write_v_accel(i, J, v_old, h, ADp, CDp, dt, G, GV, US, CS%PointAccel_CSp, &
-                         vel_report(i,J), forces%tauy(i,J), a=CS%a_v, hv=CS%h_v)
-    endif ; enddo ; enddo
-  endif
-
 end subroutine vertvisc_limit_vel
+
 
 !> Initialize the vertical friction module
 subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
-                          ntrunc, CS, fpmix)
+                          ntrunc, CS, nlVstress)
   type(ocean_internal_state), &
                    target, intent(in)    :: MIS    !< The "MOM Internal State", a set of pointers
                                                    !! to the fields and accelerations that make
@@ -2724,7 +2674,9 @@ subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
   type(directories),       intent(in)    :: dirs   !< Relevant directory paths
   integer, target,         intent(inout) :: ntrunc !< Number of velocity truncations
   type(vertvisc_CS),       pointer       :: CS     !< Vertical viscosity control structure
-  logical, optional,       intent(in)    :: fpmix  !< Nonlocal momentum mixing
+  logical, optional,       intent(in)    :: nlVstress !< If true, nonlocal momentum flux
+                                                   !! increments are in use, so register
+                                                   !! the related diagnostics
 
   ! Local variables
 
@@ -2732,7 +2684,9 @@ subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
   real :: Kv_back_z  ! A background kinematic viscosity [Z2 T-1 ~> m2 s-1]
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB, nz
-  logical :: lfpmix
+  logical :: l_nlVstress
+  logical :: StokesMixing  ! The value of STOKES_MIXING_COMBINED, an option whose partial
+                           ! implementation has been removed; enabling it is/was a fatal error.
   character(len=200) :: kappa_gl90_file, inputdir, kdgl90_varname
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
@@ -2749,16 +2703,16 @@ subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
 
   CS%initialized = .true.
 
-  if (GV%Boussinesq) then; thickness_units = "m"
-  else; thickness_units = "kg m-2"; endif
+  if (GV%Boussinesq) then ; thickness_units = "m"
+  else ; thickness_units = "kg m-2" ; endif
 
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed ; nz = GV%ke
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
 
   CS%diag => diag ; CS%ntrunc => ntrunc ; ntrunc = 0
 
-  lfpmix = .false.
-  if (present(fpmix)) lfpmix = fpmix
+  l_nlVstress = .false.
+  if (present(nlVstress)) l_nlVstress = nlVstress
 
 ! Default, read and log parameters
   call log_version(param_file, mdl, version, "", log_to_all=.true., debugging=.true.)
@@ -2979,24 +2933,19 @@ subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
                  "The start value of the truncation CFL number used when "//&
                  "ramping up CFL_TRUNC.", &
                  units="nondim", default=0.)
-  call get_param(param_file, mdl, "STOKES_MIXING_COMBINED", CS%StokesMixing, &
+  call get_param(param_file, mdl, "STOKES_MIXING_COMBINED", StokesMixing, &
                  "Flag to use Stokes drift Mixing via the Lagrangian "//&
                  " current (Eulerian plus Stokes drift). "//&
                  " Still needs work and testing, so not recommended for use.",&
                  default=.false.)
-  !BGR 04/04/2018{
-  ! StokesMixing is required for MOM6 for some Langmuir mixing parameterization.
-  !   The code used here has not been developed for vanishing layers or in
-  !   conjunction with any bottom friction.  Therefore, the following line is
-  !   added so this functionality cannot be used without user intervention in
-  !   the code.  This will prevent general use of this functionality until proper
-  !   care is given to the previously mentioned issues.  Comment out the following
-  !   MOM_error to use, but do so at your own risk and with these points in mind.
-  !}
-  if (CS%StokesMixing) then
-    call MOM_error(FATAL, "Stokes mixing requires user intervention in the code.\n"//&
-                          "  Model now exiting.  See MOM_vert_friction.F90 for \n"//&
-                          "  details (search 'BGR 04/04/2018' to locate comment).")
+  ! The partial implementation of STOKES_MIXING_COMBINED was incomplete (it had not been
+  ! developed for vanishing layers or in conjunction with any bottom friction) and had been
+  ! deliberately unreachable since 2018, with a FATAL error here that could only be bypassed
+  ! by editing the source code.  The unreachable code has been removed from vertvisc.
+  if (StokesMixing) then
+    call MOM_error(FATAL, "STOKES_MIXING_COMBINED is not implemented.  Its partial \n"//&
+                          "  implementation was unusable and has been removed from \n"//&
+                          "  MOM_vert_friction.F90.")
   endif
   call get_param(param_file, mdl, "VEL_UNDERFLOW", CS%vel_underflow, &
                  "A negligibly small velocity magnitude below which velocity "//&
@@ -3056,28 +3005,21 @@ subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
       'Mixed Layer Thickness at Meridional Velocity Points for Viscosity', &
       thickness_units, conversion=US%Z_to_m)
 
- if (lfpmix) then
-  CS%id_uE_h = register_diag_field('ocean_model', 'uE_h' , CS%diag%axesTL, &
-      Time, 'x-zonal Eulerian' , 'm s-1', conversion=US%L_T_to_m_s)
-  CS%id_vE_h = register_diag_field('ocean_model', 'vE_h' , CS%diag%axesTL, &
-      Time, 'y-merid Eulerian' , 'm s-1', conversion=US%L_T_to_m_s)
-  CS%id_uInc_h = register_diag_field('ocean_model','uInc_h',CS%diag%axesTL, &
-      Time, 'x-zonal Eulerian' , 'm s-1', conversion=US%L_T_to_m_s)
-  CS%id_vInc_h = register_diag_field('ocean_model','vInc_h',CS%diag%axesTL, &
-      Time, 'x-zonal Eulerian' , 'm s-1', conversion=US%L_T_to_m_s)
-  CS%id_uStk = register_diag_field('ocean_model', 'uStk' , CS%diag%axesTL, &
-      Time, 'x-FP du increment' , 'm s-1', conversion=US%L_T_to_m_s)
-  CS%id_vStk = register_diag_field('ocean_model', 'vStk' , CS%diag%axesTL, &
-      Time, 'y-FP dv increment' , 'm s-1', conversion=US%L_T_to_m_s)
-
-  CS%id_FPtau2s = register_diag_field('ocean_model','Omega_tau2s',CS%diag%axesTi, &
-      Time, 'Stress direction from shear','radians')
-  CS%id_FPtau2w = register_diag_field('ocean_model','Omega_tau2w',CS%diag%axesTi, &
-      Time, 'Stress direction from wind','radians')
-  CS%id_uStk0 = register_diag_field('ocean_model', 'uStk0' , diag%axesT1, &
-      Time, 'Zonal Surface Stokes', 'm s-1', conversion=US%L_T_to_m_s)
-  CS%id_vStk0 = register_diag_field('ocean_model', 'vStk0' , diag%axesT1, &
-      Time, 'Merid Surface Stokes', 'm s-1', conversion=US%L_T_to_m_s)
+  if (l_nlVstress) then
+    CS%id_uE_h = register_diag_field('ocean_model', 'uE_h', CS%diag%axesTL, &
+        Time, 'zonal Eulerian_h', 'm s-1', conversion=US%L_T_to_m_s)
+    CS%id_vE_h = register_diag_field('ocean_model', 'vE_h', CS%diag%axesTL, &
+        Time, 'merid Eulerian_h', 'm s-1', conversion=US%L_T_to_m_s)
+    CS%id_uInc_h = register_diag_field('ocean_model', 'uInc_h', CS%diag%axesTL, &
+        Time, 'NL zonal increment', 'm s-1', conversion=US%L_T_to_m_s)
+    CS%id_vInc_h = register_diag_field('ocean_model', 'vInc_h', CS%diag%axesTL, &
+        Time, 'NL merid increment', 'm s-1', conversion=US%L_T_to_m_s)
+    CS%id_NLtau2s = register_diag_field('ocean_model', 'Omega_tau2s', CS%diag%axesTi, &
+        Time, 'Stress direction from shear', 'radians')
+    CS%id_NLtau2w = register_diag_field('ocean_model', 'Omega_tau2w', CS%diag%axesTi, &
+        Time, 'Stress direction from wind', 'radians')
+    CS%id_NLs2w = register_diag_field('ocean_model', 'Omega_s2w', CS%diag%axesTi, &
+        Time, 'Eulerian shear direction from wind', 'radians')
   endif
 
   CS%id_du_dt_visc = register_diag_field('ocean_model', 'du_dt_visc', diag%axesCuL, Time, &
@@ -3226,7 +3168,7 @@ subroutine updateCFLtruncationValue(Time, CS, US, activate)
     endif
   endif
   if (.not.CS%CFLrampingIsActivated) return
-  deltaTime = max( 0., US%s_to_T*time_type_to_real( Time - CS%rampStartTime ) )
+  deltaTime = max(0., time_minus_signed(Time, CS%rampStartTime, scale=US%s_to_T))
   if (deltaTime >= CS%truncRampTime) then
     CS%CFL_trunc = CS%CFL_truncE
     CS%truncRampTime = 0. ! This turns off ramping after this call
@@ -3238,8 +3180,7 @@ subroutine updateCFLtruncationValue(Time, CS, US, activate)
     CS%CFL_trunc = CS%CFL_truncS + wghtA * ( CS%CFL_truncE - CS%CFL_truncS )
   endif
   write(msg(1:12),'(es12.3)') CS%CFL_trunc
-  call MOM_error(NOTE, "MOM_vert_friction: updateCFLtruncationValue set CFL"// &
-                       " limit to "//trim(msg))
+  call MOM_error(NOTE, "MOM_vert_friction: updateCFLtruncationValue set CFL limit to "//trim(msg))
 end subroutine updateCFLtruncationValue
 
 !> Clean up and deallocate the vertical friction module

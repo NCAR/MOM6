@@ -1,3 +1,7 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Set of time utilities for converting between FMS and ESMF time type.
 module time_utils_mod
 
@@ -16,7 +20,7 @@ use ESMF,               only: ESMF_LOGERR_PASSTHRU,ESMF_TimeInterval
 use ESMF,               only: ESMF_TimeIntervalGet, ESMF_TimeSet, ESMF_SUCCESS
 use MOM_cap_methods,    only: ChkErr
 
-implicit none; private
+implicit none ; private
 
 !> Converts calendar from FMS to ESMF format
 interface fms2esmf_cal

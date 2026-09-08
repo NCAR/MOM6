@@ -1,3 +1,7 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Piecewise Parabolic Method 1D reconstruction with h4 interpolation for edges
 !!
 !! This implementation of PPM follows White and Adcroft 2008 \cite white2008, with cells
@@ -7,8 +11,6 @@
 !! This uses numerical expressions refactored at the beginning of 2019.
 !! The first and last cells are always limited to PCM.
 module Recon1d_PPM_H4_2019
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use Recon1d_type, only : Recon1d, testing
 
@@ -363,10 +365,10 @@ subroutine end_value_h4(dz, u, Csys)
   Wt(2,4) = -4.0 * I_h1234 * (I_h23 * (I_h123 + I_h234))             ! Wt*h1^3 > -4* (h1/h23)*(1+h1/h234)
   Wt(3,4) =  4.0 * I_denom  ! = 4.0*I_h1234 * I_h234 * I_h34         ! Wt*h1^3 < 4 * (h1/h234)*(h1/h34)
 
-  Csys(1) = ((u(1) + Wt(1,1) * (u(2)-u(1))) + Wt(2,1) * (u(3)-u(2))) + Wt(3,1) * (u(4)-u(3))
-  Csys(2) = (Wt(1,2) * (u(2)-u(1)) + Wt(2,2) * (u(3)-u(2))) + Wt(3,2) * (u(4)-u(3))
-  Csys(3) = (Wt(1,3) * (u(2)-u(1)) + Wt(2,3) * (u(3)-u(2))) + Wt(3,3) * (u(4)-u(3))
-  Csys(4) = (Wt(1,4) * (u(2)-u(1)) + Wt(2,4) * (u(3)-u(2))) + Wt(3,4) * (u(4)-u(3))
+  Csys(1) = ((u(1) + (Wt(1,1) * (u(2)-u(1)))) + (Wt(2,1) * (u(3)-u(2)))) + (Wt(3,1) * (u(4)-u(3)))
+  Csys(2) = ((Wt(1,2) * (u(2)-u(1))) + (Wt(2,2) * (u(3)-u(2)))) + (Wt(3,2) * (u(4)-u(3)))
+  Csys(3) = ((Wt(1,3) * (u(2)-u(1))) + (Wt(2,3) * (u(3)-u(2)))) + (Wt(3,3) * (u(4)-u(3)))
+  Csys(4) = ((Wt(1,4) * (u(2)-u(1))) + (Wt(2,4) * (u(3)-u(2)))) + (Wt(3,4) * (u(4)-u(3)))
 
   ! endif ! End of non-uniform layer thickness branch.
 

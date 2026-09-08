@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Solvers of linear systems.
 module regrid_solvers
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_error_handler, only : MOM_error, FATAL
 
@@ -164,7 +166,7 @@ subroutine linear_solver( N, A, R, X )
   if (A(N,N) == 0.0) then
     ! no pivot could be found, and the sytem is singular
     call MOM_error(FATAL, 'The final pivot in linear_solver is zero.')
-  end if
+  endif
 
   ! Solve the system by back substituting into what is now an upper-right matrix.
   X(N) = R(N) / A(N,N)  ! The last row is now trivially solved.

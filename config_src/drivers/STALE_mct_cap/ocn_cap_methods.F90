@@ -1,3 +1,7 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 module ocn_cap_methods
 
   use ESMF,                    only: ESMF_clock, ESMF_time, ESMF_ClockGet, ESMF_TimeGet
@@ -40,7 +44,7 @@ subroutine ocn_import(x2o, ind, grid, ice_ocean_boundary, ocean_public, logunit,
   character(*), parameter :: F01  = "('(ocn_import) ',a,4(i6,2x),d21.14)"
   !-----------------------------------------------------------------------
 
-  isc = GRID%isc; iec = GRID%iec ; jsc = GRID%jsc; jec = GRID%jec
+  isc = GRID%isc ; iec = GRID%iec ; jsc = GRID%jsc ; jec = GRID%jec
 
   k = 0
   do j = jsc, jec
@@ -232,7 +236,7 @@ subroutine ocn_export(ind, ocn_public, grid, o2x, dt_int, ncouple_per_day)
     endif
     sshx(i,j) = slope * grid%US%m_to_L*grid%IdxT(i,j) * grid%mask2dT(i,j)
     if (grid%mask2dT(i,j)==0.) sshx(i,j) = 0.0
-  enddo; enddo
+  enddo ; enddo
 
   ! d/dy ssh
   do j=grid%jsc, grid%jec ; do i=grid%isc,grid%iec
@@ -259,7 +263,7 @@ subroutine ocn_export(ind, ocn_public, grid, o2x, dt_int, ncouple_per_day)
     endif
     sshy(i,j) = slope * grid%US%m_to_L*grid%IdyT(i,j) * grid%mask2dT(i,j)
     if (grid%mask2dT(i,j)==0.) sshy(i,j) = 0.0
-  enddo; enddo
+  enddo ; enddo
 
   ! rotate ssh gradients from local coordinates to true zonal/meridional (inverse transformation)
   n = 0
@@ -267,7 +271,7 @@ subroutine ocn_export(ind, ocn_public, grid, o2x, dt_int, ncouple_per_day)
     n = n+1
     o2x(ind%o2x_So_dhdx, n) = grid%cos_rot(i,j) * sshx(i,j) + grid%sin_rot(i,j) * sshy(i,j)
     o2x(ind%o2x_So_dhdy, n) = grid%cos_rot(i,j) * sshy(i,j) - grid%sin_rot(i,j) * sshx(i,j)
-  enddo; enddo
+  enddo ; enddo
 
 end subroutine ocn_export
 

@@ -810,6 +810,7 @@ WARN_LOGFILE           = _build/doxygen_warn_rtd_log.txt
 # Note: If this tag is empty the current directory is searched.
 
 INPUT                  = ../src \
+                         Consortium-policy-on-AI.md \
                          ../config_src/drivers/solo_driver \
                          ../config_src/memory/dynamic_symmetric \
                          ../config_src/external \
@@ -872,7 +873,8 @@ RECURSIVE              = YES
 # Note that relative paths are relative to the directory from which doxygen is
 # run.
 
-EXCLUDE                = ../src/equation_of_state/TEOS10
+EXCLUDE                = ../src/equation_of_state/TEOS10 \
+                         ../src/parameterizations/CVmix
 
 # The EXCLUDE_SYMLINKS tag can be used to select whether or not files or
 # directories that are symbolic links (a Unix file system feature) are excluded
@@ -1954,7 +1956,7 @@ XML_OUTPUT             = xml
 # The default value is: YES.
 # This tag requires that the tag GENERATE_XML is set to YES.
 
-XML_PROGRAMLISTING     = NO
+XML_PROGRAMLISTING     = YES
 
 #---------------------------------------------------------------------------
 # Configuration options related to the DOCBOOK output

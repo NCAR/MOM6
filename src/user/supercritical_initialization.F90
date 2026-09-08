@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> The "super critical" configuration
 module supercritical_initialization
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_dyn_horgrid,    only : dyn_horgrid_type
 use MOM_error_handler,  only : MOM_mesg, MOM_error, FATAL, is_root_pe
@@ -9,7 +11,7 @@ use MOM_file_parser,    only : get_param, log_version, param_file_type
 use MOM_grid,           only : ocean_grid_type
 use MOM_open_boundary,  only : ocean_OBC_type, OBC_segment_type, rotate_OBC_segment_direction
 use MOM_open_boundary,  only : OBC_DIRECTION_E, OBC_DIRECTION_W
-use MOM_time_manager,   only : time_type, time_type_to_real
+use MOM_time_manager,   only : time_type
 use MOM_unit_scaling,   only : unit_scale_type
 use MOM_verticalGrid,   only : verticalGrid_type
 

@@ -1,7 +1,10 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Methods for testing for, and list of, obsolete run-time parameters.
 module MOM_obsolete_params
 
-! This file is part of MOM6. See LICENSE.md for the license.
 ! This module was first conceived and written by Robert Hallberg, July 2010.
 
 use MOM_error_handler, only : MOM_error, FATAL, WARNING, is_root_pe
@@ -214,7 +217,7 @@ subroutine obsolete_char(param_file, varname, warning_val, hint)
   logical :: var_is_set  ! True if this value was read by read_param.
   logical :: only_warn
 
-  test_string = ''; call read_param(param_file, varname, test_string, set=var_is_set)
+  test_string = '' ; call read_param(param_file, varname, test_string, set=var_is_set)
   hint_msg = " " ; if (present(hint)) hint_msg = hint
 
   if (var_is_set) then
@@ -251,8 +254,8 @@ subroutine obsolete_real(param_file, varname, warning_val, hint, only_warn)
   logical :: issue_warning
   character(len=128) :: hint_msg
 
-  test_val = -9e35; call read_param(param_file, varname, test_val, set=var_is_set)
-  warn_val = -9e35; if (present(warning_val)) warn_val = warning_val
+  test_val = -9e35 ; call read_param(param_file, varname, test_val, set=var_is_set)
+  warn_val = -9e35 ; if (present(warning_val)) warn_val = warning_val
   hint_msg = " " ; if (present(hint)) hint_msg = hint
   issue_warning = .false. ; if (present(only_warn)) issue_warning = only_warn
 
@@ -279,8 +282,8 @@ subroutine obsolete_int(param_file, varname, warning_val, hint)
   integer :: test_val, warn_val
   character(len=128) :: hint_msg
 
-  test_val = -123456788; call read_param(param_file, varname, test_val, set=var_is_set)
-  warn_val = -123456788; if (present(warning_val)) warn_val = warning_val
+  test_val = -123456788 ; call read_param(param_file, varname, test_val, set=var_is_set)
+  warn_val = -123456788 ; if (present(warning_val)) warn_val = warning_val
   hint_msg = " " ; if (present(hint)) hint_msg = hint
 
   if (var_is_set) then

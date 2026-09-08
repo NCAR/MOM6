@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Routines for error handling and I/O management
 module MOM_error_handler
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_coms_infra, only : num_PEs
 use MOM_error_infra, only : MOM_err, is_root_pe, stdlog, stdout, NOTE, WARNING, FATAL
@@ -47,6 +49,8 @@ integer :: verbosity = 6
 !   Also note that this is a module variable rather than contained in
 ! a type passed by argument (preferred for most data) for convenience
 ! and to reduce obfuscation of code
+logical :: verbosity_set = .false.
+!< True if the verbosity has already been set at run-time.
 
 integer :: callTreeIndentLevel = 0
 !< The level of calling within the call tree
@@ -203,14 +207,20 @@ subroutine loc_MOM_err(level, message)
 end subroutine loc_MOM_err
 
 !> This subroutine sets the level of verbosity filtering MOM error messages
-subroutine MOM_set_verbosity(verb)
+subroutine MOM_set_verbosity(verb, may_reset)
   integer, intent(in) :: verb !< A level of verbosity to set
+  logical, optional, intent(in) :: may_reset !< If true, set the verbosity even if it has been set
+                              !! before, perhaps by another component like SIS2.
   character(len=80) :: msg
-  if (verb>0 .and. verb<10) then
-    verbosity=verb
+  if (verb>=0 .and. verb<10) then
+    if (.not.verbosity_set) verbosity = verb
+    if (present(may_reset)) then
+      if (may_reset) verbosity = verb
+    endif
+    verbosity_set = .true.
   else
-    write(msg(1:80),'("Attempt to set verbosity outside of range (0-9). verb=",I0)') verb
-    call MOM_error(FATAL,msg)
+    write(msg,'("Attempt to set verbosity outside of range (0-9). verb=",I0)') verb
+    call MOM_error(FATAL, msg)
   endif
 end subroutine MOM_set_verbosity
 

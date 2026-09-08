@@ -1,11 +1,14 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Contains routines necessary to initialize communication with a database
 module MOM_database_comms
-! This file is part of MOM6. See LICENSE.md for the license.
 use MOM_file_parser,                only : param_file_type
 use MOM_error_handler,              only : MOM_error, WARNING
 use database_client_interface,      only : dbclient_type
 
-implicit none; private
+implicit none ; private
 
 !> Control structure to store Database communication related parameters and objects
 type, public :: dbcomms_CS_type

@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> A tracer package of ideal age tracers
 module ideal_age_example
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_coms,          only : EFP_type
 use MOM_coupler_types, only : set_coupler_type_data, atmos_ocn_coupler_flux
@@ -12,14 +14,17 @@ use MOM_forcing_type, only : forcing
 use MOM_grid, only : ocean_grid_type
 use MOM_hor_index, only : hor_index_type
 use MOM_io, only : file_exists, MOM_read_data, slasher, vardesc, var_desc, query_vardesc
+use MOM_io, only : MOM_infra_file, READONLY_FILE
 use MOM_open_boundary, only : ocean_OBC_type
+use MOM_remapping, only : remapping_CS, initialize_remapping, remapping_core_h
 use MOM_restart, only : query_initialized, set_initialized, MOM_restart_CS
 use MOM_spatial_means, only : global_mass_int_EFP
 use MOM_sponge, only : set_up_sponge_field, sponge_CS
-use MOM_time_manager, only : time_type, time_type_to_real
+use MOM_time_manager, only : time_type, time_to_real
 use MOM_tracer_registry, only : register_tracer, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
 use MOM_tracer_Z_init, only : tracer_Z_init
+use MOM_tracer_share, only : MOM_tracer_read_lines, MOM_IO_handles_find_name
 use MOM_unit_scaling, only : unit_scale_type
 use MOM_variables, only : surface
 use MOM_verticalGrid, only : verticalGrid_type
@@ -43,7 +48,10 @@ type, public :: ideal_age_tracer_CS ; private
                     !1 age tracers are reset in the top nkbl layers.
   character(len=200) :: IC_file !< The file in which the age-tracer initial values
                     !! can be found, or an empty string for internal initialization.
+  character(len=:), allocatable :: IC_files(:) !< Files that tracer initial values can be read from.
   logical :: Z_IC_file !< If true, the IC_file is in Z-space.  The default is false.
+  logical :: remap_non_Z_IC !< If true, and Z_IC_file is false, then remap IC vals to current model thicknesses.
+                            !! The default is false.
   type(time_type), pointer :: Time => NULL() !< A pointer to the ocean model's clock.
   type(tracer_registry_type), pointer :: tr_Reg => NULL() !< A pointer to the tracer registry
   real, pointer :: tr(:,:,:,:) => NULL()   !< The array of tracers used in this package [years] or other units
@@ -89,6 +97,7 @@ function register_ideal_age_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS)
 # include "version_variable.h"
   character(len=40)  :: mdl = "ideal_age_example" ! This module's name.
   character(len=200) :: inputdir ! The directory where the input files are.
+  character(len=200) :: IC_file_override_pointer ! File containing tracer IC filenames overriding IC_file.
   character(len=48)  :: var_name ! The variable's name.
   real, pointer :: tr_ptr(:,:,:) => NULL() ! The tracer concentration [years]
   logical :: register_ideal_age_tracer
@@ -136,9 +145,24 @@ function register_ideal_age_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS)
     CS%IC_file = trim(slasher(inputdir))//trim(CS%IC_file)
     call log_param(param_file, mdl, "INPUTDIR/AGE_IC_FILE", CS%IC_file)
   endif
+  call get_param(param_file, mdl, "AGE_IC_FILE_OVERRIDE_POINTER", &
+      IC_file_override_pointer, &
+      "File containing tracer IC filenames overriding AGE_IC_FILE.", &
+      default="")
+  if (len_trim(IC_file_override_pointer) > 0) then
+    call MOM_tracer_read_lines(IC_file_override_pointer, CS%IC_files)
+  elseif (len_trim(CS%IC_file) > 0) then
+    allocate(character(len=len_trim(CS%IC_file)) :: CS%IC_files(1))
+    CS%IC_files(1) = trim(CS%IC_file)
+  else
+    allocate(character(len=0) :: CS%IC_files(0))
+  endif
   call get_param(param_file, mdl, "AGE_IC_FILE_IS_Z", CS%Z_IC_file, &
                  "If true, AGE_IC_FILE is in depth space, not layer space", &
                  default=.false.)
+  call get_param(param_file, mdl, "AGE_REMAP_NON_Z_IC", CS%remap_non_Z_IC, &
+      "If true, and AGE_IC_FILE_IS_Z is false, then remap IC vals to current model thicknesses.", &
+      default=.false.)
   call get_param(param_file, mdl, "TRACERS_MAY_REINIT", CS%tracers_may_reinit, &
                  "If true, tracers may go through the initialization code "//&
                  "if they are not found in the restart files.  Otherwise "//&
@@ -177,7 +201,7 @@ function register_ideal_age_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS)
 
   CS%BL_residence_num = 0
   if (do_BL_residence) then
-    CS%ntr = CS%ntr + 1 ; m = CS%ntr; CS%BL_residence_num = CS%ntr
+    CS%ntr = CS%ntr + 1 ; m = CS%ntr ; CS%BL_residence_num = CS%ntr
     CS%tr_desc(m) = var_desc("BL_age", "yr", "BL Residence Time Tracer", caller=mdl)
     CS%tracer_ages(m) = .true. ; CS%growth_rate(m) = 0.0
     CS%IC_val(m) = 0.0 ; CS%young_val(m) = 0.0 ; CS%tracer_start_year(m) = 0.0
@@ -240,6 +264,14 @@ subroutine initialize_ideal_age_tracer(restart, day, G, GV, US, h, diag, OBC, CS
   integer :: IsdB, IedB, JsdB, JedB
   logical :: use_real_BL_depth
 
+  logical :: read_tracers
+  type(MOM_infra_file) :: IO_handles(size(CS%IC_files))
+  integer :: file_ind
+
+  type(remapping_CS) :: IC_remapCS  ! remapping of IC if Z_IC_file==.false.
+  real, allocatable :: h_IC(:,:,:)  ! h from IC_files, needed if Z_IC_file==.false.
+  real, allocatable :: tr_IC(:,:,:) ! tracer read from IC_files if Z_IC_file==.false.
+
   if (.not.associated(CS)) return
   if (CS%ntr < 1) return
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
@@ -250,30 +282,70 @@ subroutine initialize_ideal_age_tracer(restart, day, G, GV, US, h, diag, OBC, CS
   CS%diag => diag
   CS%nkbl = max(GV%nkml,1)
 
+  ! Determine if any tracers need to be read in
+  read_tracers = .false.
+  if (size(CS%IC_files) > 0) then
+    do m=1,CS%ntr
+      call query_vardesc(CS%tr_desc(m), name=name, caller="initialize_MARBL_tracers")
+      if ((.not. restart) .or. &
+          (CS%tracers_may_reinit .and. &
+           .not. query_initialized(CS%tr(:,:,:,m), name, CS%restart_CSp))) then
+        read_tracers = .true.
+        exit
+      endif
+    enddo
+  endif
+
+  if (read_tracers) then
+    ! Open IC_files to enable metadata access
+    do file_ind = 1, size(CS%IC_files)
+      call IO_handles(file_ind)%open(trim(CS%IC_files(file_ind)), READONLY_FILE, &
+          MOM_domain=G%Domain)
+    enddo
+
+    ! read thickness from IC_files if needed
+    if (.not. CS%Z_IC_file .and. CS%remap_non_Z_IC) then
+      call initialize_remapping(IC_remapCS, "PPM_IH4", answer_date=99991231)
+      allocate(h_IC(SZI_(G),SZJ_(G),SZK_(GV)))
+      file_ind = MOM_IO_handles_find_name(IO_handles, "h")
+      if (file_ind == 0) call MOM_error(FATAL, "h not found in IC_files")
+      call MOM_read_data(CS%IC_files(file_ind), "h", h_IC, G%Domain)
+      allocate(tr_IC(SZI_(G),SZJ_(G),SZK_(GV)))
+    endif
+  endif
+
   do m=1,CS%ntr
     call query_vardesc(CS%tr_desc(m), name=name, &
                        caller="initialize_ideal_age_tracer")
     if ((.not.restart) .or. (CS%tracers_may_reinit .and. .not. &
         query_initialized(CS%tr(:,:,:,m), name, CS%restart_CSp))) then
 
-      if (len_trim(CS%IC_file) > 0) then
-  !  Read the tracer concentrations from a netcdf file.
-        if (.not.file_exists(CS%IC_file, G%Domain)) &
-          call MOM_error(FATAL, "initialize_ideal_age_tracer: "// &
-                                 "Unable to open "//CS%IC_file)
+      if (size(CS%IC_files) > 0) then
+        file_ind = MOM_IO_handles_find_name(IO_handles, name)
+        if (file_ind == 0) call MOM_error(FATAL, trim(name) // " not found in IC_files")
 
+        !  Read the tracer concentrations from netcdf file(s).
         if (CS%Z_IC_file) then
-          OK = tracer_Z_init(CS%tr(:,:,:,m), h, CS%IC_file, name,&
-                             G, GV, US, -1e34, 0.0) ! CS%land_val(m))
+          OK = tracer_Z_init(CS%tr(:,:,:,m), h, CS%IC_files(file_ind), name,&
+                             G, GV, US, -1e34, 0.0)
           if (.not.OK) then
-            OK = tracer_Z_init(CS%tr(:,:,:,m), h, CS%IC_file, &
-                     trim(name), G, GV, US, -1e34, 0.0) ! CS%land_val(m))
+            OK = tracer_Z_init(CS%tr(:,:,:,m), h, CS%IC_files(file_ind), &
+                     trim(name), G, GV, US, -1e34, 0.0)
             if (.not.OK) call MOM_error(FATAL,"initialize_ideal_age_tracer: "//&
                     "Unable to read "//trim(name)//" from "//&
-                    trim(CS%IC_file)//".")
+                    trim(CS%IC_files(file_ind))//".")
           endif
         else
-          call MOM_read_data(CS%IC_file, trim(name), CS%tr(:,:,:,m), G%Domain)
+          if (CS%remap_non_Z_IC) then
+            call MOM_read_data(CS%IC_files(file_ind), trim(name), tr_IC, G%Domain)
+            do j=js,je ; do i=is,ie
+              if (G%mask2dT(i,j) == 0) cycle
+              call remapping_core_h(IC_remapCS, nz, h_IC(i,j,:), tr_IC(i,j,:), &
+                  nz, h(i,j,:), CS%tr(i,j,:,m))
+            enddo ; enddo
+          else
+            call MOM_read_data(CS%IC_files(file_ind), trim(name), CS%tr(:,:,:,m), G%Domain)
+          endif
         endif
       else
         do k=1,nz ; do j=js,je ; do i=is,ie
@@ -288,6 +360,12 @@ subroutine initialize_ideal_age_tracer(restart, day, G, GV, US, h, diag, OBC, CS
       call set_initialized(CS%tr(:,:,:,m), name, CS%restart_CSp)
     endif ! restart
   enddo ! Tracer loop
+
+  if (read_tracers) then
+    do file_ind = 1, size(CS%IC_files)
+      call IO_handles(file_ind)%close()
+    enddo
+  endif
 
   if (associated(OBC)) then
   ! Steal from updated DOME in the fullness of time.
@@ -371,7 +449,7 @@ subroutine ideal_age_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, 
   Isecs_per_year = 1.0 / (365.0*86400.0*US%s_to_T)
   !   Set the surface value of tracer 1 to increase exponentially
   ! with a 30 year time scale.
-  year = US%s_to_T*time_type_to_real(CS%Time) * Isecs_per_year
+  year = time_to_real(CS%Time, scale=US%s_to_T) * Isecs_per_year
 
   do m=1,CS%ntr
 

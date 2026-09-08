@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Variable mixing coefficients
 module MOM_lateral_mixing_coeffs
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_debugging,         only : hchksum, uvchksum
 use MOM_error_handler,     only : MOM_error, FATAL, WARNING, MOM_mesg
@@ -47,8 +49,8 @@ type, public :: VarMix_CS
                                   !! speed and calculate the resolution function
                                   !! independently at each point.
   logical :: use_stored_slopes    !< If true, stores isopycnal slopes in this structure.
-  logical :: Resoln_use_ebt       !< If true, uses the equivalent barotropic wave speed instead
-                                  !! of first baroclinic wave for calculating the resolution fn.
+  logical :: Resoln_use_ebt       !< If true, use the equivalent barotropic wave speed instead of the
+                                  !! first baroclinic wave speed for calculating the resolution function.
   logical :: khth_use_ebt_struct  !< If true, uses the equivalent barotropic structure
                                   !! as the vertical structure of thickness diffusivity.
   logical :: kdgl90_use_ebt_struct  !< If true, uses the equivalent barotropic structure
@@ -206,6 +208,7 @@ subroutine calc_depth_function(G, CS)
   integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq
   integer :: i, j
   real    :: H0   ! The depth above which KHTH is linearly scaled away [Z ~> m]
+  real    :: h1, h2  ! Temporary total thicknesses [Z ~> m]
   real    :: expo ! exponent used in the depth dependent scaling [nondim]
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
@@ -224,11 +227,15 @@ subroutine calc_depth_function(G, CS)
   expo = CS%depth_scaled_khth_exp
 !$OMP do
   do j=js,je ; do I=is-1,Ieq
-    CS%Depth_fn_u(I,j) = (MIN(1.0, (0.5*(G%bathyT(i,j) + G%bathyT(i+1,j)) + G%Z_ref)/H0))**expo
+    h1 = max(G%meanSL(i,j) + G%bathyT(i,j), 0.0)
+    h2 = max(G%meanSL(i+1,j) + G%bathyT(i+1,j), 0.0)
+    CS%Depth_fn_u(I,j) = (MIN(1.0, (0.5 * (h1 + h2)) / H0))**expo
   enddo ; enddo
 !$OMP do
   do J=js-1,Jeq ; do i=is,ie
-    CS%Depth_fn_v(i,J) = (MIN(1.0, (0.5*(G%bathyT(i,j) + G%bathyT(i,j+1)) + G%Z_ref)/H0))**expo
+    h1 = max(G%meanSL(i,j) + G%bathyT(i,j), 0.0)
+    h2 = max(G%meanSL(i,j+1) + G%bathyT(i,j+1), 0.0)
+    CS%Depth_fn_v(i,J) = (MIN(1.0, (0.5 * (h1 + h2)) / H0))**expo
   enddo ; enddo
 
 end subroutine calc_depth_function
@@ -841,18 +848,18 @@ subroutine calc_Visbeck_coeffs_old(h, slope_x, slope_y, N2_u, N2_v, G, GV, US, C
   integer :: OBC_dir_v(SZI_(G),SZJB_(G))  ! An integer indicating where there are v OBCs: +1 for
                                  ! northern OBCs, -1 for southern OBCs and 0 at points with no OBCs.
   real :: h4_u(SZIB_(G),SZJ_(G),SZK_(GV)+1)  ! The product of the 4 thicknesses surrounding a u-point
-                                 ! interface or the inward equivalent with OBCs [H4 ~> m4 or kg2 m-4]
+                                 ! interface or the inward equivalent with OBCs [H4 ~> m4 or kg4 m-8]
   real :: h4_v(SZI_(G),SZJB_(G),SZK_(GV)+1)  ! The product of the 4 thicknesses surrounding a v-point
-                                 ! interface or the inward equivalent with OBCs [H4 ~> m4 or kg2 m-4]
+                                 ! interface or the inward equivalent with OBCs [H4 ~> m4 or kg4 m-8]
   integer :: i, j, k, is, ie, js, je, nz
 
   if (.not. CS%initialized) call MOM_error(FATAL, "calc_Visbeck_coeffs_old: "// &
          "Module must be initialized before it is used.")
 
   if (.not. CS%calculate_Eady_growth_rate) return
-  if (.not. allocated(CS%SN_u)) call MOM_error(FATAL, "calc_slope_function:"// &
+  if (.not. allocated(CS%SN_u)) call MOM_error(FATAL, "calc_slope_function: "// &
          "%SN_u is not associated with use_variable_mixing.")
-  if (.not. allocated(CS%SN_v)) call MOM_error(FATAL, "calc_slope_function:R"// &
+  if (.not. allocated(CS%SN_v)) call MOM_error(FATAL, "calc_slope_function: "// &
          "%SN_v is not associated with use_variable_mixing.")
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
@@ -1047,7 +1054,7 @@ subroutine calc_Eady_growth_rate_2D(CS, G, GV, US, h, e, dzu, dzv, dzSxN, dzSyN,
   real :: dz_neglect ! A negligibly small distance to avoid division by zero [Z ~> m]
   real :: r_crp_dist ! The inverse of the distance over which to scale the cropping [Z-1 ~> m-1]
   real :: dB, dT ! Elevation variables used when cropping [Z ~> m]
-  integer :: i, j, k, l_seg
+  integer :: i, j, k
   logical :: crop
 
   dz_neglect = GV%dZ_subroundoff
@@ -1068,7 +1075,7 @@ subroutine calc_Eady_growth_rate_2D(CS, G, GV, US, h, e, dzu, dzv, dzSxN, dzSyN,
     CS%SN_v(i,j) = 0.0
   enddo ; enddo
 
-  !$OMP parallel do default(shared) private(dnew,dz,weight,l_seg,vint_SN,sum_dz,dT,dB)
+  !$OMP parallel do default(shared) private(dnew,dz,weight,vint_SN,sum_dz,dT,dB)
   do j=G%jsc-1,G%jec+1
     do I=G%isc-1,G%iec
       vint_SN(I) = 0.
@@ -1111,7 +1118,7 @@ subroutine calc_Eady_growth_rate_2D(CS, G, GV, US, h, e, dzu, dzv, dzSxN, dzSyN,
     enddo
   enddo
 
-  !$OMP parallel do default(shared) private(dnew,dz,weight,l_seg,vint_SN,sum_dz,dT,dB)
+  !$OMP parallel do default(shared) private(dnew,dz,weight,vint_SN,sum_dz,dT,dB)
   do J=G%jsc-1,G%jec
     do i=G%isc-1,G%iec+1
       vint_SN(i) = 0.
@@ -1192,6 +1199,7 @@ subroutine calc_slope_functions_using_just_e(h, G, GV, US, CS, e)
   ! real :: dz(SZI_(G),SZJ_(G),SZK_(GV)) ! The vertical distance across each layer [Z ~> m]
   real :: H_cutoff      ! Local estimate of a minimum thickness for masking [H ~> m or kg m-2]
   real :: dZ_cutoff     ! A minimum water column depth for masking [H ~> m or kg m-2]
+  real :: h1, h2        ! Temporary total thicknesses [Z ~> m]
   real :: h_neglect     ! A thickness that is so small it is usually lost
                         ! in roundoff and can be neglected [H ~> m or kg m-2].
   real :: S2            ! Interface slope squared [Z2 L-2 ~> nondim]
@@ -1206,15 +1214,14 @@ subroutine calc_slope_functions_using_just_e(h, G, GV, US, CS, e)
                         ! bathymetric depth for certain calculations.
   integer :: is, ie, js, je, nz
   integer :: i, j, k
-  integer :: l_seg
 
   if (.not. CS%initialized) call MOM_error(FATAL, "calc_slope_functions_using_just_e: "// &
          "Module must be initialized before it is used.")
 
   if (.not. CS%calculate_Eady_growth_rate) return
-  if (.not. allocated(CS%SN_u)) call MOM_error(FATAL, "calc_slope_function:"// &
+  if (.not. allocated(CS%SN_u)) call MOM_error(FATAL, "calc_slope_function: "// &
          "%SN_u is not associated with use_variable_mixing.")
-  if (.not. allocated(CS%SN_v)) call MOM_error(FATAL, "calc_slope_function:"// &
+  if (.not. allocated(CS%SN_v)) call MOM_error(FATAL, "calc_slope_function: "// &
          "%SN_v is not associated with use_variable_mixing.")
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
@@ -1301,9 +1308,10 @@ subroutine calc_slope_functions_using_just_e(h, G, GV, US, CS, e)
       enddo
     else
       do I=is-1,ie
-        if ( min(G%bathyT(i,j), G%bathyT(i+1,j)) + G%Z_ref > dZ_cutoff ) then
-          CS%SN_u(I,j) = G%OBCmaskCu(I,j) * sqrt( CS%SN_u(I,j) / &
-                                                  (max(G%bathyT(i,j), G%bathyT(i+1,j)) + G%Z_ref) )
+        h1 = max(G%meanSL(i,j) + G%bathyT(i,j), 0.0)
+        h2 = max(G%meanSL(i+1,j) + G%bathyT(i+1,j), 0.0)
+        if ( min(h1, h2) > dZ_cutoff ) then
+          CS%SN_u(I,j) = G%OBCmaskCu(I,j) * sqrt( CS%SN_u(I,j) / max(h1, h2) )
         else
           CS%SN_u(I,j) = 0.0
         endif
@@ -1326,9 +1334,10 @@ subroutine calc_slope_functions_using_just_e(h, G, GV, US, CS, e)
         ! There is a primordial horizontal indexing bug on the following line from the previous
         ! versions of the code.  This comment should be deleted by the end of 2024.
         ! if ( min(G%bathyT(i,j), G%bathyT(i+1,j)) + G%Z_ref > dZ_cutoff ) then
-        if ( min(G%bathyT(i,j), G%bathyT(i,j+1)) + G%Z_ref > dZ_cutoff ) then
-          CS%SN_v(i,J) = G%OBCmaskCv(i,J) * sqrt( CS%SN_v(i,J) / &
-                                                  (max(G%bathyT(i,j), G%bathyT(i,j+1)) + G%Z_ref) )
+        h1 = max(G%meanSL(i,j) + G%bathyT(i,j), 0.0)
+        h2 = max(G%meanSL(i,j+1) + G%bathyT(i,j+1), 0.0)
+        if ( min(h1, h2) > dZ_cutoff ) then
+          CS%SN_v(i,J) = G%OBCmaskCv(i,J) * sqrt( CS%SN_v(i,J) / max(h1, h2) )
         else
           CS%SN_v(i,J) = 0.0
         endif
@@ -1591,7 +1600,7 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
                  "when the first baroclinic deformation radius is well "//&
                  "resolved.", default=.false.)
   call get_param(param_file, mdl, "DEPTH_SCALED_KHTH", CS%Depth_scaled_KhTh, &
-                 "If true, KHTH is scaled away when the depth is shallower"//&
+                 "If true, KHTH is scaled away when the depth is shallower "//&
                  "than a reference depth: KHTH = MIN(1,H/H0)**N * KHTH, "//&
                  "where H0 is a reference depth, controlled via DEPTH_SCALED_KHTH_H0, "//&
                  "and the exponent (N) is controlled via DEPTH_SCALED_KHTH_EXP.",&
@@ -1612,7 +1621,7 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
   if (.not.use_MEKE) Resoln_scaled_MEKE_visc = .false.
   call get_param(param_file, mdl, "RESOLN_USE_EBT", CS%Resoln_use_ebt, &
                  "If true, uses the equivalent barotropic wave speed instead "//&
-                 "of first baroclinic wave for calculating the resolution fn.",&
+                 "of first baroclinic wave for calculating the resolution function.",&
                  default=.false.)
   call get_param(param_file, mdl, "BACKSCAT_EBT_POWER", CS%BS_EBT_power, &
                  "Power to raise EBT vertical structure to when backscatter "// &
@@ -1787,7 +1796,7 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
                    "that avoids division by layer thickness. Recommended.", default=.false.)
     if (CS%use_simpler_Eady_growth_rate) then
       if (.not. CS%use_stored_slopes) call MOM_error(FATAL, &
-           "MOM_lateral_mixing_coeffs.F90, VarMix_init:"//&
+           "MOM_lateral_mixing_coeffs.F90, VarMix_init: "//&
            "When USE_SIMPLER_EADY_GROWTH_RATE=True, USE_STORED_SLOPES must also be True.")
       call get_param(param_file, mdl, "EADY_GROWTH_RATE_D_SCALE", CS%Eady_GR_D_scale, &
                      "The depth from surface over which to average SN when calculating "//&
@@ -1952,10 +1961,10 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
                  "function independently at each point.", default=.false.)
     if (CS%interpolate_Res_fn) then
       if (CS%Res_coef_visc /= CS%Res_coef_khth) call MOM_error(FATAL, &
-           "MOM_lateral_mixing_coeffs.F90, VarMix_init:"//&
+           "MOM_lateral_mixing_coeffs.F90, VarMix_init: "//&
            "When INTERPOLATE_RES_FN=True, VISC_RES_FN_POWER must equal KH_RES_SCALE_COEF.")
       if (CS%Res_fn_power_visc /= CS%Res_fn_power_khth) call MOM_error(FATAL, &
-           "MOM_lateral_mixing_coeffs.F90, VarMix_init:"//&
+           "MOM_lateral_mixing_coeffs.F90, VarMix_init: "//&
            "When INTERPOLATE_RES_FN=True, VISC_RES_FN_POWER must equal KH_RES_FN_POWER.")
     endif
     call get_param(param_file, mdl, "GILL_EQUATORIAL_LD", Gill_equatorial_Ld, &
@@ -2112,7 +2121,7 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
     enddo ; enddo
 
     if (.not. CS%use_stored_slopes) call MOM_error(FATAL, &
-           "MOM_lateral_mixing_coeffs.F90, VarMix_init:"//&
+           "MOM_lateral_mixing_coeffs.F90, VarMix_init: "//&
            "USE_STORED_SLOPES must be True when using QG Leith.")
   endif
 
@@ -2194,8 +2203,12 @@ end subroutine VarMix_end
 !! r(\Delta,L_d) = \frac{1}{1+(\alpha R)^p}
 !! \f]
 !!
-!! The resolution function can be applied independently to thickness diffusion \(module mom_thickness_diffuse\),
-!! tracer diffusion \(mom_tracer_hordiff\) lateral viscosity \(mom_hor_visc\).
+!! The resolution function can be applied to thickness diffusion \(module mom_thickness_diffuse\),
+!! tracer diffusion \(mom_tracer_hordiff\), and lateral viscosity \(mom_hor_visc\).
+!! <code>VISC_RES_SCALE_COEF</code> and <code>VISC_RES_FN_POWER</code> control the \f$\alpha\f$ and \f$p\f$
+!! parameters of the resolution function for viscosity and tracer diffusion, while
+!! <code>KH_RES_SCALE_COEF</code> and <code>KH_RES_FN_POWER</code> control the parameters of the
+!! resolution function for thickness diffusion.
 !!
 !! Robert Hallberg, 2013: Using a resolution function to regulate parameterizations of oceanic mesoscale eddy effects.
 !! Ocean Modelling, 71, pp 92-103.  http://dx.doi.org/10.1016/j.ocemod.2013.08.007
@@ -2206,10 +2219,10 @@ end subroutine VarMix_end
 !! | -                     | <code>RESOLN_SCALED_KH</code> |
 !! | -                     | <code>RESOLN_SCALED_KHTH</code> |
 !! | -                     | <code>RESOLN_SCALED_KHTR</code> |
-!! | \f$ \alpha \f$        | <code>KH_RES_SCALE_COEF</code> (for thickness and tracer diffusivity) |
-!! | \f$ p \f$             | <code>KH_RES_FN_POWER</code> (for thickness and tracer diffusivity) |
-!! | \f$ \alpha \f$        | <code>VISC_RES_SCALE_COEF</code> (for lateral viscosity) |
-!! | \f$ p \f$             | <code>VISC_RES_FN_POWER</code> (for lateral viscosity) |
+!! | \f$ \alpha \f$        | <code>KH_RES_SCALE_COEF</code> (for thickness diffusivity) |
+!! | \f$ p \f$             | <code>KH_RES_FN_POWER</code> (for thickness diffusivity) |
+!! | \f$ \alpha \f$        | <code>VISC_RES_SCALE_COEF</code> (for lateral viscosity and tracer diffusivity) |
+!! | \f$ p \f$             | <code>VISC_RES_FN_POWER</code> (for lateral viscosity and tracer diffusivity) |
 !! | -                     | <code>GILL_EQUATORIAL_LD</code> |
 !!
 !!

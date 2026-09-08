@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Provides routines that do checksums of groups of MOM variables
 module MOM_checksum_packages
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 !   This module provides several routines that do check-sums of groups
 ! of variables in the various dynamic solver routines.
@@ -235,7 +237,7 @@ subroutine MOM_accel_chksum(mesg, CAu, CAv, PFu, PFv, diffu, diffv, G, GV, US, p
 
   logical :: sym
 
-  sym=.false.; if (present(symmetric)) sym=symmetric
+  sym = .false. ; if (present(symmetric)) sym = symmetric
 
   ! Note that for the chksum calls to be useful for reproducing across PE
   ! counts, there must be no redundant points, so all variables use is..ie

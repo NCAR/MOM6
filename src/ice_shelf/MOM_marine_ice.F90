@@ -1,8 +1,10 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Routines incorporating the effects of marine ice (sea-ice and icebergs) into
 !! the ocean model dynamics and thermodynamics.
 module MOM_marine_ice
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_constants,     only : hlf
 use MOM_diag_mediator, only : post_data, query_averaging_enabled, diag_ctrl
@@ -110,7 +112,7 @@ subroutine iceberg_fluxes(G, US, fluxes, use_ice_shelf, sfc_state, time_step, CS
   type(marine_ice_CS),   pointer       :: CS      !< Pointer to the control structure for MOM_marine_ice
 
   real :: fraz      ! refreezing rate [R Z T-1 ~> kg m-2 s-1]
-  real :: I_dt_LHF  ! The inverse of the timestep times the latent heat of fusion times [Q-1 T-1 ~> kg J-1 s-1].
+  real :: I_dt_LHF  ! The inverse of the timestep times the latent heat of fusion [Q-1 T-1 ~> kg J-1 s-1].
   integer :: i, j, is, ie, js, je, isd, ied, jsd, jed
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   isd = G%isd ; jsd = G%jsd ; ied = G%ied ; jed = G%jed

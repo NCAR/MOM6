@@ -1,11 +1,13 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Configures the model for the Kelvin wave experiment.
 !!
 !! Kelvin = coastally-trapped Kelvin waves from the ROMS examples.
 !! Initialize with level surfaces and drive the wave in at the west,
 !! radiate out at the east.
 module Kelvin_initialization
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_dyn_horgrid,    only : dyn_horgrid_type
 use MOM_error_handler,  only : MOM_mesg, MOM_error, FATAL, WARNING, is_root_pe
@@ -17,7 +19,7 @@ use MOM_open_boundary,  only : OBC_DIRECTION_N, OBC_DIRECTION_E, OBC_DIRECTION_S
 use MOM_open_boundary,  only : OBC_registry_type
 use MOM_unit_scaling,   only : unit_scale_type
 use MOM_verticalGrid,   only : verticalGrid_type
-use MOM_time_manager,   only : time_type, time_type_to_real
+use MOM_time_manager,   only : time_type, time_to_real
 
 implicit none ; private
 
@@ -246,7 +248,7 @@ subroutine Kelvin_set_OBC_data(OBC, CS, G, GV, US, h, Time)
   if (G%grid_unit_to_L <= 0.) call MOM_error(FATAL, 'Kelvin_initialization.F90: '// &
           "Kelvin_set_OBC_data() is only set to work with Cartesian axis units.")
 
-  time_sec = US%s_to_T*time_type_to_real(Time)
+  time_sec = time_to_real(Time, scale=US%s_to_T)
   PI = 4.0*atan(1.0)
 
   turns = modulo(G%HI%turns, 4)

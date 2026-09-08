@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Initialization for the "sloshing" internal waves configuration.
 module sloshing_initialization
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_domains, only : sum_across_PEs
 use MOM_dyn_horgrid, only : dyn_horgrid_type
@@ -106,7 +108,7 @@ subroutine sloshing_initialize_thickness ( h, depth_tot, G, GV, US, param_file, 
       !z_inter(k) = (2.0**(n-1)) * (z_unif(k) + 0.5)**n - 0.5
 
       ! Thin pycnocline in the middle (piecewise linear profile)
-      x1 = 0.30; y1 = 0.48; x2 = 0.70; y2 = 0.52
+      x1 = 0.30 ; y1 = 0.48 ; x2 = 0.70 ; y2 = 0.52
 
       x = -z_unif(k)
 

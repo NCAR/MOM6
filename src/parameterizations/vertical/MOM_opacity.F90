@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Routines used to calculate the opacity of the ocean.
 module MOM_opacity
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_diag_mediator, only : time_type, diag_ctrl, safe_alloc_ptr, post_data
 use MOM_diag_mediator, only : query_averaging_enabled, register_diag_field
@@ -390,7 +392,7 @@ subroutine opacity_from_chl(optics, sw_total, sw_vis_dir, sw_vis_dif, sw_nir_dir
         do n=1,nbands
           optics%sw_pen_band(n,i,j) = Inv_nbands*sw_pen_tot
         enddo
-     enddo; enddo
+     enddo ; enddo
     case (OHLMANN_03)
       ! want exactly two penetrating bands. If not, throw an error.
       if ( nbands /= 2 ) then
@@ -413,7 +415,7 @@ subroutine opacity_from_chl(optics, sw_total, sw_vis_dir, sw_vis_dif, sw_nir_dir
           ! Bands 1-2 (Ohlmann factors A with coefficients for Table 1a)
           optics%sw_pen_band(1:2,i,j)  = lookup_ohlmann_swpen(chl_data(i,j),optics)*SW_vis_tot
         endif
-      enddo; enddo
+      enddo ; enddo
     case default
       call MOM_error(FATAL, "opacity_from_chl: CS%opacity_scheme is not valid.")
   end select
@@ -458,7 +460,7 @@ subroutine opacity_from_chl(optics, sw_total, sw_vis_dir, sw_vis_dif, sw_nir_dir
           do n=2,optics%nbands
             optics%opacity_band(n,i,j,k) = optics%opacity_band(1,i,j,k)
           enddo
-        enddo; enddo
+        enddo ; enddo
       case (OHLMANN_03)
         !! not testing for 2 bands since we did it above
         do j=js,je ; do i=is,ie
@@ -468,7 +470,7 @@ subroutine opacity_from_chl(optics, sw_total, sw_vis_dir, sw_vis_dif, sw_nir_dir
             ! Bands 1-2 (Ohlmann factors B with coefficients for Table 1a
             optics%opacity_band(1:2,i,j,k) = lookup_ohlmann_opacity(chl_data(i,j),optics) * US%Z_to_m
           endif
-        enddo; enddo
+        enddo ; enddo
       case default
         call MOM_error(FATAL, "opacity_from_chl: CS%opacity_scheme is not valid.")
     end select

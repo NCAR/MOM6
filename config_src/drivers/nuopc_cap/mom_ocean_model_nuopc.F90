@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Top-level module for the MOM6 ocean model in coupled mode.
 module MOM_ocean_model_nuopc
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 ! This is the top level module for the MOM6 ocean model.  It contains routines
 ! for initialization, termination and update of ocean model state.  This
@@ -22,7 +24,7 @@ use MOM_diag_mediator,       only : diag_ctrl, enable_averages, disable_averagin
 use MOM_diag_mediator,       only : diag_mediator_close_registration, diag_mediator_end
 use MOM_domains,             only : pass_var, pass_vector, AGRID, BGRID_NE, CGRID_NE
 use MOM_domains,             only : TO_ALL, Omit_Corners
-use MOM_error_handler,       only : MOM_error, FATAL, WARNING, is_root_pe
+use MOM_error_handler,       only : MOM_error, FATAL, WARNING, is_root_pe, MOM_mesg
 use MOM_error_handler,       only : callTree_enter, callTree_leave
 use MOM_file_parser,         only : get_param, log_version, close_param_file, param_file_type
 use MOM_forcing_type,        only : allocate_forcing_type
@@ -47,6 +49,7 @@ use MOM_variables,           only : surface
 use MOM_verticalGrid,        only : verticalGrid_type
 use MOM_ice_shelf,           only : initialize_ice_shelf, shelf_calc_flux, ice_shelf_CS
 use MOM_ice_shelf,           only : add_shelf_forces, ice_shelf_end, ice_shelf_save_restart
+use MOM_ice_shelf,           only : adjust_ice_sheet_frazil
 use MOM_coupler_types,       only : coupler_1d_bc_type, coupler_2d_bc_type
 use MOM_coupler_types,       only : coupler_type_spawn, coupler_type_write_chksums
 use MOM_coupler_types,       only : coupler_type_initialized, coupler_type_copy_data
@@ -285,18 +288,15 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
   call time_interp_external_init
 
   OS%Time = Time_in
-  if(present(input_restart_file)) then
-      k = index(input_restart_file, ' ')
-      if (k==0) k = len_trim(input_restart_file)
-      i = index(input_restart_file, '.r.')
-      if (i>0) then
-         stoch_restfile = input_restart_file(1:i)//'r_stoch'//input_restart_file(i+2:k)
-
-         if (is_root_pe()) then
-           write(stdout,*) 'input_restart_file =', input_restart_file
-           write(stdout,*) 'stoch_restfile =', stoch_restfile
-         endif
-      endif
+  if (present(input_restart_file)) then
+    k = index(input_restart_file, ' ')
+    if (k==0) k = len_trim(input_restart_file)
+    i = index(input_restart_file, '.r.')
+    if (i>0) then
+      stoch_restfile = input_restart_file(1:i)//'r_stoch'//input_restart_file(i+2:k)
+      call MOM_mesg("input_restart_file = "//trim(input_restart_file), 3)
+      call MOM_mesg("stoch_restfile = "//trim(stoch_restfile), 3)
+    endif
   endif
   call initialize_MOM(OS%Time, Time_init, param_file, OS%dirs, OS%MOM_CSp, &
                       Time_in, offline_tracer_mode=OS%offline_tracer_mode, &
@@ -368,7 +368,7 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
   call get_param(param_file, mdl, "RHO_0", Rho0, &
                  "The mean ocean density used with BOUSSINESQ true to "//&
                  "calculate accelerations and the mass for conservation "//&
-                 "properties, or with BOUSSINSEQ false to convert some "//&
+                 "properties, or with BOUSSINESQ false to convert some "//&
                  "parameters from vertical units of m to kg m-2.", &
                  units="kg m-3", default=1035.0)
   call get_param(param_file, mdl, "G_EARTH", G_Earth, &
@@ -404,7 +404,8 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
   ! vertical integrals, since the related 3-d sums are not negligible in cost.
   call allocate_surface_state(OS%sfc_state, OS%grid, use_temperature, &
                               do_integrals=.true., gas_fields_ocn=gas_fields_ocn, &
-                              use_meltpot=use_melt_pot, use_MARBL_tracers=OS%use_MARBL)
+                              use_meltpot=use_melt_pot, use_iceshelves=OS%use_ice_shelf, &
+                              use_MARBL_tracers=OS%use_MARBL)
 
   call surface_forcing_init(Time_in, OS%grid, OS%US, param_file, OS%diag, &
                             OS%forcing_CSp, OS%restore_salinity, OS%restore_temp, OS%use_waves)
@@ -445,12 +446,19 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
 
     call extract_surface_state(OS%MOM_CSp, OS%sfc_state)
 
+    if (OS%use_ice_shelf .and. allocated(OS%sfc_state%frazil)) &
+      call adjust_ice_sheet_frazil(OS%sfc_state, OS%fluxes, OS%Ice_shelf_CSp)
+
     call convert_state_to_ocean_type(OS%sfc_state, Ocean_sfc, OS%grid, OS%US)
 
   endif
 
   call extract_surface_state(OS%MOM_CSp, OS%sfc_state)
-! get number of processors and PE list for stocasthci physics initialization
+
+  if (OS%use_ice_shelf .and. allocated(OS%sfc_state%frazil)) &
+    call adjust_ice_sheet_frazil(OS%sfc_state, OS%fluxes, OS%Ice_shelf_CSp)
+
+! get number of processors and PE list for stochastic physics initialization
   call get_param(param_file, mdl, "DO_SPPT", OS%do_sppt, &
                  "If true, then stochastically perturb the thermodynamic "//&
                  "tendencies of T,S, and h.  Amplitude and correlations are "//&
@@ -563,9 +571,6 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, &
                              OS%grid, OS%US, OS%forcing_CSp)
 
   if (OS%fluxes%fluxes_used) then
-
-    ! enable_averages() is necessary to post forcing fields to diagnostics
-    call enable_averages(dt_coupling, OS%Time + Ocean_coupling_time_step, OS%diag)
 
     if (do_thermo) &
       call convert_IOB_to_fluxes(Ice_ocean_boundary, OS%fluxes, index_bnds, OS%Time, dt_coupling, &
@@ -729,6 +734,10 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, &
       call forcing_diagnostics(OS%fluxes, OS%sfc_state, OS%grid, OS%US, OS%Time, OS%diag, OS%forcing_CSp%handles)
     endif
   endif
+
+  !only make ice-shelf frazil adjustments if sfc_state%frazil was updated (do_thermo=True)
+  if (do_thermo .and. OS%use_ice_shelf .and. allocated(OS%sfc_state%frazil)) &
+    call adjust_ice_sheet_frazil(OS%sfc_state, OS%fluxes, OS%Ice_shelf_CSp)
 
 ! Translate state into Ocean.
 !  call convert_state_to_ocean_type(OS%sfc_state, Ocean_sfc, OS%grid, &
@@ -1049,6 +1058,9 @@ subroutine ocean_model_init_sfc(OS, Ocean_sfc)
 
   call extract_surface_state(OS%MOM_CSp, OS%sfc_state)
 
+  if (OS%use_ice_shelf .and. allocated(OS%sfc_state%frazil)) &
+    call adjust_ice_sheet_frazil(OS%sfc_state, OS%fluxes, OS%Ice_shelf_CSp)
+
   call convert_state_to_ocean_type(OS%sfc_state, Ocean_sfc, OS%grid, OS%US)
 
 end subroutine ocean_model_init_sfc
@@ -1184,7 +1196,7 @@ end subroutine get_ocean_grid
 !> Returns eps_omesh read from param file
 real function get_eps_omesh(OS)
   type(ocean_state_type), intent(in) :: OS
-  get_eps_omesh = OS%eps_omesh; return
+  get_eps_omesh = OS%eps_omesh
 end function
 
 !> Returns true if a stochastic restart file is needed

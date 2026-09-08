@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Ideal tracers designed to help diagnose a tracer diffusivity tensor in NeverWorld2
 module nw2_tracers
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_diag_mediator, only : diag_ctrl
 use MOM_error_handler, only : MOM_error, FATAL, WARNING
@@ -12,7 +14,7 @@ use MOM_hor_index, only : hor_index_type
 use MOM_interface_heights, only : thickness_to_dz
 use MOM_io, only : file_exists, MOM_read_data, slasher, vardesc, var_desc
 use MOM_restart, only : query_initialized, set_initialized, MOM_restart_CS
-use MOM_time_manager, only : time_type, time_type_to_real
+use MOM_time_manager, only : time_type
 use MOM_tracer_registry, only : register_tracer, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
 use MOM_unit_scaling, only : unit_scale_type

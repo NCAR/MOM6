@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Configures the model for the geostrophic adjustment test case.
 module adjustment_initialization
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_error_handler, only : MOM_mesg, MOM_error, FATAL, is_root_pe
 use MOM_file_parser,   only : get_param, log_param, log_version, param_file_type
@@ -147,14 +149,14 @@ subroutine adjustment_initialize_thickness ( h, G, GV, US, param_file, just_read
         if (front_wave_length /= 0.) then
           y = ( 0.125 + G%geoLatT(i,j) / front_wave_length ) * ( 4. * acos(0.) )
           yy = 2. * ( G%geoLatT(i,j) - 0.5 * G%len_lat ) / adjustment_width
-          yy = min(1.0, yy); yy = max(-1.0, yy)
+          yy = min(1.0, yy) ; yy = max(-1.0, yy)
           yy = yy * 2. * acos( 0. )
           y_lat = front_wave_amp*sin(y) + front_wave_asym*sin(yy)
         else
           y_lat = 0.
         endif
         x = ( ( G%geoLonT(i,j) - 0.5 * G%len_lon ) + y_lat ) / adjustment_width
-        x = min(1.0, x); x = max(-1.0, x)
+        x = min(1.0, x) ; x = max(-1.0, x)
         x = x * acos( 0. )
         delta_S = adjustment_deltaS * 0.5 * (1. - sin( x ) )
         do k=2,nz
@@ -166,7 +168,7 @@ subroutine adjustment_initialize_thickness ( h, G, GV, US, param_file, just_read
           eta1D(k) = max( eta1D(k), -G%max_depth )
           eta1D(k) = min( eta1D(k), 0. )
         enddo
-        eta1D(1) = 0.; eta1D(nz+1) = -G%max_depth
+        eta1D(1) = 0. ; eta1D(nz+1) = -G%max_depth
         do k=nz,1,-1
           if (eta1D(k) > 0.) then
             eta1D(k) = max( eta1D(k+1) + min_thickness, 0. )
@@ -280,14 +282,14 @@ subroutine adjustment_initialize_temperature_salinity(T, S, h, depth_tot, G, GV,
         if (front_wave_length /= 0.) then
           y = ( 0.125 + G%geoLatT(i,j) / front_wave_length ) * ( 4. * acos(0.) )
           yy = 2. * ( G%geoLatT(i,j) - 0.5 * G%len_lat ) / front_wave_length
-          yy = min(1.0, yy); yy = max(-1.0, yy)
+          yy = min(1.0, yy) ; yy = max(-1.0, yy)
           yy = yy * 2. * acos( 0. )
           y_lat = front_wave_amp*sin(y) + front_wave_asym*sin(yy)
         else
           y_lat = 0.
         endif
         x = ( ( G%geoLonT(i,j) - 0.5 * G%len_lon ) + y_lat ) / adjustment_width
-        x = min(1.0, x); x = max(-1.0, x)
+        x = min(1.0, x) ; x = max(-1.0, x)
         x = x * acos( 0. )
         delta_S = adjustment_deltaS * 0.5 * (1. - sin( x ) )
         do k=1,nz

@@ -1,3 +1,7 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> A wrapper for the FMS diag_manager routines. This module should be the
 !! only MOM6 module which imports the FMS shared infrastructure for
 !! diagnostics. Pass through interfaces are being documented
@@ -5,8 +9,6 @@
 !! consistent with the FMS infrastructure (Any future updates to
 !! those APIs would be applied here).
 module MOM_diag_manager_infra
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use, intrinsic :: iso_fortran_env, only : real64
 use diag_axis_mod,    only : fms_axis_init=>diag_axis_init
@@ -93,12 +95,12 @@ integer function MOM_diag_axis_init(name, data, units, cart_name, long_name, MOM
                                               !! describes the edges of this axis
   character(len=*), &
             optional, intent(in) :: set_name  !< A name to use for this set of axes.
-  integer,  optional, intent(in) :: coarsen   !< An optional degree of coarsening for the grid, 1
-                                              !! by default.
+  integer,  optional, intent(in) :: coarsen   !< An optional degree of coarsening for the grid, 0
+                                              !! by default. This is the index of the coarsening level.
   logical,  optional, intent(in) :: null_axis !< If present and true, return the special null axis
                                               !! id for use with scalars.
 
-  integer :: coarsening ! The degree of grid coarsening
+  integer :: coarsening ! The degree of grid coarsening, this is the index of an array of coarsening levels
 
   if (present(null_axis)) then ; if (null_axis) then
     ! Return the special null axis id for scalars
@@ -107,17 +109,15 @@ integer function MOM_diag_axis_init(name, data, units, cart_name, long_name, MOM
   endif ; endif
 
   if (present(MOM_domain)) then
-    coarsening = 1 ; if (present(coarsen)) coarsening = coarsen
-    if (coarsening == 1) then
+    coarsening = 0 ; if (present(coarsen)) coarsening = coarsen
+    if (coarsening == 0) then
       MOM_diag_axis_init = fms_axis_init(name, data, units, cart_name, long_name=long_name, &
               direction=direction, set_name=set_name, edges=edges, &
               domain2=MOM_domain%mpp_domain, domain_position=position)
-    elseif (coarsening == 2) then
+    else
       MOM_diag_axis_init = fms_axis_init(name, data, units, cart_name, long_name=long_name, &
               direction=direction, set_name=set_name, edges=edges, &
-              domain2=MOM_domain%mpp_domain_d2, domain_position=position)
-    else
-      call MOM_error(FATAL, "diag_axis_init called with an invalid value of coarsen.")
+              domain2=MOM_domain%mpp_domain_d(coarsening), domain_position=position)
     endif
   else
     if (present(coarsen)) then ; if (coarsen /= 1) then

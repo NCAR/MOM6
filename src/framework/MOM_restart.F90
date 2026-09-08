@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> The MOM6 facility for reading and writing restart files, and querying what has been read.
 module MOM_restart
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use, intrinsic :: iso_fortran_env, only : int64
 use MOM_array_transform, only : rotate_array, rotate_vector, rotate_array_pair
@@ -1588,7 +1590,7 @@ subroutine save_restart(directory, time, G, CS, time_stamped, filename, GV, num_
   type(MOM_field) :: fields(CS%max_fields) ! Opaque types containing metadata describing
                                         ! each variable that will be written.
   character(len=512) :: restartpath     ! The restart file path (dir/file).
-  character(len=256) :: restartname     ! The restart file name (no dir).
+  character(len=512) :: restartname     ! The restart file name (no dir).
   character(len=8)   :: suffix          ! A suffix (like _2) that is appended
                                         ! to the name of files after the first.
   integer(kind=int64) :: var_sz, size_in_file ! The size in bytes of each variable

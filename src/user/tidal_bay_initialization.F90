@@ -1,8 +1,10 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Configures the model for the "tidal_bay" experiment.
 !! tidal_bay = Tidally resonant bay from Zygmunt Kowalik's class on tides.
 module tidal_bay_initialization
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_coms,           only : reproducing_sum
 use MOM_dyn_horgrid,    only : dyn_horgrid_type
@@ -14,7 +16,7 @@ use MOM_open_boundary,  only : OBC_segment_type, register_OBC
 use MOM_open_boundary,  only : OBC_registry_type
 use MOM_unit_scaling,   only : unit_scale_type
 use MOM_verticalGrid,   only : verticalGrid_type
-use MOM_time_manager,   only : time_type, time_type_to_real
+use MOM_time_manager,   only : time_type, time_to_real
 
 implicit none ; private
 
@@ -95,7 +97,7 @@ subroutine tidal_bay_set_OBC_data(OBC, CS, G, GV, US, h, Time)
 
   if (.not.associated(OBC)) return
 
-  time_sec = US%s_to_T*time_type_to_real(Time)
+  time_sec = time_to_real(Time, scale=US%s_to_T)
   cff_eta = CS%tide_ssh_amp * sin(2.0*PI*time_sec / CS%tide_period)
 
   segment => OBC%segment(1)

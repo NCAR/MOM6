@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Top-level module for the MOM6 ocean model in coupled mode.
 module MOM_stochastics
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 ! This is the top level module for the MOM6 ocean model.  It contains routines
 ! for initialization, update, and writing restart of stochastic physics. This
@@ -54,7 +56,7 @@ type, public:: stochastic_CS
                               !! dissipation rate used to set the amplitude of SKEBS [nondim]
   real    :: skeb_frict_coef  !< If skeb_use_frict is true, then skeb_gm_coef * GM_work is added to the
                               !! dissipation rate used to set the amplitude of SKEBS [nondim]
-  real, allocatable :: skeb_diss(:,:,:) !< Dissipation rate used to set amplitude of SKEBS [L2 T-3 ~> m2 s-2]
+  real, allocatable :: skeb_diss(:,:,:) !< Dissipation rate used to set amplitude of SKEBS [L2 T-3 ~> m2 s-3]
                                         !! Index into this at h points.
   integer :: answer_date      !< The vintage of the order of arithmetic in the stochastics
                               !! calculations.  Values below 20250701 recover the answers from
@@ -106,7 +108,7 @@ subroutine stochastics_init(dt, grid, GV, US, CS, param_file, diag, Time)
   integer :: nyT, nyB          ! number of y-points including halo
   integer :: default_answer_date ! The default setting for the various ANSWER_DATE flags.
   integer :: i, j, k           ! loop indices
-  real    :: tmp(grid%isdB:grid%iedB,grid%jsdB:grid%jedB) ! Used to construct tapers and weights
+  real    :: tmp(grid%isdB:grid%iedB,grid%jsdB:grid%jedB) ! Used to construct tapers [nondim]
   integer :: taper_width       ! Width (in cells) of the taper that brings the stochastic velocity
                                ! increments to 0 at the boundary.
   real    :: sum_area_wts      ! A rotationally symmetric sum of the surrounding area weights
@@ -132,7 +134,7 @@ subroutine stochastics_init(dt, grid, GV, US, CS, param_file, diag, Time)
   ! get number of processors and PE list for stochastic physics initialization
   call get_param(param_file, mdl, "DO_SPPT", CS%do_sppt, &
                  "If true, then stochastically perturb the thermodynamic "//&
-                 "tendencies of T,S, amd h.  Amplitude and correlations are "//&
+                 "tendencies of T,S, and h.  Amplitude and correlations are "//&
                  "controlled by the nam_stoch namelist in the UFS model only.", &
                  default=.false.)
   call get_param(param_file, mdl, "DO_SKEB", CS%do_skeb, &
@@ -272,8 +274,8 @@ subroutine stochastics_init(dt, grid, GV, US, CS, param_file, diag, Time)
     enddo ; enddo
     do j=grid%jsc-1,grid%jec+1 ; do i=grid%isc-1,grid%iec+1
       sum_area_wts = CS%area_wt(i,j) + &
-       (((CS%area_wt(i-1,j) + CS%area_wt(i+1,j)) + (CS%area_wt(i,j-1) + CS%area_wt(i,j+1))) + &
-        ((CS%area_wt(i-1,j-1) + CS%area_wt(i+1,j+1)) + (CS%area_wt(i-1,j+1) + CS%area_wt(i+1,j-1))))
+          (((CS%area_wt(i-1,j) + CS%area_wt(i+1,j)) + (CS%area_wt(i,j-1) + CS%area_wt(i,j+1))) + &
+           ((CS%area_wt(i-1,j-1) + CS%area_wt(i+1,j+1)) + (CS%area_wt(i-1,j+1) + CS%area_wt(i+1,j-1))))
       CS%Isum_area_wts(i,j) = 1.0 / (sum_area_wts + 1.e-16*US%m_to_L**2)
     enddo ; enddo
   endif

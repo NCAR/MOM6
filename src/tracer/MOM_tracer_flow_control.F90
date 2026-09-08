@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Orchestrates the registration and calling of tracer packages
 module MOM_tracer_flow_control
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_coms,          only : EFP_type, assignment(=), EFP_to_real, real_to_EFP, EFP_sum_across_PEs
 use MOM_diag_mediator, only : time_type, diag_ctrl
@@ -345,7 +347,7 @@ subroutine tracer_flow_control_init(restart, day, G, GV, US, h, param_file, diag
     call initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag, OBC, CS%MARBL_tracers_CSp, &
                                 sponge_CSp)
   if (CS%use_regional_dyes) &
-    call initialize_dye_tracer(restart, day, G, GV, h, diag, OBC, CS%dye_tracer_CSp, sponge_CSp, tv)
+    call initialize_dye_tracer(restart, day, G, GV, US, h, diag, OBC, CS%dye_tracer_CSp, sponge_CSp, tv)
   if (CS%use_oil) &
     call initialize_oil_tracer(restart, day, G, GV, US, h, diag, OBC, CS%oil_tracer_CSp, sponge_CSp)
   if (CS%use_advection_test_tracer) &
@@ -447,7 +449,7 @@ subroutine call_tracer_set_forcing(sfc_state, fluxes, day_start, day_interval, G
   type(tracer_flow_control_CS), pointer       :: CS        !< The control structure returned by a
                                                            !! previous call to call_tracer_register.
 
-  if (.not. associated(CS)) call MOM_error(FATAL, "call_tracer_set_forcing"// &
+  if (.not. associated(CS)) call MOM_error(FATAL, "call_tracer_set_forcing: "// &
          "Module must be initialized via call_tracer_register before it is used.")
 !  if (CS%use_ideal_age) &
 !    call ideal_age_tracer_set_forcing(sfc_state, fluxes, day_start, day_interval, &
@@ -877,12 +879,12 @@ subroutine store_stocks(pkg_name, ns, names, units, values, index, stock_values,
     write(ind_text,'(I0)') index
     if (ns > 1) then
       call MOM_error(FATAL,"Tracer package "//trim(pkg_name)//&
-          " is not permitted to return more than one value when queried"//&
-          " for specific stock index "//trim(ind_text)//".")
+          " is not permitted to return more than one value when queried "//&
+          "for specific stock index "//trim(ind_text)//".")
     elseif (ns+ns_tot > 1) then
       call MOM_error(FATAL,"Tracer packages "//trim(pkg_name)//" and "//&
-          trim(set_pkg_name)//" both attempted to set values for"//&
-          " specific stock index "//trim(ind_text)//".")
+          trim(set_pkg_name)//" both attempted to set values for "//&
+          "specific stock index "//trim(ind_text)//".")
     else
       set_pkg_name = pkg_name
     endif

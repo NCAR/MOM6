@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> The equation of state using the Wright 1997 expressions with reduced range of data.
 module MOM_EOS_Wright_red
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_EOS_base_type, only : EOS_base
 use MOM_hor_index, only : hor_index_type
@@ -726,7 +728,7 @@ subroutine int_spec_vol_dp_wright_red(T, S, p_t, p_b, spv_ref, HI, dza, &
   real :: al0        ! A term in the Wright EOS [R-1 ~> m3 kg-1]
   real :: p0         ! A term in the Wright EOS [R L2 T-2 ~> Pa]
   real :: lambda     ! A term in the Wright EOS [L2 T-2 ~> m2 s-2]
-  real :: al0_scale  ! Scaling factor to convert al0 from MKS units [R-1 kg m-3 ~> 1]
+  real :: al0_scale  ! Scaling factor to convert al0 from MKS units [kg m-3 R-1 ~> 1]
   real :: p0_scale   ! Scaling factor to convert p0 from MKS units [R L2 T-2 Pa-1 ~> 1]
   real :: lam_scale  ! Scaling factor to convert lambda from MKS units [L2 s2 T-2 m-2 ~> 1]
   real :: p_ave      ! The layer average pressure [R L2 T-2 ~> Pa]

@@ -1,11 +1,13 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> A tracer package for tracers computed in the MARBL library
 !!
 !! Currently configured for use with marbl0.36.0
 !! https://github.com/marbl-ecosys/MARBL/releases/tag/marbl0.36.0
 !! (clone entire repo into pkg/MARBL)
 module MARBL_tracers
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_coms,            only : EFP_type, root_PE, broadcast
 use MOM_debugging,       only : hchksum
@@ -21,10 +23,11 @@ use MOM_interpolate,     only : forcing_timeseries_dataset
 use MOM_interpolate,     only : forcing_timeseries_set_time_type_vars
 use MOM_interpolate,     only : map_model_time_to_forcing_time
 use MOM_io,              only : file_exists, MOM_read_data, slasher, vardesc, var_desc, query_vardesc
+use MOM_io,              only : MOM_infra_file, READONLY_FILE
 use MOM_open_boundary,   only : ocean_OBC_type, fill_obgc_segments, register_obgc_segments, set_obgc_segments_props
 use MOM_remapping,       only : reintegrate_column
 use MOM_remapping,       only : remapping_CS, initialize_remapping, remapping_core_h
-use MOM_restart,         only : query_initialized, MOM_restart_CS, register_restart_field
+use MOM_restart,         only : query_initialized, set_initialized, MOM_restart_CS, register_restart_field
 use MOM_spatial_means,   only : global_mass_int_EFP
 use MOM_sponge,          only : set_up_sponge_field, sponge_CS
 use MOM_time_manager,    only : time_type
@@ -33,6 +36,7 @@ use MOM_tracer_types,    only : tracer_type, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
 use MOM_tracer_initialization_from_Z, only : MOM_initialize_tracer_from_Z
 use MOM_tracer_Z_init,   only : read_Z_edges
+use MOM_tracer_share,    only : MOM_tracer_read_lines, MOM_IO_handles_find_name
 use MOM_unit_scaling,    only : unit_scale_type
 use MOM_variables,       only : surface
 use MOM_verticalGrid,    only : verticalGrid_type
@@ -119,9 +123,15 @@ type, public :: MARBL_tracers_CS ; private
   logical :: use_ice_category_fields    !< Forcing will include multiple ice categories for ice_frac and shortwave
   logical :: request_Chl_from_MARBL     !< MARBL can provide Chl to use in set_pen_shortwave()
   integer :: ice_ncat                   !< Number of ice categories when use_ice_category_fields = True
-  real    :: IC_min                     !< Minimum value for tracer initial conditions [CU ~> conc]
-  character(len=200) :: IC_file !< The file in which the age-tracer initial values cam be found.
-  logical :: ongrid                     !< True if IC_file is already interpolated to MOM grid
+  real    :: IC_min                     !< Minimum value for tracer initial conditions
+                                        !! (when initializing from Z) [CU ~> conc]
+  character(len=:), allocatable :: IC_files(:) !< Files that tracer initial values are read from.
+  logical :: ongrid                     !< True if fields in IC_files are already interpolated laterally to MOM grid
+  logical :: Z_IC_file                  !< True if fields in IC_files have Z coordinates
+  logical :: remap_non_Z_IC             !< If true, and Z_IC_file is false, then remap IC vals to
+                                        !! current model thicknesses. The default is false.
+  logical :: marbl_enforce_tracer_zint  !< If True, rescale MARBL tracers so that their vertical integrals match
+                                        !! the vertical integrals in IC_file. Only implemented for Z_IC_file.
   type(tracer_registry_type), pointer :: tr_Reg => NULL() !< A pointer to the tracer registry
   type(MARBL_tracer_data), dimension(:), allocatable :: tracer_data  !< type containing tracer data and pointer
                                                                      !! into tracer registry
@@ -136,9 +146,10 @@ type, public :: MARBL_tracers_CS ; private
   type(vardesc), allocatable :: tr_desc(:) !< Descriptions and metadata for the tracers
   logical :: tracers_may_reinit            !< If true the tracers may be initialized if not found in a restart file
 
-  character(len=200) :: fesedflux_file      !< name of [netCDF] file containing iron sediment flux
-  character(len=200) :: fesedfluxred_file   !< name of [netCDF] file containing reduced iron sediment flux
-  character(len=200) :: feventflux_file     !< name of [netCDF] file containing iron vent flux
+  character(len=256) :: fe_interior_source_file  !< name of [netCDF] file containing iron sediment and vent sources
+  character(len=32) :: fe_source_sed_name        !< name of iron sediment source variable in fe_interior_source_file
+  character(len=32) :: fe_source_redsed_name     !< name of iron red sediment source variable in fe_interior_source_file
+  character(len=32) :: fe_source_vent_name       !< name of iron vent source variable in fe_interior_source_file
   type(forcing_timeseries_dataset) :: d14c_dataset(3) !< File and time axis information for d14c forcing
   real, dimension(3) :: d14c_bands       !< forcing is organized into bands: [30 N, 90 N]; [30 S, 30 N]; [90 S, 30 S]
                                          !! This variable contains D14C for each band [CU ~> conc]
@@ -332,9 +343,6 @@ subroutine configure_MARBL_tracers(GV, US, param_file, CS)
   call log_version(param_file, mdl, version, "")
   call get_param(param_file, mdl, "DEBUG", CS%debug, "If true, write out verbose debugging data.", &
        default=.false., debuggingParam=.true.)
-  call get_param(param_file, mdl, "MARBL_IC_MIN_VAL", CS%IC_min, &
-      "Minimum value of tracer initial conditions (set to 1e-100 for dim scaling tests)", &
-      default=0., units="tracer units")
   call get_param(param_file, mdl, "MARBL_SETTINGS_FILE", CS%marbl_settings_file, &
       "The name of a file from which to read the run-time settings for MARBL.", default="marbl_in")
   call get_param(param_file, mdl, "BOT_FLUX_MIX_THICKNESS", CS%bot_flux_mix_thickness, &
@@ -436,7 +444,7 @@ subroutine configure_MARBL_tracers(GV, US, param_file, CS)
       CS%sfo_cnt = CS%sfo_cnt + 1
     else if (trim(field_source) == "interior_tendency") then
       CS%ito_cnt = CS%ito_cnt + 1
-    end if
+    endif
 
     ! Total 3D Chlorophyll
     call MARBL_instances%add_output_for_GCM(num_elements=1, num_levels=nz, field_name="total_Chl", &
@@ -445,8 +453,8 @@ subroutine configure_MARBL_tracers(GV, US, param_file, CS)
       CS%sfo_cnt = CS%sfo_cnt + 1
     else if (trim(field_source) == "interior_tendency") then
       CS%ito_cnt = CS%ito_cnt + 1
-    end if
-  end if
+    endif
+  endif
 
   ! (5) Initialize forcing fields
   !     i. store all surface forcing indices
@@ -586,6 +594,8 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
   character(len=40)  :: mdl = "MARBL_tracers" ! This module's name.
   character(len=256) :: log_message
   character(len=200) :: inputdir ! The directory where the input files are.
+  character(len=200) :: IC_file ! File that tracer initial values are read from.
+  character(len=200) :: IC_file_override_pointer ! File containing tracer IC filenames overriding IC_file.
   character(len=48)  :: var_name ! The variable's name.
   character(len=128) :: desc_name ! The variable's descriptor.
   character(len=48)  :: units ! The variable's units.
@@ -620,14 +630,44 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
   ! ** Input directory
   call get_param(param_file, mdl, "INPUTDIR", inputdir, default=".")
   ! ** Tracer initial conditions
-  call get_param(param_file, mdl, "MARBL_TRACERS_IC_FILE", CS%IC_file, &
-      "The file in which the MARBL tracers initial values can be found.", &
+  call get_param(param_file, mdl, "MARBL_TRACERS_IC_FILE", IC_file, &
+      "File that tracer initial values are read from.", &
       default="ecosys_jan_IC_omip_latlon_1x1_180W_c230331.nc")
-  if (scan(CS%IC_file,'/') == 0) then
-    ! Add the directory if CS%IC_file is not already a complete path.
-    CS%IC_file = trim(slasher(inputdir))//trim(CS%IC_file)
-    call log_param(param_file, mdl, "INPUTDIR/MARBL_TRACERS_IC_FILE", CS%IC_file)
+  if (scan(IC_file,'/') == 0) then
+    ! Add the directory if IC_file is not already a complete path.
+    IC_file = trim(slasher(inputdir))//trim(IC_file)
+    call log_param(param_file, mdl, "INPUTDIR/MARBL_TRACERS_IC_FILE", IC_file)
   endif
+  call get_param(param_file, mdl, "MARBL_TRACERS_IC_FILE_OVERRIDE_POINTER", &
+      IC_file_override_pointer, &
+      "File containing tracer IC filenames overriding MARBL_TRACERS_IC_FILE.", &
+      default="")
+  if (len_trim(IC_file_override_pointer) > 0) then
+    call MOM_tracer_read_lines(IC_file_override_pointer, CS%IC_files)
+  else
+    allocate(character(len=len_trim(IC_file)) :: CS%IC_files(1))
+    CS%IC_files(1) = trim(IC_file)
+  endif
+  call get_param(param_file, mdl, "MARBL_TRACERS_IC_FILE_IS_Z", CS%Z_IC_file, &
+      "If true, MARBL_TRACERS_IC_FILE_IS_Z is in depth space, not layer space.", &
+      default=.true.)
+  if (CS%Z_IC_file) then
+    ! When reading IC files on Z grid, want to impose minimum value
+    call get_param(param_file, mdl, "MARBL_IC_MIN_VAL", CS%IC_min, &
+        "Minimum value of tracer initial conditions (when initializing from Z)", &
+        default=0., units="tracer units")
+  endif
+  call get_param(param_file, mdl, "MARBL_REMAP_NON_Z_IC", CS%remap_non_Z_IC, &
+      "If true, and MARBL_IC_FILE_IS_Z is false, then remap IC vals to current model thicknesses.",&
+      default=.false.)
+  call get_param(param_file, mdl, "MARBL_ENFORCE_TRACER_ZINT", CS%marbl_enforce_tracer_zint, &
+      "If True, rescale MARBL tracers so that their vertical integrals match "//&
+      "the vertical integrals in IC_files. Only implemented for .not. Z_IC_file.", default=.false.)
+  if (CS%marbl_enforce_tracer_zint .and. CS%Z_IC_file) then
+    call MOM_error(FATAL, &
+        "MARBL_ENFORCE_TRACER_ZINT implementation assumes .not. MARBL_TRACERS_IC_FILE_IS_Z")
+  endif
+
   call get_param(param_file, mdl, "MARBL_TRACERS_MAY_REINIT", CS%tracers_may_reinit, &
       "If true, tracers may go through the initialization code if they are not found in the "//&
       "restart files. Otherwise it is a fatal error if tracers are not found in the "//&
@@ -637,33 +677,25 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
       "missing ocean values is done using an ICE-9 procedure with vertical ALE remapping .", &
       default=.false.)
   if (CS%base_bio_on) then
-    ! ** FESEDFLUX
-    call get_param(param_file, mdl, "MARBL_FESEDFLUX_FILE", CS%fesedflux_file, &
-        "The file in which the iron sediment flux forcing field can be found.", &
-        default="fesedflux.nc")
-    if (scan(CS%fesedflux_file,'/') == 0) then
-      ! Add the directory if CS%fesedflux_file is not already a complete path.
-      CS%fesedflux_file = trim(slasher(inputdir))//trim(CS%fesedflux_file)
-      call log_param(param_file, mdl, "INPUTDIR/MARBL_TRACERS_FESEDFLUX_FILE", CS%fesedflux_file)
+    ! ** Fe Fluxes
+    call get_param(param_file, mdl, "MARBL_FE_INTERIOR_SOURCE_FILE", CS%fe_interior_source_file, &
+        "The file in which the iron sediment and vent source forcing fields can be found.", &
+        default="fe_interior_source.nc")
+    if (scan(CS%fe_interior_source_file,'/') == 0) then
+      ! Add the directory if CS%fe_interior_source_file is not already a complete path.
+      CS%fe_interior_source_file = trim(slasher(inputdir))//trim(CS%fe_interior_source_file)
+      call log_param(param_file, mdl, "INPUTDIR/MARBL_FE_INTERIOR_SOURCE_FILE", CS%fe_interior_source_file)
     endif
-    ! ** FESEDFLUXRED
-    call get_param(param_file, mdl, "MARBL_FESEDFLUXRED_FILE", CS%fesedfluxred_file, &
-        "The file in which the iron sediment flux forcing field can be found.", &
-        default="fesedfluxred.nc")
-    if (scan(CS%fesedfluxred_file,'/') == 0) then
-      ! Add the directory if CS%fesedflux_file is not already a complete path.
-      CS%fesedfluxred_file = trim(slasher(inputdir))//trim(CS%fesedfluxred_file)
-      call log_param(param_file, mdl, "INPUTDIR/MARBL_TRACERS_FESEDFLUXRED_FILE", CS%fesedfluxred_file)
-    endif
-    ! ** FEVENTFLUX
-    call get_param(param_file, mdl, "MARBL_FEVENTFLUX_FILE", CS%feventflux_file, &
-        "The file in which the iron vent flux forcing field can be found.", &
-        default="feventflux.nc")
-    if (scan(CS%feventflux_file,'/') == 0) then
-      ! Add the directory if CS%feventflux_file is not already a complete path.
-      CS%feventflux_file = trim(slasher(inputdir))//trim(CS%feventflux_file)
-      call log_param(param_file, mdl, "INPUTDIR/MARBL_TRACERS_FEVENTFLUX_FILE", CS%feventflux_file)
-    endif
+    ! ** Variable Names for Fe Fluxes
+    call get_param(param_file, mdl, "MARBL_FESEDFLUX_VAR", CS%fe_source_sed_name, &
+        "The name of the iron sediment source variable in MARBL_FE_INTERIOR_SOURCE_FILE.", &
+        default="FE_SOURCE_SED")
+    call get_param(param_file, mdl, "MARBL_FEREDSEDFLUX_VAR", CS%fe_source_redsed_name, &
+        "The name of the iron red sediment source variable in MARBL_FE_INTERIOR_SOURCE_FILE.", &
+        default="FE_SOURCE_REDSED")
+    call get_param(param_file, mdl, "MARBL_FEVENTFLUX_VAR", CS%fe_source_vent_name, &
+        "The name of the iron vent source variable in MARBL_FE_INTERIOR_SOURCE_FILE.", &
+        default="FE_SOURCE_VENT")
     ! ** Scale factor for FESEDFLUX
     call get_param(param_file, mdl, "MARBL_FESEDFLUX_SCALE_FACTOR", CS%fesedflux_scale_factor, &
         "Conversion factor between FESEDFLUX file units and MARBL units", &
@@ -966,7 +998,7 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   type(ocean_grid_type),                 intent(inout) :: G            !< The ocean's grid structure
   type(verticalGrid_type),               intent(in)    :: GV           !< The ocean's vertical grid structure
   type(unit_scale_type),                 intent(in)    :: US           !< A dimensional unit scaling type
-  real, dimension(NIMEM_,NJMEM_,NKMEM_), intent(in)    :: h            !< Layer thicknesses [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in):: h            !< Layer thicknesses [H ~> m or kg m-2]
   type(param_file_type),                 intent(in)    :: param_file   !< A structure to parse for run-time parameters
   type(diag_ctrl), target,               intent(in)    :: diag         !< Structure used to regulate diagnostic output.
   type(ocean_OBC_type),                  pointer       :: OBC          !< This open boundary condition type specifies
@@ -985,9 +1017,17 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   character(len=48) :: flux_units ! The units for age tracer fluxes, either
                                   ! years m3 s-1 or years kg s-1.
   character(len=48) :: tracer_name
-  logical :: fesedflux_has_edges, fesedflux_use_missing, tracer_init_from_Z
+  logical :: read_tracers
+  logical :: fesedflux_has_edges, fesedflux_use_missing
   real    :: fesedflux_missing  ! required argument for read_Z_edges() [CU ~> conc]
   integer :: i, j, k, kbot, m, diag_size
+
+  type(MOM_infra_file) :: IO_handles(size(CS%IC_files))
+  integer :: file_ind
+
+  type(remapping_CS) :: IC_remapCS  ! remapping of IC if Z_IC_file==.false.
+  real, allocatable :: h_IC(:,:,:)  ! h from IC_files, needed if Z_IC_file==.false.
+  real, allocatable :: tr_IC(:,:,:) ! tracer read from IC_files if Z_IC_file==.false.
 
   if (.not.associated(CS)) return
   if (CS%ntr < 1) return
@@ -1063,40 +1103,97 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
       diag%axesTL, & ! T=> tracer grid? L => layer center
       day, "Conversion Factor for Bottom Flux -> Tend", "1/m")
 
-  ! Initialize tracers (if they weren't initialized from restart file)
-  tracer_init_from_Z = .false.
+  ! Determine if any tracers need to be read in
+  read_tracers = .false.
   do m=1,CS%ntr
     call query_vardesc(CS%tr_desc(m), name=name, caller="initialize_MARBL_tracers")
     if ((.not. restart) .or. &
         (CS%tracers_may_reinit .and. &
          .not. query_initialized(CS%tracer_data(m)%tr(:,:,:), name, CS%restart_CSp))) then
-      ! TODO: added the ongrid optional argument, but is there a good way to detect if the file is on grid?
-      call MOM_initialize_tracer_from_Z(h, CS%tracer_data(m)%tr, G, GV, US, param_file, &
-          CS%IC_file, name, ongrid=CS%ongrid)
-      tracer_init_from_Z = .true.
-      do k=1,GV%ke ; do j=G%jsc, G%jec ; do i=G%isc, G%iec
-        ! Ensure tracer concentrations are at / above minimum value
-        if (CS%tracer_data(m)%tr(i,j,k) < CS%IC_min) CS%tracer_data(m)%tr(i,j,k) = CS%IC_min
-      enddo ; enddo ; enddo
+      read_tracers = .true.
+      exit
     endif
   enddo
-  if (tracer_init_from_Z) then
-    ! For each column, enforce consistency in MARBL tracers
-    ! (no negative concentrations; for a given autotroph, if one tracer is 0 they all are)
-    call MOM_error(NOTE, 'Enforcing consistency across autotroph tracer initial conditions')
-    do j=G%jsc, G%jec ; do i=G%isc, G%iec
-      ! Copy tracer data into flat array
-      do k=1,GV%ke; do m=1, CS%ntr
-        MARBL_instances%tracers(m,k) = CS%tracer_data(m)%tr(i,j,k)
-      end do ; end do
-      ! call consistency enforcement
-      call MARBL_instances%autotroph_tracer_consistency_enforce()
-      ! Copy tracer data out of flat array
-      do k=1,GV%ke; do m=1, CS%ntr
-        CS%tracer_data(m)%tr(i,j,k) = MARBL_instances%tracers(m,k)
-      end do ; end do
-    end do ; end do
-  end if
+
+  if (read_tracers) then
+    ! Open IC_files to enable metadata access
+    do file_ind = 1, size(CS%IC_files)
+      call IO_handles(file_ind)%open(trim(CS%IC_files(file_ind)), READONLY_FILE, &
+          MOM_domain=G%Domain)
+    enddo
+
+    ! read thickness from IC_files if needed
+    if (.not. CS%Z_IC_file .and. (CS%remap_non_Z_IC .or. CS%marbl_enforce_tracer_zint)) then
+      if (CS%remap_non_Z_IC) call initialize_remapping(IC_remapCS, "PPM_IH4", answer_date=99991231)
+      allocate(h_IC(SZI_(G),SZJ_(G),SZK_(GV)))
+      file_ind = MOM_IO_handles_find_name(IO_handles, "h")
+      if (file_ind == 0) call MOM_error(FATAL, "h not found in IC_files")
+      call MOM_read_data(CS%IC_files(file_ind), "h", h_IC, G%Domain)
+      allocate(tr_IC(SZI_(G),SZJ_(G),SZK_(GV)))
+    endif
+
+    ! Initialize tracers (if they weren't initialized from restart file)
+    do m=1,CS%ntr
+      call query_vardesc(CS%tr_desc(m), name=name, caller="initialize_MARBL_tracers")
+      if ((.not. restart) .or. &
+          (CS%tracers_may_reinit .and. &
+           .not. query_initialized(CS%tracer_data(m)%tr(:,:,:), name, CS%restart_CSp))) then
+        file_ind = MOM_IO_handles_find_name(IO_handles, name)
+        if (file_ind == 0) call MOM_error(FATAL, trim(name) // " not found in IC_files")
+        if (CS%Z_IC_file) then
+          ! TODO: added the ongrid optional argument, but is there a good way to detect if the file is on grid?
+          call MOM_initialize_tracer_from_Z(h, CS%tracer_data(m)%tr, G, GV, US, param_file, &
+              CS%IC_files(file_ind), name, ongrid=CS%ongrid)
+        else
+          if (CS%remap_non_Z_IC .or. CS%marbl_enforce_tracer_zint) then
+            call MOM_read_data(CS%IC_files(file_ind), trim(name), tr_IC, G%Domain)
+            if (CS%remap_non_Z_IC) then
+              do j=G%jsc, G%jec ; do i=G%isc, G%iec
+                if (G%mask2dT(i,j) == 0) cycle
+                call remapping_core_h(IC_remapCS, GV%ke, h_IC(i,j,:), tr_IC(i,j,:), &
+                    GV%ke, h(i,j,:), CS%tracer_data(m)%tr(i,j,:))
+              enddo ; enddo
+            else
+              CS%tracer_data(m)%tr(:,:,:) = tr_IC(:,:,:)
+            endif
+            if (CS%marbl_enforce_tracer_zint) &
+                call MARBL_enforce_tracer_zint(G, GV, h_IC, tr_IC, h, name, CS%tracer_data(m)%tr)
+          else
+            call MOM_read_data(CS%IC_files(file_ind), trim(name), CS%tracer_data(m)%tr, G%Domain)
+          endif
+        endif
+        call set_initialized(CS%tracer_data(m)%tr, name, CS%restart_CSp)
+      endif
+    enddo
+
+    do file_ind = 1, size(CS%IC_files)
+      call IO_handles(file_ind)%close()
+    enddo
+
+    if (CS%Z_IC_file) then
+      ! For each column, enforce consistency in MARBL tracers:
+      ! 1. Apply minimum IC value
+      ! 2. For a given autotroph, if one tracer is 0 they all are
+      call MOM_error(NOTE, 'Enforcing consistency across autotroph tracer initial conditions')
+      do j=G%jsc, G%jec ; do i=G%isc, G%iec
+        do k=1,GV%ke ; do m=1, CS%ntr
+          ! Ensure tracer concentrations are at / above minimum value
+          if (CS%tracer_data(m)%tr(i,j,k) < CS%IC_min) CS%tracer_data(m)%tr(i,j,k) = CS%IC_min
+
+          ! Copy tracer data into flat array
+          MARBL_instances%tracers(m,k) = CS%tracer_data(m)%tr(i,j,k)
+        enddo ; enddo
+
+        ! call consistency enforcement
+        call MARBL_instances%autotroph_tracer_consistency_enforce()
+
+        ! Copy tracer data out of flat array
+        do k=1,GV%ke ; do m=1, CS%ntr
+          CS%tracer_data(m)%tr(i,j,k) = MARBL_instances%tracers(m,k)
+        enddo ; enddo
+      enddo ; enddo
+    endif
+  endif
 
   ! Initialize total chlorophyll to get SW Pen correct (if it wasn't initialized from restart file)
   if ((CS%total_Chl_ind > 0) .and. &
@@ -1190,14 +1287,11 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   endif
 
   if (CS%base_bio_on) then
-    ! Read initial fesedflux and feventflux fields
-    ! (1) get vertical dimension
-    !     -- comes from fesedflux_file, assume same dimension in feventflux
-    !        (maybe these fields should be combined?)
+    ! Read initial fesedflux and feventflux fields from fe_interior_source_file
     !     -- note: read_Z_edges treats depth as positive UP => 0 at surface, negative at depth
     fesedflux_use_missing = .false.
-    call read_Z_edges(CS%fesedflux_file, "FESEDFLUXIN", CS%fesedflux_z_edges, CS%fesedflux_nz, &
-        fesedflux_has_edges, fesedflux_use_missing, fesedflux_missing, scale=US%m_to_Z, &
+    call read_Z_edges(CS%fe_interior_source_file, trim(CS%fe_source_sed_name), CS%fesedflux_z_edges, &
+        CS%fesedflux_nz, fesedflux_has_edges, fesedflux_use_missing, fesedflux_missing, scale=US%m_to_Z, &
         missing_scale=1.0)
 
     ! (2) Allocate memory for fesedflux and feventflux
@@ -1208,12 +1302,12 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
 
     ! (3) Read data
     !     TODO: Add US term to scale
-    call MOM_read_data(CS%fesedflux_file, "FESEDFLUXIN", CS%fesedflux_in(:,:,:), G%Domain, &
-        scale=CS%fesedflux_scale_factor)
-    call MOM_read_data(CS%fesedfluxred_file, "FESEDFLUXIN", CS%fesedfluxred_in(:,:,:), G%Domain, &
-        scale=CS%fesedflux_scale_factor)
-    call MOM_read_data(CS%feventflux_file, "FESEDFLUXIN", CS%feventflux_in(:,:,:), G%Domain, &
-        scale=CS%fesedflux_scale_factor)
+    call MOM_read_data(CS%fe_interior_source_file, trim(CS%fe_source_sed_name), CS%fesedflux_in(:,:,:), &
+        G%Domain, scale=CS%fesedflux_scale_factor)
+    call MOM_read_data(CS%fe_interior_source_file, trim(CS%fe_source_redsed_name), CS%fesedfluxred_in(:,:,:), &
+        G%Domain, scale=CS%fesedflux_scale_factor)
+    call MOM_read_data(CS%fe_interior_source_file, trim(CS%fe_source_vent_name), CS%feventflux_in(:,:,:), &
+        G%Domain, scale=CS%fesedflux_scale_factor)
 
     ! (4) Relocate values that are below ocean bottom to layer that intersects bathymetry
     !     Remember, fesedflux_z_edges = 0 at surface and is < 0 below surface
@@ -1304,6 +1398,55 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   endif
 
 end subroutine initialize_MARBL_tracers
+
+!> This subroutine rescales MARBL tracers so that their vertical integrals match
+!! the vertical integrals in IC_files.
+subroutine MARBL_enforce_tracer_zint(G, GV, h_IC, tr_IC, h, name, tr)
+
+  use MOM_spatial_means,     only : global_area_integral
+
+  type(ocean_grid_type),                     intent(in)    :: G     !< The ocean's grid structure
+  type(verticalGrid_type),                   intent(in)    :: GV    !< The ocean's vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_IC  !< Layer thicknesses from IC_files
+                                                                    !! [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: tr_IC !< Tracer from IC_files
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h     !< Layer thicknesses [H ~> m or kg m-2]
+  character(len=*),                          intent(in)    :: name  !< Tracer name, for log messages
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: tr    !< Tracer remapped to h
+
+  ! Local variables
+  real, dimension(SZI_(G),SZJ_(G)) :: tracer_zint_IC ! Vertical integral of tracer using h_IC
+  real, dimension(SZI_(G),SZJ_(G)) :: tracer_zint    ! Vertical integral of tracer using current thickness
+  real                             :: tracer_scale   ! value to scale tracer by to recover previous vertical integral
+
+  character(len=256) :: log_message
+  integer :: i, j, k, is, ie, js, je, nz, m
+
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+
+  ! compute tracer vertical integral with thickness from IC and current thickness
+  tracer_zint_IC(:,:) = 0.0
+  tracer_zint(:,:) = 0.0
+  do k=1,nz ; do j=js,je ; do i=is,ie
+    if (G%mask2dT(i,j) == 0) cycle
+    tracer_zint_IC(i,j) = tracer_zint_IC(i,j) + h_IC(i,j,k) * tr_IC(i,j,k)
+    tracer_zint(i,j) = tracer_zint(i,j) + h(i,j,k) * tr(i,j,k)
+  enddo ; enddo ; enddo
+
+  tracer_scale = &
+      global_area_integral(tracer_zint_IC, G) / global_area_integral(tracer_zint, G)
+
+  if (is_root_PE()) then
+    write(log_message, "(A, F20.16)") "tracer_scale-1.0 for "//trim(name)//" = ", tracer_scale-1.0
+    call MOM_error(NOTE, log_message)
+  endif
+
+  do j=js,je ; do i=is,ie
+    if (G%mask2dT(i,j) == 0) cycle
+    tr(i,j,:) = tracer_scale * tr(i,j,:)
+  enddo ; enddo
+
+end subroutine MARBL_enforce_tracer_zint
 
 !> This subroutine is used to register tracer fields and subroutines
 !! to be used with MOM.
@@ -1451,7 +1594,7 @@ subroutine MARBL_tracers_column_physics(h_old, ea, eb, fluxes, dt, G, GV, US, CS
   real, dimension(SZI_(G),SZJ_(G)) :: flux_from_salt_flux ! Surface tracer flux from salt flux
                                                           ! [conc Z T-1 ~> conc m s-1].
   real, dimension(SZI_(G),SZJ_(G)) :: ref_mask ! Mask for 2D MARBL diags using ref_depth [1]
-  real, dimension(SZI_(G),SZJ_(G)) :: riv_flux_loc ! Local copy of CS%RIV_FLUXES*dt [mmol m-2 ~> conc H]
+  real, dimension(SZI_(G),SZJ_(G)) :: riv_flux_loc ! Local copy of CS%RIV_FLUXES*dt [conc H ~> mmol m-2]
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: h_work ! Used so that h can be modified [H ~> m or kg m-2]
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: bot_flux_to_tend  ! Conversion factor for bottom tlux -> tend
                                                                 ! [Z-1 ~> m-1]
@@ -1714,7 +1857,7 @@ subroutine MARBL_tracers_column_physics(h_old, ea, eb, fluxes, dt, G, GV, US, CS
         call MARBL_instances%StatusLog%log_error_trace(&
             "MARBL_instances%interior_tendency_compute()", "MARBL_tracers_column_physics")
       endif
-      call print_marbl_log(MARBL_instances%StatusLog, G, i, j)
+      call print_marbl_log(MARBL_instances%StatusLog, G, i, j, print_lev=.true.)
       call MARBL_instances%StatusLog%erase()
 
       ! iv. Apply tendencies immediately
@@ -1887,15 +2030,20 @@ subroutine MARBL_tracers_column_physics(h_old, ea, eb, fluxes, dt, G, GV, US, CS
       do k=1,nz ;do j=js,je ; do i=is,ie
         h_work(i,j,k) = h_old(i,j,k)
       enddo ; enddo ; enddo
-      ! CS%RIV_FLUXES is conc m/s, in_flux_optional expects time-integrated flux (conc H)
-      do j=js,je ; do i=is,ie
-        riv_flux_loc(i,j) = (CS%RIV_FLUXES(i,j,m) * (dt*US%T_to_s)) * GV%m_to_H
-      enddo ; enddo
-      if (CS%debug) &
-        call hchksum(riv_flux_loc(:,:), &
-            trim(MARBL_instances%tracer_metadata(m)%short_name)//' riv flux', G%HI, unscale=GV%H_to_m)
-      call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_data(m)%tr(:,:,:) , dt, fluxes, h_work, &
-          evap_CFL_limit, minimum_forcing_depth, in_flux_optional=riv_flux_loc)
+      if (CS%read_riv_fluxes) then
+        ! CS%RIV_FLUXES is conc m/s, in_flux_optional expects time-integrated flux (conc H)
+        do j=js,je ; do i=is,ie
+          riv_flux_loc(i,j) = (CS%RIV_FLUXES(i,j,m) * (dt*US%T_to_s)) * GV%m_to_H
+        enddo ; enddo
+        if (CS%debug) &
+          call hchksum(riv_flux_loc(:,:), &
+              trim(MARBL_instances%tracer_metadata(m)%short_name)//' riv flux', G%HI, unscale=GV%H_to_m)
+        call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_data(m)%tr(:,:,:) , dt, fluxes, h_work, &
+            evap_CFL_limit, minimum_forcing_depth, in_flux_optional=riv_flux_loc)
+      else
+        call applyTracerBoundaryFluxesInOut(G, GV, CS%tracer_data(m)%tr(:,:,:) , dt, fluxes, h_work, &
+            evap_CFL_limit, minimum_forcing_depth)
+      endif
       call tracer_vertdiff(h_work, ea, eb, dt, CS%tracer_data(m)%tr(:,:,:), G, GV, &
           sfc_flux=GV%Rho0 * CS%STF(:,:,m))
     enddo
@@ -1982,6 +2130,43 @@ subroutine MARBL_tracers_column_physics(h_old, ea, eb, fluxes, dt, G, GV, US, CS
     enddo
   endif
 
+  if (CS%read_riv_fluxes) then
+    if (CS%no3_riv_flux > 0 .and. CS%tracer_inds%no3_ind > 0) &
+      call post_data(CS%no3_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%no3_ind), CS%diag)
+    if (CS%po4_riv_flux > 0 .and. CS%tracer_inds%po4_ind > 0) &
+      call post_data(CS%po4_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%po4_ind), CS%diag)
+    if (CS%don_riv_flux > 0 .and. CS%tracer_inds%don_ind > 0) &
+      call post_data(CS%don_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%don_ind), CS%diag)
+    if (CS%donr_riv_flux > 0 .and. CS%tracer_inds%donr_ind > 0) &
+      call post_data(CS%donr_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%donr_ind), CS%diag)
+    if (CS%dop_riv_flux > 0 .and. CS%tracer_inds%dop_ind > 0) &
+      call post_data(CS%dop_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%dop_ind), CS%diag)
+    if (CS%dopr_riv_flux > 0 .and. CS%tracer_inds%dopr_ind > 0) &
+      call post_data(CS%dopr_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%dopr_ind), CS%diag)
+    if (CS%sio3_riv_flux > 0 .and. CS%tracer_inds%sio3_ind > 0) &
+      call post_data(CS%sio3_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%sio3_ind), CS%diag)
+    if (CS%fe_riv_flux > 0 .and. CS%tracer_inds%fe_ind > 0) &
+      call post_data(CS%fe_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%fe_ind), CS%diag)
+    if (CS%doc_riv_flux > 0 .and. CS%tracer_inds%doc_ind > 0) &
+      call post_data(CS%doc_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%doc_ind), CS%diag)
+    if (CS%docr_riv_flux > 0 .and. CS%tracer_inds%docr_ind > 0) &
+      call post_data(CS%docr_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%docr_ind), CS%diag)
+    if (CS%alk_riv_flux > 0 .and. CS%tracer_inds%alk_ind > 0) &
+      call post_data(CS%alk_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%alk_ind), CS%diag)
+    if (CS%alk_alt_co2_riv_flux > 0  .and. CS%tracer_inds%alk_alt_co2_ind > 0) &
+      call post_data(CS%alk_alt_co2_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%alk_alt_co2_ind), &
+          CS%diag)
+    if (CS%dic_riv_flux > 0 .and. CS%tracer_inds%dic_ind > 0) &
+      call post_data(CS%dic_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%dic_ind), CS%diag)
+    if (CS%dic_alt_co2_riv_flux > 0 .and. CS%tracer_inds%dic_alt_co2_ind > 0) &
+      call post_data(CS%dic_alt_co2_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%dic_alt_co2_ind), &
+          CS%diag)
+  endif
+
+  if (CS%abio_dic_on) then
+    if (CS%d14c_id > 0) &
+      call post_data(CS%d14c_id, CS%d14c, CS%diag)
+  endif
 
 end subroutine MARBL_tracers_column_physics
 
@@ -2147,56 +2332,18 @@ subroutine MARBL_tracers_set_forcing(day_start, G, CS)
     enddo ; enddo ; enddo
   enddo
 
-  ! Post Forcing to Diagnostics
-  if (CS%read_riv_fluxes) then
-    if (CS%no3_riv_flux > 0 .and. CS%tracer_inds%no3_ind > 0) &
-      call post_data(CS%no3_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%no3_ind), CS%diag)
-    if (CS%po4_riv_flux > 0 .and. CS%tracer_inds%po4_ind > 0) &
-      call post_data(CS%po4_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%po4_ind), CS%diag)
-    if (CS%don_riv_flux > 0 .and. CS%tracer_inds%don_ind > 0) &
-      call post_data(CS%don_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%don_ind), CS%diag)
-    if (CS%donr_riv_flux > 0 .and. CS%tracer_inds%donr_ind > 0) &
-      call post_data(CS%donr_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%donr_ind), CS%diag)
-    if (CS%dop_riv_flux > 0 .and. CS%tracer_inds%dop_ind > 0) &
-      call post_data(CS%dop_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%dop_ind), CS%diag)
-    if (CS%dopr_riv_flux > 0 .and. CS%tracer_inds%dopr_ind > 0) &
-      call post_data(CS%dopr_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%dopr_ind), CS%diag)
-    if (CS%sio3_riv_flux > 0 .and. CS%tracer_inds%sio3_ind > 0) &
-      call post_data(CS%sio3_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%sio3_ind), CS%diag)
-    if (CS%fe_riv_flux > 0 .and. CS%tracer_inds%fe_ind > 0) &
-      call post_data(CS%fe_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%fe_ind), CS%diag)
-    if (CS%doc_riv_flux > 0 .and. CS%tracer_inds%doc_ind > 0) &
-      call post_data(CS%doc_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%doc_ind), CS%diag)
-    if (CS%docr_riv_flux > 0 .and. CS%tracer_inds%docr_ind > 0) &
-      call post_data(CS%docr_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%docr_ind), CS%diag)
-    if (CS%alk_riv_flux > 0 .and. CS%tracer_inds%alk_ind > 0) &
-      call post_data(CS%alk_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%alk_ind), CS%diag)
-    if (CS%alk_alt_co2_riv_flux > 0  .and. CS%tracer_inds%alk_alt_co2_ind > 0) &
-      call post_data(CS%alk_alt_co2_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%alk_alt_co2_ind), &
-          CS%diag)
-    if (CS%dic_riv_flux > 0 .and. CS%tracer_inds%dic_ind > 0) &
-      call post_data(CS%dic_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%dic_ind), CS%diag)
-    if (CS%dic_alt_co2_riv_flux > 0 .and. CS%tracer_inds%dic_alt_co2_ind > 0) &
-      call post_data(CS%dic_alt_co2_riv_flux, CS%RIV_FLUXES(:,:,CS%tracer_inds%dic_alt_co2_ind), &
-          CS%diag)
-  endif
-  if (CS%abio_dic_on) then
-    if (CS%d14c_id > 0) &
-      call post_data(CS%d14c_id, CS%d14c, CS%diag)
-  endif
-
 end subroutine MARBL_tracers_set_forcing
 
 !> This function calculates the mass-weighted integral of all tracer stocks,
 !! returning the number of stocks it has calculated.  If the stock_index
 !! is present, only the stock corresponding to that coded index is returned.
 function MARBL_tracers_stock(h, stocks, G, GV, CS, names, units, stock_index)
-  real, dimension(NIMEM_,NJMEM_,NKMEM_), intent(in)    :: h      !< Layer thicknesses [H ~> m or kg m-2]
+  type(ocean_grid_type),                 intent(in)    :: G      !< The ocean's grid structure
+  type(verticalGrid_type),               intent(in)    :: GV     !< The ocean's vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in):: h      !< Layer thicknesses [H ~> m or kg m-2]
   type(EFP_type), dimension(:),          intent(out)   :: stocks !< the mass-weighted integrated amount of
                                                                  !! each tracer, in kg times concentration units
                                                                  !! [kg conc].
-  type(ocean_grid_type),                 intent(in)    :: G      !< The ocean's grid structure
-  type(verticalGrid_type),               intent(in)    :: GV     !< The ocean's vertical grid structure
   type(MARBL_tracers_CS),                pointer       :: CS     !< The control structure returned by a
                                                                  !! previous call to register_MARBL_tracers.
   character(len=*), dimension(:),        intent(out)   :: names  !< the names of the stocks calculated.
@@ -2426,7 +2573,7 @@ end subroutine set_riv_flux_tracer_inds
 ! TODO: some log messages come from a specific grid point, and this routine
 !       needs to include the location in the preamble
 !> This subroutine writes the contents of the MARBL log using MOM_error(NOTE, ...).
-subroutine print_marbl_log(log_to_print, G, i, j)
+subroutine print_marbl_log(log_to_print, G, i, j, print_lev)
 
   use marbl_logging, only : marbl_status_log_entry_type
   use marbl_logging, only : marbl_log_type
@@ -2436,12 +2583,17 @@ subroutine print_marbl_log(log_to_print, G, i, j)
   type(ocean_grid_type), optional, intent(in) :: G             !< The ocean's grid structure
   integer,               optional, intent(in) :: i             !< i of (i,j) index of column providing the log
   integer,               optional, intent(in) :: j             !< j of (i,j) index of column providing the log
+  logical,               optional, intent(in) :: print_lev     !< if true, print "Level: {ElementInd}"
 
   character(len=*), parameter :: subname = 'MARBL_tracers:print_marbl_log'
-  character(len=256)          :: message_prefix, message_location, log_message
+  character(len=256)          :: message_location, log_message
+  character(len=16)           :: message_prefix, message_suffix
   type(marbl_status_log_entry_type), pointer :: tmp
   integer :: msg_lev, elem_old
+  logical :: print_lev_loc
 
+  print_lev_loc = .false.
+  if (present(print_lev)) print_lev_loc = print_lev
   ! elem_old is used to keep track of whether all messages are coming from the same point
   elem_old = -1
   write(message_prefix, "(A,I0,A)") '(Task ', PE_here(), ')'
@@ -2455,10 +2607,13 @@ subroutine print_marbl_log(log_to_print, G, i, j)
       if ((present(G)) .and. (tmp%ElementInd .ne. elem_old)) then
         if (tmp%ElementInd .gt. 0) then
           if (present(i) .and. present(j)) then
-            write(message_location, "(A,F8.3,A,F7.3,A,I0,A,I0,A,I0)") &
+            write(message_location, "(A,F8.3,A,F7.3,A,I0,A,I0,A)") &
                 'Message from (lon, lat) (', G%geoLonT(i,j), ', ', G%geoLatT(i,j), &
-                '), which is global (i,j) (', i + G%HI%idg_offset, ', ', j + G%HI%jdg_offset, &
-                '). Level: ', tmp%ElementInd
+                '), global (i,j) (', i + G%HI%idg_offset, ', ', j + G%HI%jdg_offset, ')'
+            if (print_lev_loc) then
+              write(message_suffix, "(A,I0)") ', level ', tmp%ElementInd
+              message_location = trim(message_location) // trim(message_suffix)
+            endif
           else
             write(message_location, "(A)") "Grid cell responsible for message is unknown"
           endif ! i,j present
