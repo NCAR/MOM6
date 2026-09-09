@@ -321,7 +321,7 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, pbv, Wav
 
   !$OMP parallel do default(private) shared(u,v,h,uh,vh,CAu,CAv,G,GV,CS,AD,Area_h,Area_q,&
   !$OMP                        RV,PV,is,ie,js,je,Isq,Ieq,Jsq,Jeq,Is_q,Ie_q,Js_q,Je_q,nz,vol_neglect,&
-  !$OMP                        h_tiny,OBC,eps_vel,area_neglect,pbv,Stokes_VF,stencil)
+  !$OMP                        h_tiny,OBC,eps_vel,area_neglect,pbv,Stokes_VF,stencil,Waves)
   do k=1,nz
 
     ! Here the second order accurate layer potential vorticities, q,

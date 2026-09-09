@@ -1200,10 +1200,11 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
   !$OMP                           z_inter, OBL_depth, BulkRi_1d, zBottomMinusOffset, uE_H, vE_H, &
   !$OMP                           uS_H, vS_H, uSbar_H, vSbar_H , uS_Hi, vS_Hi, uSb_SL, vSb_SL, &
   !$OMP                           uS_SL, vS_SL, StokesXI, StokesXI_1d, surfBuoy_NS, etadk, &
-  !$OMP                           BEdE_ER_1d, ERdepth, BEdE_ER, PU_TKE, PS_TKE, PB_TKE, kbl), &
+  !$OMP                           BEdE_ER_1d, ERdepth, BEdE_ER, PU_TKE, PS_TKE, PB_TKE, kbl, &
+  !$OMP                           Vt_layer, uS_Hi_mag), &
   !$OMP                           shared(G, GV, CS, US, uStar, h, dz, buoy_scale, buoyFlux, &
   !$OMP                           Temp, Salt, waves, tv, GoRho, GoRho_Z_L2, u, v, lamult,   &
-  !$OMP                           Vt_layer, uS_Hi_mag, Lam2_max)
+  !$OMP                           Lam2_max)
 
   do j = G%jsc, G%jec
     do i = G%isc, G%iec ; if (G%mask2dT(i,j) > 0.0) then
