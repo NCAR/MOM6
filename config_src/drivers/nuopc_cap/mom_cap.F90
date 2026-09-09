@@ -1861,15 +1861,14 @@ subroutine ModelAdvance(gcomp, rc)
     endif
   endif
 
+  call ESMF_GridCompGetInternalState(gcomp, ocean_internalstate, rc)
+  if (ChkErr(rc,__LINE__,u_FILE_u)) return
+
+  Ice_ocean_boundary => ocean_internalstate%ptr%ice_ocean_boundary_type_ptr
+  ocean_public       => ocean_internalstate%ptr%ocean_public_type_ptr
+  ocean_state        => ocean_internalstate%ptr%ocean_state_type_ptr
+
   if (do_advance) then
-
-    call ESMF_GridCompGetInternalState(gcomp, ocean_internalstate, rc)
-    if (ChkErr(rc,__LINE__,u_FILE_u)) return
-
-    Ice_ocean_boundary => ocean_internalstate%ptr%ice_ocean_boundary_type_ptr
-    ocean_public       => ocean_internalstate%ptr%ocean_public_type_ptr
-    ocean_state        => ocean_internalstate%ptr%ocean_state_type_ptr
-
     !---------------
     ! Write diagnostics for import
     !---------------

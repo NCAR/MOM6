@@ -41,7 +41,7 @@ use RGC_tracer, only : RGC_tracer_end, RGC_tracer_CS
 use ideal_age_example, only : register_ideal_age_tracer, initialize_ideal_age_tracer
 use ideal_age_example, only : ideal_age_tracer_column_physics, ideal_age_tracer_surface_state
 use ideal_age_example, only : ideal_age_stock, ideal_age_example_end, ideal_age_tracer_CS
-use MARBL_tracers, only : register_MARBL_tracers, initialize_MARBL_tracers
+use MARBL_tracers, only : register_MARBL_tracers, initialize_MARBL_tracers, register_MARBL_tracer_segments
 use MARBL_tracers, only : MARBL_tracers_column_physics, MARBL_tracers_set_forcing
 use MARBL_tracers, only : MARBL_tracers_surface_state, MARBL_tracers_get
 use MARBL_tracers, only : MARBL_tracers_stock, MARBL_tracers_end, MARBL_tracers_CS
@@ -392,6 +392,8 @@ subroutine call_tracer_register_obc_segments(GV, param_file, CS, tr_Reg, OBC)
 
   if (CS%use_MOM_generic_tracer) &
       call register_MOM_generic_tracer_segments(CS%MOM_generic_tracer_CSp, GV, OBC, tr_Reg, param_file)
+  if (CS%use_MARBL_tracers) &
+      call register_MARBL_tracer_segments(CS%MARBL_tracers_CSp, GV,tr_Reg, param_file, OBC)
 
 end subroutine call_tracer_register_obc_segments
 
