@@ -137,6 +137,9 @@ type, public :: KPP_CS ; private
                                        !! This is relevant for which current to use in RiB
   logical :: OBL_depth_bounds_bug      !< If true, limit the KPP boundary layer depth relative to
                                        !! the top of the bottommost layer instead of the seafloor.
+  logical :: nonSW_buoy_flux_bug       !< If true, estimate the non-solar surface buoyancy flux used
+                                       !! with STOKES_MOST by extrapolating the shortwave flux at the
+                                       !! second interface downward instead of upward to the surface.
   integer :: answer_date               !< The vintage of the order of arithmetic in the CVMix KPP
                                        !! calculations.  Values below 20240501 recover the answers
                                        !! from early in 2024, while higher values use expressions
@@ -268,6 +271,8 @@ logical function KPP_init(paramFile, G, GV, US, diag, Time, CS, passive)
   character(len=20) :: langmuir_entrainment_opt = 'NONE' !< Langmuir entrainment option to be
                                        !! passed to CVMix, e.g., LWF16
   integer :: default_answer_date       ! The default setting for the various ANSWER_DATE flags.
+  logical :: enable_bugs               ! If true, the defaults for recently added bug-fix flags are set to
+                                       ! recreate the bugs, or if false bugs are only used if actively selected.
   logical :: CS_IS_ONE=.false.         !< Logical for setting Cs based on Non-local
   logical :: lnoDGat1=.false.          !< True => G'(1) = 0 (shape function)
                                        !! False => compute G'(1) as in LMD94
@@ -285,6 +290,8 @@ logical function KPP_init(paramFile, G, GV, US, diag, Time, CS, passive)
   call get_param(paramFile, mdl, "DEFAULT_ANSWER_DATE", default_answer_date, &
                  "This sets the default value for the various _ANSWER_DATE parameters.", &
                  default=99991231, do_not_log=.true.)
+  call get_param(paramFile, mdl, "ENABLE_BUGS_BY_DEFAULT", enable_bugs, &
+                 default=.true., do_not_log=.true.)  ! This is logged from MOM.F90.
 
   call openParameterBlock(paramFile,'KPP')
   call get_param(paramFile, mdl, 'PASSIVE', CS%passiveMode,           &
@@ -565,6 +572,14 @@ logical function KPP_init(paramFile, G, GV, US, diag, Time, CS, passive)
                  "If true, limit the KPP boundary layer depth relative to the top of the "//&
                  "bottommost layer instead of the seafloor.", &
                  default=.false.)
+  call get_param(paramFile, mdl, "KPP_NONSOLAR_BUOY_FLUX_BUG", CS%nonSW_buoy_flux_bug, &
+                 "If true, recover a bug that estimates the non-solar surface buoyancy flux "//&
+                 "used with STOKES_MOST by extrapolating the penetrating shortwave flux with "//&
+                 "the wrong sign in the exponent (downward instead of upward to the surface). "//&
+                 "If false, use the non-solar surface buoyancy flux computed directly from the "//&
+                 "surface fluxes, or, if the calling routine does not provide it, extrapolate "//&
+                 "the penetrating shortwave flux upward to the surface.", &
+                 default=enable_bugs, do_not_log=.not.CS%StokesMOST)
   call get_param(paramFile, mdl, "ANSWER_DATE", CS%answer_date, &
                  "The vintage of the order of arithmetic in the CVMix KPP calculations.  Values "//&
                  "below 20240501 recover the answers from early in 2024, while higher values "//&
@@ -1068,7 +1083,8 @@ end subroutine KPP_calculate
 
 
 !> Compute OBL depth
-subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFlux, Waves, lamult)
+subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFlux, Waves, lamult, &
+                           buoyFlux_nonSW)
 
   ! Arguments
   type(KPP_CS),                               pointer       :: CS    !< Control structure
@@ -1085,6 +1101,8 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), intent(in)   :: buoyFlux !< Surface buoyancy flux [L2 T-3 ~> m2 s-3]
   type(wave_parameters_CS),                   pointer       :: Waves !< Wave CS for Langmuir turbulence
   real, dimension(SZI_(G),SZJ_(G)), optional, intent(in)    :: lamult !< Langmuir enhancement factor [nondim]
+  real, dimension(SZI_(G),SZJ_(G)), optional, intent(in)    :: buoyFlux_nonSW !< Surface buoyancy flux excluding
+                                                                       !! shortwave radiation [L2 T-3 ~> m2 s-3]
 
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) ::  dz  ! Height change across layers [Z ~> m]
@@ -1104,6 +1122,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
   real :: surfBuoyFlux          ! Surface buoyancy flux in MKS units [m2 s-3]
   real :: surfBuoy_NS           ! Non-solar surface buoyancy flux in MKS units [L2 T-3 ~> m2 s-3]
   real :: etaDk                 ! Approximate solar decay from surfBuoyFlux2 (2) and (3)  [Z-1 ~> m-1]
+  logical :: use_nonSW_arg      ! If true, use the non-solar surface buoyancy flux passed in as an argument
   real :: Coriolis              ! Coriolis parameter at tracer points in MKS units [s-1]
   real :: KPP_OBL_depth         ! Boundary layer depth calculated by CVMix_kpp_compute_OBL_depth in MKS units [m]
 
@@ -1189,6 +1208,9 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
   ! Find the vertical distances across layers.
   call thickness_to_dz(h, tv, dz, G, GV, US)
 
+  use_nonSW_arg = .false.
+  if (present(buoyFlux_nonSW)) use_nonSW_arg = .not.CS%nonSW_buoy_flux_bug
+
   ! loop over horizontal points on processor
   !$OMP parallel do default(none) private(surfFricVel, iFaceHeight, hcorr, dh, cellHeight,  &
   !$OMP                           surfBuoyFlux, U_H, V_H, Coriolis, pRef, SLdepth_0d, vt2_1d, &
@@ -1204,7 +1226,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
   !$OMP                           Vt_layer, uS_Hi_mag), &
   !$OMP                           shared(G, GV, CS, US, uStar, h, dz, buoy_scale, buoyFlux, &
   !$OMP                           Temp, Salt, waves, tv, GoRho, GoRho_Z_L2, u, v, lamult,   &
-  !$OMP                           Lam2_max)
+  !$OMP                           Lam2_max, buoyFlux_nonSW, use_nonSW_arg)
 
   do j = G%jsc, G%jec
     do i = G%isc, G%iec ; if (G%mask2dT(i,j) > 0.0) then
@@ -1235,15 +1257,23 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
       Coriolis = 0.25*US%s_to_T*( (G%CoriolisBu(i,j)   + G%CoriolisBu(i-1,j-1)) + &
                                   (G%CoriolisBu(i-1,j) + G%CoriolisBu(i,j-1)) )
       surfFricVel = US%Z_to_m*US%s_to_T * uStar(i,j)
-      ! Estimate non-solar surface buoyancy flux
-      ! Ideally, this should be provided to this subroutine. However, right now only the
-      ! total surface flux (solar + non-solar) is provided.
-      surfBuoy_NS = 0.0                 ! temporary surface solar
-      if ( (buoyFlux(i,j,3) > 0.0) .and. (buoyFlux(i,j,3) < buoyFlux(i,j,2)) ) then
-        etaDk = alog(buoyFlux(i,j,2)/buoyFlux(i,j,3)) / (dz(i,j,2) + GV%dz_subroundoff)  ! (z_inter(2)-z_inter(3))
-        surfBuoy_NS = buoyFlux(i,j,2) * exp( -etaDk * dz(i,j,1) )  ! Approximate surface solar buoyancy flux
+      ! Set the non-solar surface buoyancy flux
+      if (use_nonSW_arg) then
+        surfBuoy_NS = buoyFlux_nonSW(i,j)
+      else
+        ! Estimate the non-solar flux by extrapolating the penetrating shortwave flux at interfaces 2
+        ! and 3 to the surface. With nonSW_buoy_flux_bug the extrapolation goes downward, not upward.
+        surfBuoy_NS = 0.0                 ! temporary surface solar
+        if ( (buoyFlux(i,j,3) > 0.0) .and. (buoyFlux(i,j,3) < buoyFlux(i,j,2)) ) then
+          etaDk = alog(buoyFlux(i,j,2)/buoyFlux(i,j,3)) / (dz(i,j,2) + GV%dz_subroundoff)  ! (z_inter(2)-z_inter(3))
+          if (CS%nonSW_buoy_flux_bug) then
+            surfBuoy_NS = buoyFlux(i,j,2) * exp( -etaDk * dz(i,j,1) )
+          else
+            surfBuoy_NS = buoyFlux(i,j,2) * exp( etaDk * dz(i,j,1) )  ! Approximate surface solar buoyancy flux
+          endif
+        endif
+        surfBuoy_NS = buoyFlux(i,j,1) - surfBuoy_NS        ! Total - solar = non-solar surface buoyancy flux
       endif
-      surfBuoy_NS = buoyFlux(i,j,1) - surfBuoy_NS        ! Total - solar = non-solar surface buoyancy flux
 
       ! Bulk Richardson number computed for each cell in a column,
       ! assuming OBLdepth = grid cell depth. After Rib(k) is
