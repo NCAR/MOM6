@@ -1026,7 +1026,7 @@ end subroutine extractFluxes2d
 !! extractFluxes routine allows us to get "stuf per time" rather than the time integrated
 !! fluxes needed in other routines that call extractFluxes.
 subroutine calculateBuoyancyFlux1d(G, GV, US, fluxes, optics, nsw, h, Temp, Salt, tv, j, &
-                                   buoyancyFlux, netHeatMinusSW, netSalt)
+                                   buoyancyFlux, netHeatMinusSW, netSalt, buoyFlux_nonSW)
   type(ocean_grid_type),                    intent(in)    :: G              !< ocean grid
   type(verticalGrid_type),                  intent(in)    :: GV             !< ocean vertical grid structure
   type(unit_scale_type),                    intent(in)    :: US             !< A dimensional unit scaling type
@@ -1044,6 +1044,8 @@ subroutine calculateBuoyancyFlux1d(G, GV, US, fluxes, optics, nsw, h, Temp, Salt
                                                                           !! [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
   real, dimension(SZI_(G)),                 intent(out)   :: netSalt        !< surface salt flux
                                                                             !! [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+  real, dimension(SZI_(G)),       optional, intent(out)   :: buoyFlux_nonSW !< The surface buoyancy flux excluding
+                                                                            !! shortwave radiation [L2 T-3 ~> m2 s-3]
 
   ! local variables
   real, dimension(SZI_(G))              :: netH       ! net FW flux [H T-1 ~> m s-1 or kg m-2 s-1]
@@ -1127,6 +1129,9 @@ subroutine calculateBuoyancyFlux1d(G, GV, US, fluxes, optics, nsw, h, Temp, Salt
     do i=G%isc,G%iec
       buoyancyFlux(i,1) = g_conv * (dSpV_dS(i) * netSalt(i) + dSpV_dT(i) * netHeat(i))
     enddo
+    if (present(buoyFlux_nonSW)) then ; do i=G%isc,G%iec
+      buoyFlux_nonSW(i) = g_conv * (dSpV_dS(i) * netSalt(i) + dSpV_dT(i) * netHeatMinusSW(i))
+    enddo ; endif
     ! We also have a penetrative buoyancy flux associated with penetrative SW
     do k=2,GV%ke+1 ; do i=G%isc,G%iec
       buoyancyFlux(i,k) = g_conv * ( dSpV_dT(i) * netPen(i,k) ) ! [L2 T-3 ~> m2 s-3]
@@ -1142,6 +1147,9 @@ subroutine calculateBuoyancyFlux1d(G, GV, US, fluxes, optics, nsw, h, Temp, Salt
     do i=G%isc,G%iec
       buoyancyFlux(i,1) = - GoRho * ( dRhodS(i) * netSalt(i) + dRhodT(i) * netHeat(i) )
     enddo
+    if (present(buoyFlux_nonSW)) then ; do i=G%isc,G%iec
+      buoyFlux_nonSW(i) = - GoRho * ( dRhodS(i) * netSalt(i) + dRhodT(i) * netHeatMinusSW(i) )
+    enddo ; endif
     ! We also have a penetrative buoyancy flux associated with penetrative SW
     do k=2,GV%ke+1 ; do i=G%isc,G%iec
       buoyancyFlux(i,k) = - GoRho * ( dRhodT(i) * netPen(i,k) ) ! [L2 T-3 ~> m2 s-3]
@@ -1154,7 +1162,7 @@ end subroutine calculateBuoyancyFlux1d
 !> Calculates surface buoyancy flux by adding up the heat, FW and salt fluxes,
 !! for 2d arrays.  This is a wrapper for calculateBuoyancyFlux1d.
 subroutine calculateBuoyancyFlux2d(G, GV, US, fluxes, optics, h, Temp, Salt, tv, &
-                                   buoyancyFlux, netHeatMinusSW, netSalt)
+                                   buoyancyFlux, netHeatMinusSW, netSalt, buoyFlux_nonSW)
   type(ocean_grid_type),                      intent(in)    :: G      !< ocean grid
   type(verticalGrid_type),                    intent(in)    :: GV     !< ocean vertical grid structure
   type(unit_scale_type),                      intent(in)    :: US     !< A dimensional unit scaling type
@@ -1169,15 +1177,26 @@ subroutine calculateBuoyancyFlux2d(G, GV, US, fluxes, optics, h, Temp, Salt, tv,
                                                                       !! [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
   real, dimension(SZI_(G),SZJ_(G)),           intent(inout) :: netSalt !< Net surface salt flux
                                                                       !! [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+  real, dimension(SZI_(G),SZJ_(G)), optional, intent(inout) :: buoyFlux_nonSW !< The surface buoyancy flux
+                                                                      !! excluding shortwave [L2 T-3 ~> m2 s-3]
 
   ! local variables
   integer :: j
 
-  !$OMP parallel do default(shared)
-  do j=G%jsc,G%jec
-    call calculateBuoyancyFlux1d(G, GV, US, fluxes, optics, optics_nbands(optics), h, Temp, Salt, &
-                                 tv, j, buoyancyFlux(:,j,:), netHeatMinusSW(:,j),  netSalt(:,j))
-  enddo
+  if (present(buoyFlux_nonSW)) then
+    !$OMP parallel do default(shared)
+    do j=G%jsc,G%jec
+      call calculateBuoyancyFlux1d(G, GV, US, fluxes, optics, optics_nbands(optics), h, Temp, Salt, &
+                                   tv, j, buoyancyFlux(:,j,:), netHeatMinusSW(:,j),  netSalt(:,j), &
+                                   buoyFlux_nonSW(:,j))
+    enddo
+  else
+    !$OMP parallel do default(shared)
+    do j=G%jsc,G%jec
+      call calculateBuoyancyFlux1d(G, GV, US, fluxes, optics, optics_nbands(optics), h, Temp, Salt, &
+                                   tv, j, buoyancyFlux(:,j,:), netHeatMinusSW(:,j),  netSalt(:,j))
+    enddo
+  endif
 
 end subroutine calculateBuoyancyFlux2d
 

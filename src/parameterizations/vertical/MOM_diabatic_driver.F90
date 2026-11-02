@@ -613,6 +613,7 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     Lam2,   &    !  (Langmuir Number)^-2 [nondim]
     KPP_temp_flux, & ! KPP effective temperature flux [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
     KPP_salt_flux, & ! KPP effective salt flux [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+    KPP_buoy_flux_nonSW, & ! KPP surface buoyancy flux excluding shortwave [L2 T-3 ~> m2 s-3]
     SkinBuoyFlux, &  ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
     BBL_BuoyFlux     ! 2d bottom buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
 
@@ -775,6 +776,7 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     KPP_buoy_flux(:,:,:) = 0.
     KPP_temp_flux(:,:) = 0.
     KPP_salt_flux(:,:) = 0.
+    KPP_buoy_flux_nonSW(:,:) = 0.
 
     ! KPP needs the surface buoyancy flux but does not update state variables.
     ! We could make this call higher up to avoid a repeat unpacking of the surface fluxes.
@@ -782,7 +784,7 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     ! NOTE: KPP_buoy_flux, KPP_temp_flux, KPP_salt_flux are returned as rates (i.e. stuff per second)
     ! unlike other instances where the fluxes are integrated in time over a time-step.
     call calculateBuoyancyFlux2d(G, GV, US, fluxes, CS%optics, h, tv%T, tv%S, tv, &
-                                 KPP_buoy_flux, KPP_temp_flux, KPP_salt_flux)
+                                 KPP_buoy_flux, KPP_temp_flux, KPP_salt_flux, KPP_buoy_flux_nonSW)
 
     ! Determine the friction velocity, perhaps using the evovling surface density.
     call find_ustar(fluxes, tv, U_star, G, GV, US)
@@ -790,13 +792,14 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     ! The KPP scheme calculates boundary layer diffusivities and non-local transport.
     if ( associated(fluxes%lamult) ) then
       call KPP_compute_BLD(CS%KPP_CSp, G, GV, US, h, tv%T, tv%S, u, v, tv, &
-                           U_star, KPP_buoy_flux, Waves=Waves, lamult=fluxes%lamult)
+                           U_star, KPP_buoy_flux, Waves=Waves, lamult=fluxes%lamult, &
+                           buoyFlux_nonSW=KPP_buoy_flux_nonSW)
 
       call KPP_calculate(CS%KPP_CSp, G, GV, US, h, tv, U_star, KPP_buoy_flux, Kd_heat, &
                          Kd_salt, visc%Kv_shear, KPP_NLTheat, KPP_NLTscalar, Waves=Waves, lamult=fluxes%lamult)
     else
       call KPP_compute_BLD(CS%KPP_CSp, G, GV, US, h, tv%T, tv%S, u, v, tv, &
-                           U_star, KPP_buoy_flux, Waves=Waves)
+                           U_star, KPP_buoy_flux, Waves=Waves, buoyFlux_nonSW=KPP_buoy_flux_nonSW)
 
       call KPP_calculate(CS%KPP_CSp, G, GV, US, h, tv, U_star, KPP_buoy_flux, Kd_heat, &
                          Kd_salt, visc%Kv_shear, KPP_NLTheat, KPP_NLTscalar, Waves=Waves)
@@ -1348,6 +1351,7 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
     Lam2,   &    !  (Langmuir Number)^-2 [nondim]
     KPP_temp_flux, & ! KPP effective temperature flux [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
     KPP_salt_flux, & ! KPP effective salt flux [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+    KPP_buoy_flux_nonSW, & ! KPP surface buoyancy flux excluding shortwave [L2 T-3 ~> m2 s-3]
     SkinBuoyFlux, &  ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
     BBL_BuoyFlux     ! 2d bottom buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
 
@@ -1514,6 +1518,7 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
     KPP_buoy_flux(:,:,:) = 0.
     KPP_temp_flux(:,:) = 0.
     KPP_salt_flux(:,:) = 0.
+    KPP_buoy_flux_nonSW(:,:) = 0.
 
     ! KPP needs the surface buoyancy flux but does not update state variables.
     ! We could make this call higher up to avoid a repeat unpacking of the surface fluxes.
@@ -1521,7 +1526,7 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
     ! NOTE: KPP_buoy_flux, KPP_temp_flux, KPP_salt_flux are returned as rates (i.e. stuff per second)
     ! unlike other instances where the fluxes are integrated in time over a time-step.
     call calculateBuoyancyFlux2d(G, GV, US, fluxes, CS%optics, h, tv%T, tv%S, tv, &
-                                 KPP_buoy_flux, KPP_temp_flux, KPP_salt_flux)
+                                 KPP_buoy_flux, KPP_temp_flux, KPP_salt_flux, KPP_buoy_flux_nonSW)
 
     ! Determine the friction velocity, perhaps using the evovling surface density.
     call find_ustar(fluxes, tv, U_star, G, GV, US)
@@ -1529,13 +1534,14 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
     ! The KPP scheme calculates boundary layer diffusivities and non-local transport.
     if ( associated(fluxes%lamult) ) then
       call KPP_compute_BLD(CS%KPP_CSp, G, GV, US, h, tv%T, tv%S, u, v, tv, &
-                           U_star, KPP_buoy_flux, Waves=Waves, lamult=fluxes%lamult)
+                           U_star, KPP_buoy_flux, Waves=Waves, lamult=fluxes%lamult, &
+                           buoyFlux_nonSW=KPP_buoy_flux_nonSW)
 
       call KPP_calculate(CS%KPP_CSp, G, GV, US, h, tv, U_star, KPP_buoy_flux, Kd_heat, &
                        Kd_salt, visc%Kv_shear, KPP_NLTheat, KPP_NLTscalar, Waves=Waves, lamult=fluxes%lamult)
     else
       call KPP_compute_BLD(CS%KPP_CSp, G, GV, US, h, tv%T, tv%S, u, v, tv, &
-                           U_star, KPP_buoy_flux, Waves=Waves)
+                           U_star, KPP_buoy_flux, Waves=Waves, buoyFlux_nonSW=KPP_buoy_flux_nonSW)
 
       call KPP_calculate(CS%KPP_CSp, G, GV, US, h, tv, U_star, KPP_buoy_flux, Kd_heat, &
                        Kd_salt, visc%Kv_shear, KPP_NLTheat, KPP_NLTscalar, Waves=Waves)
@@ -1984,6 +1990,7 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
     U_star, &    ! The friction velocity [Z T-1 ~> m s-1].
     KPP_temp_flux, & ! KPP effective temperature flux [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
     KPP_salt_flux, & ! KPP effective salt flux [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+    KPP_buoy_flux_nonSW, & ! KPP surface buoyancy flux excluding shortwave [L2 T-3 ~> m2 s-3]
     Rcv_ml       ! Coordinate density of mixed layer [R ~> kg m-3], used for applying sponges
 
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), target :: &
@@ -2203,6 +2210,7 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
     KPP_buoy_flux(:,:,:) = 0.
     KPP_temp_flux(:,:) = 0.
     KPP_salt_flux(:,:) = 0.
+    KPP_buoy_flux_nonSW(:,:) = 0.
 
     ! KPP needs the surface buoyancy flux but does not update state variables.
     ! We could make this call higher up to avoid a repeat unpacking of the surface fluxes.
@@ -2210,7 +2218,7 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
     ! NOTE: KPP_buoy_flux, KPP_temp_flux, KPP_salt_flux are returned as rates (i.e. stuff per second)
     ! unlike other instances where the fluxes are integrated in time over a time-step.
     call calculateBuoyancyFlux2d(G, GV, US, fluxes, CS%optics, h, tv%T, tv%S, tv, &
-                                 KPP_buoy_flux, KPP_temp_flux, KPP_salt_flux)
+                                 KPP_buoy_flux, KPP_temp_flux, KPP_salt_flux, KPP_buoy_flux_nonSW)
     ! The KPP scheme calculates boundary layer diffusivities and non-local transport.
 
     ! Set diffusivities for heat and salt separately
@@ -2235,13 +2243,14 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
 
     if ( associated(fluxes%lamult) ) then
       call KPP_compute_BLD(CS%KPP_CSp, G, GV, US, h, tv%T, tv%S, u, v, tv, &
-                           U_star, KPP_buoy_flux, Waves=Waves, lamult=fluxes%lamult)
+                           U_star, KPP_buoy_flux, Waves=Waves, lamult=fluxes%lamult, &
+                           buoyFlux_nonSW=KPP_buoy_flux_nonSW)
 
       call KPP_calculate(CS%KPP_CSp, G, GV, US, h, tv, U_star, KPP_buoy_flux, Kd_heat, &
                          Kd_salt, visc%Kv_shear, KPP_NLTheat, KPP_NLTscalar, Waves=Waves, lamult=fluxes%lamult)
     else
       call KPP_compute_BLD(CS%KPP_CSp, G, GV, US, h, tv%T, tv%S, u, v, tv, &
-                           U_star, KPP_buoy_flux, Waves=Waves)
+                           U_star, KPP_buoy_flux, Waves=Waves, buoyFlux_nonSW=KPP_buoy_flux_nonSW)
 
       call KPP_calculate(CS%KPP_CSp, G, GV, US, h, tv, U_star, KPP_buoy_flux, Kd_heat, &
                          Kd_salt, visc%Kv_shear, KPP_NLTheat, KPP_NLTscalar, Waves=Waves)
