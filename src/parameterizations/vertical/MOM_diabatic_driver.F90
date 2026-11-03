@@ -23,6 +23,8 @@ use MOM_diag_mediator,       only : diag_ctrl, query_averaging_enabled, enable_a
 use MOM_diag_mediator,       only : diag_grid_storage, diag_grid_storage_init, diag_grid_storage_end
 use MOM_diag_mediator,       only : diag_copy_diag_to_storage, diag_copy_storage_to_diag
 use MOM_diag_mediator,       only : diag_save_grids, diag_restore_grids
+use MOM_diag_mediator,       only : post_data_tend, diag_tend_save_grids
+use MOM_diag_mediator,       only : DIAG_TEND_PROC_BOUNDARY_FORCING, DIAG_TEND_STAGE_PREV, DIAG_TEND_STAGE_NEXT
 use MOM_diagnose_mld,        only : diagnoseMLDbyDensityDifference, diagnoseMLDbyEnergy
 use MOM_diagnose_kdwork,     only : vbf_CS, KdWork_init, KdWork_end, KdWork_diagnostics
 use MOM_diagnose_kdwork,     only : Allocate_VBF_CS, Deallocate_VBF_CS
@@ -918,6 +920,9 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
       temp_diag(i,j,k) = tv%T(i,j,k)
       saln_diag(i,j,k) = tv%S(i,j,k)
     enddo ; enddo ; enddo
+    ! The grids at the start of the boundary forcing, for posting its tendencies on diagnostic grids
+    ! (if DIAG_TENDENCY_NEW).
+    call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_BOUNDARY_FORCING, DIAG_TEND_STAGE_PREV, h)
   endif
 
   ! Apply forcing
@@ -1001,6 +1006,8 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
   ! At this point, the diagnostic grids have not been updated since the call to the boundary layer scheme
   !  so all tendency diagnostics need to be posted on h_orig, and grids rebuilt afterwards
   if (CS%boundary_forcing_tendency_diag) then
+    ! The grids at the end of the boundary forcing, which is now complete (if DIAG_TENDENCY_NEW).
+    call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_BOUNDARY_FORCING, DIAG_TEND_STAGE_NEXT, h)
     call diagnose_boundary_forcing_tendency(tv, h, temp_diag, saln_diag, h_orig, dt, G, GV, US, CS)
     if (CS%id_boundary_forcing_h > 0) call post_data(CS%id_boundary_forcing_h, h, CS%diag, alt_h=h_orig)
   endif
@@ -1598,6 +1605,9 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
       temp_diag(i,j,k) = tv%T(i,j,k)
       saln_diag(i,j,k) = tv%S(i,j,k)
     enddo ; enddo ; enddo
+    ! The grids at the start of the boundary forcing, for posting its tendencies on diagnostic grids
+    ! (if DIAG_TENDENCY_NEW).
+    call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_BOUNDARY_FORCING, DIAG_TEND_STAGE_PREV, h)
   endif
 
   ! Apply forcing
@@ -1664,6 +1674,8 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
   ! At this point, the diagnostic grids have not been updated since the call to the boundary layer scheme
   !  so all tendency diagnostics need to be posted on h_orig, and grids rebuilt afterwards
   if (CS%boundary_forcing_tendency_diag) then
+    ! The grids at the end of the boundary forcing, which is now complete (if DIAG_TENDENCY_NEW).
+    call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_BOUNDARY_FORCING, DIAG_TEND_STAGE_NEXT, h)
     call diagnose_boundary_forcing_tendency(tv, h, temp_diag, saln_diag, h_orig, dt, G, GV, US, CS)
     if (CS%id_boundary_forcing_h > 0) call post_data(CS%id_boundary_forcing_h, h, CS%diag, alt_h=h_orig)
   endif
@@ -3079,6 +3091,11 @@ end subroutine diagnose_diabatic_diff_tendency
 !! These impacts are generally 3d, in particular for penetrative shortwave.
 !! Other fluxes contribute 3d in cases when the layers vanish or are very thin,
 !! in which case we distribute the flux into k > 1 layers.
+!!
+!! If DIAG_TENDENCY_NEW is true, the vertically extensive tendencies (thickness, heat and salt) that are
+!! posted on a diagnostic grid that differs from the model's grid are constructed from the field before and
+!! after the boundary fluxes are applied, each remapped with the grids of its own time level.  The grids for
+!! both time levels were saved by the calling routine, around the application of the boundary fluxes.
 subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, &
                                               dt, G, GV, US, CS)
   type(ocean_grid_type),   intent(in) :: G        !< ocean grid structure
@@ -3099,6 +3116,10 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: work_3d ! A 3-d work array for diagnostics [various]
   real, dimension(SZI_(G),SZJ_(G))          :: work_2d ! A 2-d work array for diagnostics [various]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: content_np1 ! The field whose tendency is posted, after the boundary
+                              ! fluxes are applied, and zero outside the computational domain [various]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: content_n ! The field whose tendency is posted, before the boundary
+                              ! fluxes are applied, and zero outside the computational domain [various]
   real :: Idt  ! The inverse of the timestep [T-1 ~> s-1]
   integer :: i, j, k, is, ie, js, je, nz
 
@@ -3106,13 +3127,23 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
   Idt = 0.0 ; if (dt > 0.0) Idt = 1. / dt
   work_3d(:,:,:) = 0.0
   work_2d(:,:)   = 0.0
+  content_np1(:,:,:) = 0.0
+  content_n(:,:,:) = 0.0
 
   ! Thickness tendency
   if (CS%id_boundary_forcing_h_tendency > 0) then
     do k=1,nz ; do j=js,je ; do i=is,ie
       work_3d(i,j,k) = (h(i,j,k) - h_old(i,j,k))*Idt
     enddo ; enddo ; enddo
-    call post_data(CS%id_boundary_forcing_h_tendency, work_3d, CS%diag, alt_h=h_old)
+    if (CS%diag%diag_tendency_new) then
+      do k=1,nz ; do j=js,je ; do i=is,ie
+        content_n(i,j,k) = h_old(i,j,k) ; content_np1(i,j,k) = h(i,j,k)
+      enddo ; enddo ; enddo
+      call post_data_tend(CS%id_boundary_forcing_h_tendency, content_np1, CS%diag, &
+                          DIAG_TEND_PROC_BOUNDARY_FORCING, dt=dt, field_n=content_n, dFdt=work_3d)
+    else
+      call post_data(CS%id_boundary_forcing_h_tendency, work_3d, CS%diag, alt_h=h_old)
+    endif
   endif
 
   ! temperature tendency
@@ -3129,7 +3160,16 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
       work_3d(i,j,k) = GV%H_to_RZ * tv%C_p * Idt * (h(i,j,k) * tv%T(i,j,k) - h_old(i,j,k) * temp_old(i,j,k))
     enddo ; enddo ; enddo
     if (CS%id_boundary_forcing_heat_tend > 0) then
-      call post_data(CS%id_boundary_forcing_heat_tend, work_3d, CS%diag, alt_h=h_old)
+      if (CS%diag%diag_tendency_new) then
+        do k=1,nz ; do j=js,je ; do i=is,ie
+          content_n(i,j,k) = (GV%H_to_RZ * tv%C_p) * (h_old(i,j,k) * temp_old(i,j,k))
+          content_np1(i,j,k) = (GV%H_to_RZ * tv%C_p) * (h(i,j,k) * tv%T(i,j,k))
+        enddo ; enddo ; enddo
+        call post_data_tend(CS%id_boundary_forcing_heat_tend, content_np1, CS%diag, &
+                            DIAG_TEND_PROC_BOUNDARY_FORCING, dt=dt, field_n=content_n, dFdt=work_3d)
+      else
+        call post_data(CS%id_boundary_forcing_heat_tend, work_3d, CS%diag, alt_h=h_old)
+      endif
     endif
     if (CS%id_boundary_forcing_heat_tend_2d > 0) then
       work_2d(:,:) = 0.0
@@ -3154,7 +3194,16 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
       work_3d(i,j,k) = Idt * (h(i,j,k) * tv%S(i,j,k) - h_old(i,j,k) * saln_old(i,j,k))
     enddo ; enddo ; enddo
     if (CS%id_boundary_forcing_salt_tend > 0) then
-      call post_data(CS%id_boundary_forcing_salt_tend, work_3d, CS%diag, alt_h=h_old)
+      if (CS%diag%diag_tendency_new) then
+        do k=1,nz ; do j=js,je ; do i=is,ie
+          content_n(i,j,k) = h_old(i,j,k) * saln_old(i,j,k)
+          content_np1(i,j,k) = h(i,j,k) * tv%S(i,j,k)
+        enddo ; enddo ; enddo
+        call post_data_tend(CS%id_boundary_forcing_salt_tend, content_np1, CS%diag, &
+                            DIAG_TEND_PROC_BOUNDARY_FORCING, dt=dt, field_n=content_n, dFdt=work_3d)
+      else
+        call post_data(CS%id_boundary_forcing_salt_tend, work_3d, CS%diag, alt_h=h_old)
+      endif
     endif
     if (CS%id_boundary_forcing_salt_tend_2d > 0) then
       work_2d(:,:) = 0.0

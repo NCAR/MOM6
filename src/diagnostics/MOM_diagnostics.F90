@@ -1857,7 +1857,7 @@ subroutine post_transport_diagnostics(G, GV, US, uhtr, vhtr, h, IDs, diag_pre_dy
     if (diag%diag_tendency_new) then
       ! Post the tendency as the difference of the thicknesses remapped with their own time levels' grids.
       call post_data_tend(IDs%id_dynamics_h_tendency, h, diag, DIAG_TEND_PROC_DYNAMICS, dt=dt_trans, &
-                          field_n=diag_pre_dyn%h_state, alt_h=diag_pre_dyn%h_state)
+                          field_n=diag_pre_dyn%h_state)
     else
       h_tend(:,:,:) = 0.
       do k=1,nz ; do j=js,je ; do i=is,ie

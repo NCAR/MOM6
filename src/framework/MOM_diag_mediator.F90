@@ -82,15 +82,17 @@ integer, parameter, public :: DIAG_TEND_PROC_DYNAMICS = 1
     !< Process id for the layer thickness changes due to dynamics, over an advective interval
 integer, parameter, public :: DIAG_TEND_PROC_ADVECTION = 2
     !< Process id for the changes of tracer content due to lateral advection
-integer, parameter :: NUM_DIAG_TEND_PROCS = 2 !< Number of processes with remapped tendencies
+integer, parameter, public :: DIAG_TEND_PROC_BOUNDARY_FORCING = 3
+    !< Process id for the changes of thickness, temperature and salinity due to the application of boundary fluxes
+integer, parameter :: NUM_DIAG_TEND_PROCS = 3 !< Number of processes with remapped tendencies
 !
 ! A stage identifies which time level a stored set of grids corresponds to, so that the native
 ! source thicknesses and the remapped target grid for every diagnostic coordinate can be captured
 ! once per stage of a process and reused across all of that process's remapped tendencies instead
 ! of being recomputed per variable.  Two stages are needed: the time-level n and time-level n+1 grids.
-integer, parameter, public :: DIAG_TEND_STAGE_PREVIOUS = 1
+integer, parameter, public :: DIAG_TEND_STAGE_PREV = 1
     !< Stage id for the time-level n (previous) grids used to remap F^{n}
-integer, parameter, public :: DIAG_TEND_STAGE_CURRENT = 2
+integer, parameter, public :: DIAG_TEND_STAGE_NEXT = 2
     !< Stage id for the time-level n+1 (updated) grids used to remap F^{n+1}
 integer, parameter :: NUM_DIAG_TEND_STAGES = 2 !< Number of remapped-tendency grid stages
 
@@ -1837,7 +1839,9 @@ end subroutine post_data_3d
 !! non-native grid should be constructed as
 !! \f[ L(dF/dt) := ( L^{n+1}(F^{n+1}) - L^{n}(F^{n}) ) / dt \f]
 !! where F^{n} and F^{n+1} are remapped with the grids of their own time levels.
-!! On the native grid this reduces to the native tendency.
+!! On the native grid this reduces to the native tendency.  Only vertically extensive diagnostics, which
+!! are registered with v_extensive, are supported, as the remapping of the content is defined for them;
+!! posting any other diagnostic with this routine is a fatal error.
 !!
 !! The caller brackets the process with calls to diag_tend_save_grids for the same
 !! `process`, with DIAG_TEND_STAGE_PREVIOUS before the process and DIAG_TEND_STAGE_CURRENT
@@ -1855,7 +1859,7 @@ end subroutine post_data_3d
 !! and dt and F^{n} must be available.  Native-grid variants are always posted as the native
 !! tendency.
 subroutine post_data_tend(diag_field_id, field_np1, diag_cs, process, dt, field_n, dFdt, &
-                          is_static, mask, alt_h)
+                          is_static, mask)
   integer,           intent(in) :: diag_field_id !< The id for an output variable returned by a
                                                  !! previous call to register_diag_field.
   real,              intent(in) :: field_np1(:,:,:) !< The field F^{n+1} just after the process
@@ -1869,9 +1873,6 @@ subroutine post_data_tend(diag_field_id, field_np1, diag_cs, process, dt, field_
   real,    optional, intent(in) :: dFdt(:,:,:)   !< The native-grid tendency dF/dt [A T-1 ~> a s-1]
   logical, optional, intent(in) :: is_static     !< If true, this is a static field that is always offered.
   real,    optional, intent(in) :: mask(:,:,:)   !< If present, use this real array as the data mask [nondim]
-  real, dimension(:,:,:), &
-         target, optional, intent(in) :: alt_h   !< An alternate thickness to use for vertically
-                                                 !! remapping this diagnostic [H ~> m or kg m-2].
 
   ! Local variables
   real, dimension(size(field_np1,1),size(field_np1,2),size(field_np1,3)) :: &
@@ -1881,6 +1882,10 @@ subroutine post_data_tend(diag_field_id, field_np1, diag_cs, process, dt, field_
   logical :: have_content ! True if F^{n} was stored with diag_tend_store_content
 
   call assert((process >= 1) .and. (process <= NUM_DIAG_TEND_PROCS), "post_data_tend: invalid process.")
+  call assert(diag_field_id < diag_cs%next_free_diag_id, "post_data_tend: Unregistered diagnostic id")
+  if (.not.diag_cs%diags(diag_field_id)%v_extensive) &
+    call MOM_error(FATAL, "post_data_tend: "//trim(diag_cs%diags(diag_field_id)%debug_str)//" is not a "//&
+                   "vertically extensive diagnostic, which is all that post_data_tend supports.")
   have_content = diag_tend_has_content(diag_cs, diag_field_id)
 
   ! Construct the native-grid tendency.  Prefer a supplied tendency, which on the native grid is exactly
@@ -1910,16 +1915,16 @@ subroutine post_data_tend(diag_field_id, field_np1, diag_cs, process, dt, field_
 
   if (.not.diag_cs%diag_tendency_new) then
     ! Legacy behavior: remap the native-grid tendency with a single operator.
-    call post_data_3d(diag_field_id, tend, diag_cs, is_static=is_static, mask=mask, alt_h=alt_h)
+    call post_data_3d(diag_field_id, tend, diag_cs, is_static=is_static, mask=mask)
   elseif (present(field_n)) then
     call post_data_tend_corrected(diag_field_id, process, field_np1, dt, tend, diag_cs, &
-                                  is_static, mask, alt_h, field_n=field_n)
+                                  is_static, mask, field_n=field_n)
   elseif (have_content) then
     call post_data_tend_corrected(diag_field_id, process, field_np1, dt, tend, diag_cs, &
-                                  is_static, mask, alt_h, field_n=diag_cs%tend_content(diag_field_id)%f_n)
+                                  is_static, mask, field_n=diag_cs%tend_content(diag_field_id)%f_n)
   else
     call post_data_tend_corrected(diag_field_id, process, field_np1, dt, tend, diag_cs, &
-                                  is_static, mask, alt_h)
+                                  is_static, mask)
   endif
 
   ! The stored content belongs to this one posting, so it cannot be reused by a later one.
@@ -1927,12 +1932,12 @@ subroutine post_data_tend(diag_field_id, field_np1, diag_cs, process, dt, field_
 
 end subroutine post_data_tend
 
-!> Post a tendency using the corrected remapped-tendency formulation
+!> Post a vertically extensive tendency using the corrected remapped-tendency formulation
 !! ( L^{n+1}(F^{n+1}) - L^{n}(F^{n}) ) / dt for every variant of a diagnostic that is
 !! posted on a non-native vertical grid.  Native-grid variants are posted using the
 !! native tendency.
 subroutine post_data_tend_corrected(diag_field_id, process, field_np1, dt, tend, diag_cs, &
-                                    is_static, mask, alt_h, field_n)
+                                    is_static, mask, field_n)
   integer,           intent(in) :: diag_field_id !< The id for an output variable returned by a
                                                  !! previous call to register_diag_field.
   integer,           intent(in) :: process       !< The process that changed the field (DIAG_TEND_PROC_*)
@@ -1942,21 +1947,14 @@ subroutine post_data_tend_corrected(diag_field_id, process, field_np1, dt, tend,
   type(diag_ctrl), target, intent(inout) :: diag_CS !< Structure used to regulate diagnostic output
   logical, optional, intent(in) :: is_static     !< If true, this is a static field that is always offered.
   real,    optional, intent(in) :: mask(:,:,:)   !< If present, use this real array as the data mask [nondim]
-  real, dimension(:,:,:), &
-         target, optional, intent(in) :: alt_h   !< An alternate thickness to use for vertically
-                                                 !! interpolating any variant on interfaces.
   real,    optional, intent(in) :: field_n(:,:,:) !< The field F^{n} prior to the process update [A ~> a]
 
   ! Local variables
   type(diag_type), pointer :: diag => null()
   real, dimension(:,:,:), allocatable :: remap_np1 ! F^{n+1} remapped with the n+1 grids [A ~> a]
   real, dimension(:,:,:), allocatable :: remap_n   ! F^{n} remapped with the n grids [A ~> a]
-  real, dimension(:,:,:), allocatable :: interp_field ! Interface field interpolated from the native tendency
-  real, dimension(:,:,:), allocatable, target :: dz_diag ! Layer vertical extents [Z ~> m]
-  real, dimension(:,:,:), pointer :: h_diag => NULL() ! Thicknesses used to interpolate to another grid
   real :: Idt ! The inverse of the time interval [T-1 ~> s-1]
-  logical :: staggered_in_x, staggered_in_y
-  integer :: i, j, k, m
+  integer :: i, j, k
 
   if (id_clock_diag_mediator>0) call cpu_clock_begin(id_clock_diag_mediator)
   if (diag_cs%show_call_tree) &
@@ -1967,11 +1965,8 @@ subroutine post_data_tend_corrected(diag_field_id, process, field_np1, dt, tend,
   diag => diag_cs%diags(diag_field_id)
   do while (associated(diag))
     call assert(associated(diag%axes), 'post_data_tend: axes is not associated')
-    staggered_in_x = diag%axes%is_u_point .or. diag%axes%is_q_point
-    staggered_in_y = diag%axes%is_v_point .or. diag%axes%is_q_point
-    m = diag%axes%vertical_coordinate_number
 
-    if ((diag%v_extensive .and. .not.diag%axes%is_native) .or. diag%axes%needs_remapping) then
+    if (.not.diag%axes%is_native) then
       ! Build ( L^{n+1}(F^{n+1}) - L^{n}(F^{n}) ) / dt using each time level's own grids.
       if (present(mask)) call MOM_error(FATAL, "post_data_tend: no mask for regridded field.")
       if (.not.present(dt)) call MOM_error(FATAL, "post_data_tend: dt must be present to post a "//&
@@ -1979,8 +1974,8 @@ subroutine post_data_tend_corrected(diag_field_id, process, field_np1, dt, tend,
       if (.not.present(field_n)) call MOM_error(FATAL, "post_data_tend: F^{n} must be supplied with field_n "//&
                          "or stored with diag_tend_store_content to post "//trim(diag%debug_str)//&
                          " on a non-native grid when DIAG_TENDENCY_NEW is true.")
-      if (.not.(diag_tend_has_grids(diag_cs, process, DIAG_TEND_STAGE_PREVIOUS) .and. &
-                diag_tend_has_grids(diag_cs, process, DIAG_TEND_STAGE_CURRENT))) &
+      if (.not.(diag_tend_has_grids(diag_cs, process, DIAG_TEND_STAGE_PREV) .and. &
+                diag_tend_has_grids(diag_cs, process, DIAG_TEND_STAGE_NEXT))) &
         call MOM_error(FATAL, "post_data_tend: diag_tend_save_grids must be called for both "//&
                        "DIAG_TEND_STAGE_PREVIOUS and DIAG_TEND_STAGE_CURRENT of this process before posting "//&
                        trim(diag%debug_str)//" when DIAG_TENDENCY_NEW is true.")
@@ -1991,8 +1986,8 @@ subroutine post_data_tend_corrected(diag_field_id, process, field_np1, dt, tend,
       ! halo points, hold defined values when the two are differenced.
       allocate(remap_np1(size(field_np1,1), size(field_np1,2), diag%axes%nz), source=0.0)
       allocate(remap_n(size(field_np1,1), size(field_np1,2), diag%axes%nz), source=0.0)
-      call tend_remap_stage(diag, diag_cs, process, DIAG_TEND_STAGE_CURRENT, field_np1, remap_np1)
-      call tend_remap_stage(diag, diag_cs, process, DIAG_TEND_STAGE_PREVIOUS, field_n, remap_n)
+      call tend_remap_stage(diag, diag_cs, process, DIAG_TEND_STAGE_NEXT, field_np1, remap_np1)
+      call tend_remap_stage(diag, diag_cs, process, DIAG_TEND_STAGE_PREV, field_n, remap_n)
       do k=1,size(remap_np1,3) ; do j=1,size(remap_np1,2) ; do i=1,size(remap_np1,1)
         remap_np1(i,j,k) = (remap_np1(i,j,k) - remap_n(i,j,k)) * Idt
       enddo ; enddo ; enddo
@@ -2004,31 +1999,6 @@ subroutine post_data_tend_corrected(diag_field_id, process, field_np1, dt, tend,
         call post_data_3d_low(diag, remap_np1, diag_cs, is_static)
       endif
       deallocate(remap_np1, remap_n)
-
-    elseif (diag%axes%needs_interpolating) then
-      ! Interface-valued diagnostics are not given the two-level treatment; interpolate the
-      ! native tendency onto the live grid, as the legacy path does.
-      if (present(mask)) call MOM_error(FATAL, "post_data_tend: no mask for regridded field.")
-      h_diag => diag_cs%h ; if (present(alt_h)) h_diag => alt_h
-      allocate(interp_field(size(tend,1), size(tend,2), diag%axes%nz+1))
-      if (diag_cs%diag_remap_cs(m)%Z_based_coord) then
-        allocate(dz_diag(diag_cs%G%isd:diag_cs%G%ied, diag_cs%G%jsd:diag_cs%G%jed, diag_cs%GV%ke))
-        call thickness_to_dz(h_diag, diag_cs%tv, dz_diag, diag_cs%G, diag_cs%GV, diag_cs%US, halo_size=1)
-        call vertically_interpolate_diag_field(diag_cs%diag_remap_cs(m), diag_cs%G, dz_diag, &
-                 diag_cs%OBC_u, diag_cs%OBC_v, staggered_in_x, staggered_in_y, &
-                 diag%axes%mask3d, tend, interp_field)
-        deallocate(dz_diag)
-      else
-        call vertically_interpolate_diag_field(diag_cs%diag_remap_cs(m), diag_cs%G, h_diag, &
-                 diag_cs%OBC_u, diag_cs%OBC_v, staggered_in_x, staggered_in_y, &
-                 diag%axes%mask3d, tend, interp_field)
-      endif
-      if (associated(diag%axes%mask3d)) then
-        call post_data_3d_low(diag, interp_field, diag_cs, is_static, mask=diag%axes%mask3d)
-      else
-        call post_data_3d_low(diag, interp_field, diag_cs, is_static)
-      endif
-      deallocate(interp_field)
 
     else
       ! Native grid: the remapped tendency reduces to the native tendency.
@@ -2043,10 +2013,9 @@ subroutine post_data_tend_corrected(diag_field_id, process, field_np1, dt, tend,
 
 end subroutine post_data_tend_corrected
 
-!> Remap a field to the vertical grid of one diagnostic variant using the grids stored for `process`
-!! at `stage`, so that L^{stage} acts on the field with the source thicknesses and the remapped
-!! diagnostic grid of that time level.  Extensive variants are reintegrated onto the stored
-!! target grid; intensive variants are remapped with the stored grid temporarily installed.
+!> Remap a vertically extensive field to the vertical grid of one diagnostic variant using the grids
+!! stored for `process` at `stage`, so that L^{stage} acts on the field with the source thicknesses and
+!! the remapped diagnostic grid of that time level.  The field is reintegrated onto the stored target grid.
 subroutine tend_remap_stage(diag, diag_cs, process, stage, field, remapped)
   type(diag_type),         intent(in)    :: diag    !< The diagnostic variant being posted
   type(diag_ctrl), target, intent(inout) :: diag_cs !< Structure used to regulate diagnostic output
@@ -2057,11 +2026,10 @@ subroutine tend_remap_stage(diag, diag_cs, process, stage, field, remapped)
 
   ! Local variables
   real, dimension(:,:,:), pointer :: h_src => NULL() ! Source thicknesses [H ~> m or kg m-2] or [Z ~> m]
-  real, dimension(:,:,:), allocatable :: live_grid ! The live target grid of this coordinate, held while the
-                                                   ! stage's grid is installed [H ~> m or kg m-2] or [Z ~> m]
   logical :: staggered_in_x, staggered_in_y
   integer :: m
 
+  call assert(diag%v_extensive .and. .not.diag%axes%is_native, "tend_remap_stage: not an extensive variant.")
   m = diag%axes%vertical_coordinate_number
   staggered_in_x = diag%axes%is_u_point .or. diag%axes%is_q_point
   staggered_in_y = diag%axes%is_v_point .or. diag%axes%is_q_point
@@ -2074,25 +2042,9 @@ subroutine tend_remap_stage(diag, diag_cs, process, stage, field, remapped)
     h_src => diag_cs%tend_grid(process,stage)%grids%h_state
   endif
 
-  if (diag%v_extensive .and. .not.diag%axes%is_native) then
-    call vertically_reintegrate_diag_field(diag_cs%diag_remap_cs(m), diag_cs%G, h_src, &
-             diag_cs%tend_grid(process,stage)%grids%diag_grids(m)%h, diag_cs%OBC_u, diag_cs%OBC_v, &
-             staggered_in_x, staggered_in_y, diag%axes%mask3d, field, remapped)
-  else
-    ! diag_remap_do_remap takes its target grid from the coordinate's own grid, so install the stage's
-    ! grid for just this coordinate and put the live one back afterwards.  A private copy is used rather
-    ! than the shared diag_save_grids scratch space, because callers such as post_transport_diagnostics
-    ! may already have the live grids overridden and stashed there.
-    allocate(live_grid(size(diag_cs%diag_remap_cs(m)%h,1), size(diag_cs%diag_remap_cs(m)%h,2), &
-                       size(diag_cs%diag_remap_cs(m)%h,3)))
-    live_grid(:,:,:) = diag_cs%diag_remap_cs(m)%h(:,:,:)
-    diag_cs%diag_remap_cs(m)%h(:,:,:) = diag_cs%tend_grid(process,stage)%grids%diag_grids(m)%h(:,:,:)
-    call diag_remap_do_remap(diag_cs%diag_remap_cs(m), diag_cs%G, diag_cs%GV, diag_cs%US, h_src, &
-             diag_cs%OBC_u, diag_cs%OBC_v, staggered_in_x, staggered_in_y, &
-             diag%axes%mask3d, field, remapped)
-    diag_cs%diag_remap_cs(m)%h(:,:,:) = live_grid(:,:,:)
-    deallocate(live_grid)
-  endif
+  call vertically_reintegrate_diag_field(diag_cs%diag_remap_cs(m), diag_cs%G, h_src, &
+           diag_cs%tend_grid(process,stage)%grids%diag_grids(m)%h, diag_cs%OBC_u, diag_cs%OBC_v, &
+           staggered_in_x, staggered_in_y, diag%axes%mask3d, field, remapped)
 
 end subroutine tend_remap_stage
 
@@ -2166,7 +2118,7 @@ subroutine diag_tend_save_grids(diag_cs, process, stage, h_state, T, S)
 
   ! A new bracketing of the process has begun when its previous stage is saved, so any grids that
   ! it holds for the current stage are left over from the last time and are no longer valid.
-  if (stage == DIAG_TEND_STAGE_PREVIOUS) diag_cs%tend_grid(process,DIAG_TEND_STAGE_CURRENT)%valid = .false.
+  if (stage == DIAG_TEND_STAGE_PREV) diag_cs%tend_grid(process,DIAG_TEND_STAGE_NEXT)%valid = .false.
   diag_cs%tend_grid(process,stage)%valid = .true.
 end subroutine diag_tend_save_grids
 

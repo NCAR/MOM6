@@ -25,7 +25,7 @@ use MOM_diag_mediator,        only : set_masks_for_axes
 use MOM_diag_mediator,        only : diag_grid_storage, diag_grid_storage_init
 use MOM_diag_mediator,        only : diag_save_grids, diag_restore_grids
 use MOM_diag_mediator,        only : diag_copy_storage_to_diag, diag_copy_diag_to_storage
-use MOM_diag_mediator,        only : diag_tend_save_grids, DIAG_TEND_STAGE_PREVIOUS, DIAG_TEND_STAGE_CURRENT
+use MOM_diag_mediator,        only : diag_tend_save_grids, DIAG_TEND_STAGE_PREV, DIAG_TEND_STAGE_NEXT
 use MOM_diag_mediator,        only : DIAG_TEND_PROC_DYNAMICS, DIAG_TEND_PROC_ADVECTION
 use MOM_domains,              only : MOM_domains_init, MOM_domain_type
 use MOM_domains,              only : sum_across_PEs, pass_var, pass_vector
@@ -940,7 +940,7 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
         call diag_copy_diag_to_storage(CS%diag_pre_dyn, h, CS%diag)
         ! Also store the grids at the start of the dynamics for posting the thickness tendency due to the
         ! dynamics on diagnostic grids (if DIAG_TENDENCY_NEW).
-        call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_DYNAMICS, DIAG_TEND_STAGE_PREVIOUS, h)
+        call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_DYNAMICS, DIAG_TEND_STAGE_PREV, h)
         CS%preadv_h_stored = .true.
       endif
 
@@ -1602,10 +1602,10 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
   ! If DIAG_TENDENCY_NEW is true, remapped tendencies on diagnostic grids need the grids and tracer content at
   ! the start and end of each process.  The dynamics ends here, with the thicknesses and the not yet advected
   ! tracers, and advection begins from the thicknesses that the tracers were defined on before the dynamics.
-  call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_DYNAMICS, DIAG_TEND_STAGE_CURRENT, h)
+  call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_DYNAMICS, DIAG_TEND_STAGE_NEXT, h)
   ! The pre-dynamics thicknesses are only stored if there are diagnostic coordinates to remap to.
   if (allocated(CS%diag_pre_dyn%h_state)) then
-    call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_ADVECTION, DIAG_TEND_STAGE_PREVIOUS, CS%diag_pre_dyn%h_state)
+    call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_ADVECTION, DIAG_TEND_STAGE_PREV, CS%diag_pre_dyn%h_state)
     call store_tracer_content_before_advection(G, GV, CS%tracer_Reg, CS%diag_pre_dyn%h_state, CS%diag)
   endif
 
@@ -1633,7 +1633,7 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
 
   ! Advection is complete, so post its tendencies on the diagnostic grids now, before lateral diffusion changes
   ! the tracers (if DIAG_TENDENCY_NEW).
-  call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_ADVECTION, DIAG_TEND_STAGE_CURRENT, h)
+  call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_ADVECTION, DIAG_TEND_STAGE_NEXT, h)
   call post_tracer_advection_tendencies(G, GV, CS%tracer_Reg, h, CS%t_dyn_rel_adv, CS%diag)
 
   if (CS%debug) call MOM_tracer_chksum("Post-advect ", CS%tracer_Reg, G)
