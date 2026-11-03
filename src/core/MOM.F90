@@ -25,6 +25,8 @@ use MOM_diag_mediator,        only : set_masks_for_axes
 use MOM_diag_mediator,        only : diag_grid_storage, diag_grid_storage_init
 use MOM_diag_mediator,        only : diag_save_grids, diag_restore_grids
 use MOM_diag_mediator,        only : diag_copy_storage_to_diag, diag_copy_diag_to_storage
+use MOM_diag_mediator,        only : diag_tend_save_grids, DIAG_TEND_STAGE_PREVIOUS, DIAG_TEND_STAGE_CURRENT
+use MOM_diag_mediator,        only : DIAG_TEND_PROC_DYNAMICS, DIAG_TEND_PROC_ADVECTION
 use MOM_domains,              only : MOM_domains_init, MOM_domain_type
 use MOM_domains,              only : sum_across_PEs, pass_var, pass_vector
 use MOM_domains,              only : clone_MOM_domain, deallocate_MOM_domain
@@ -152,6 +154,7 @@ use MOM_tracer_hor_diff,       only : tracer_hor_diff_end, tracer_hor_diff_CS
 use MOM_tracer_registry,       only : tracer_registry_type, register_tracer, tracer_registry_init
 use MOM_tracer_registry,       only : register_tracer_diagnostics, post_tracer_diagnostics_at_sync
 use MOM_tracer_registry,       only : post_tracer_transport_diagnostics, MOM_tracer_chksum
+use MOM_tracer_registry,       only : store_tracer_content_before_advection, post_tracer_advection_tendencies
 use MOM_tracer_registry,       only : post_tracer_integral_diagnostics
 use MOM_tracer_registry,       only : preALE_tracer_diagnostics, postALE_tracer_diagnostics
 use MOM_tracer_registry,       only : lock_tracer_registry, tracer_registry_end
@@ -935,6 +938,9 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
       ! step (i.e DT_THERM > DT), this needs to be stored at the first dynamics call.
       if (.not.CS%preadv_h_stored .and. (CS%t_dyn_rel_adv == 0.)) then
         call diag_copy_diag_to_storage(CS%diag_pre_dyn, h, CS%diag)
+        ! Also store the grids at the start of the dynamics for posting the thickness tendency due to the
+        ! dynamics on diagnostic grids (if DIAG_TENDENCY_NEW).
+        call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_DYNAMICS, DIAG_TEND_STAGE_PREVIOUS, h)
         CS%preadv_h_stored = .true.
       endif
 
@@ -1592,6 +1598,17 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
     x_first = (MODULO(G%first_direction,2) == 0)
   endif
   if (CS%debug) call MOM_tracer_chksum("Pre-advect ", CS%tracer_Reg, G)
+
+  ! If DIAG_TENDENCY_NEW is true, remapped tendencies on diagnostic grids need the grids and tracer content at
+  ! the start and end of each process.  The dynamics ends here, with the thicknesses and the not yet advected
+  ! tracers, and advection begins from the thicknesses that the tracers were defined on before the dynamics.
+  call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_DYNAMICS, DIAG_TEND_STAGE_CURRENT, h)
+  ! The pre-dynamics thicknesses are only stored if there are diagnostic coordinates to remap to.
+  if (allocated(CS%diag_pre_dyn%h_state)) then
+    call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_ADVECTION, DIAG_TEND_STAGE_PREVIOUS, CS%diag_pre_dyn%h_state)
+    call store_tracer_content_before_advection(G, GV, CS%tracer_Reg, CS%diag_pre_dyn%h_state, CS%diag)
+  endif
+
   call advect_tracer(h, CS%uhtr, CS%vhtr, CS%OBC, CS%t_dyn_rel_adv, G, GV, US, &
                      CS%tracer_adv_CSp, CS%tracer_Reg, x_first_in=x_first, flux_type=0)
 
@@ -1613,6 +1630,11 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
     call advect_tracer(h, uhtr_tmp, vhtr_tmp, CS%OBC, CS%t_dyn_rel_adv, G, GV, US, &
                        CS%tracer_adv_CSp, CS%tracer_Reg, x_first_in=x_first, flux_type=2)
   endif
+
+  ! Advection is complete, so post its tendencies on the diagnostic grids now, before lateral diffusion changes
+  ! the tracers (if DIAG_TENDENCY_NEW).
+  call diag_tend_save_grids(CS%diag, DIAG_TEND_PROC_ADVECTION, DIAG_TEND_STAGE_CURRENT, h)
+  call post_tracer_advection_tendencies(G, GV, CS%tracer_Reg, h, CS%t_dyn_rel_adv, CS%diag)
 
   if (CS%debug) call MOM_tracer_chksum("Post-advect ", CS%tracer_Reg, G)
   call tracer_hordiff(h, CS%t_dyn_rel_adv, CS%MEKE, CS%VarMix, CS%visc, G, GV, US, &

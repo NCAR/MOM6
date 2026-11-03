@@ -10,7 +10,7 @@ module MOM_diagnostics
 use MOM_coms,              only : reproducing_sum
 use MOM_coupler_types,     only : coupler_type_send_data
 use MOM_density_integrals, only : int_density_dz
-use MOM_diag_mediator,     only : post_data, get_diag_time_end
+use MOM_diag_mediator,     only : post_data, post_data_tend, get_diag_time_end, DIAG_TEND_PROC_DYNAMICS
 use MOM_diag_mediator,     only : post_product_u, post_product_sum_u
 use MOM_diag_mediator,     only : post_product_v, post_product_sum_v
 use MOM_diag_mediator,     only : register_diag_field, register_scalar_field
@@ -1854,11 +1854,17 @@ subroutine post_transport_diagnostics(G, GV, US, uhtr, vhtr, h, IDs, diag_pre_dy
                                             alt_h=diag_pre_dyn%h_state)
   ! Post the change in thicknesses
   if (IDs%id_dynamics_h_tendency > 0) then
-    h_tend(:,:,:) = 0.
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      h_tend(i,j,k) = (h(i,j,k) - diag_pre_dyn%h_state(i,j,k))*Idt
-    enddo ; enddo ; enddo
-    call post_data(IDs%id_dynamics_h_tendency, h_tend, diag, alt_h=diag_pre_dyn%h_state)
+    if (diag%diag_tendency_new) then
+      ! Post the tendency as the difference of the thicknesses remapped with their own time levels' grids.
+      call post_data_tend(IDs%id_dynamics_h_tendency, h, diag, DIAG_TEND_PROC_DYNAMICS, dt=dt_trans, &
+                          field_n=diag_pre_dyn%h_state, alt_h=diag_pre_dyn%h_state)
+    else
+      h_tend(:,:,:) = 0.
+      do k=1,nz ; do j=js,je ; do i=is,ie
+        h_tend(i,j,k) = (h(i,j,k) - diag_pre_dyn%h_state(i,j,k))*Idt
+      enddo ; enddo ; enddo
+      call post_data(IDs%id_dynamics_h_tendency, h_tend, diag, alt_h=diag_pre_dyn%h_state)
+    endif
   endif
 
   call post_tracer_transport_diagnostics(G, GV, Reg, diag_pre_dyn%h_state, diag)
