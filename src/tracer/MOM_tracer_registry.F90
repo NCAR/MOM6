@@ -11,7 +11,8 @@ module MOM_tracer_registry
 ! use MOM_diag_mediator, only : diag_ctrl
 use MOM_coms,          only : reproducing_sum
 use MOM_debugging,     only : hchksum
-use MOM_diag_mediator, only : diag_ctrl, register_diag_field, post_data, safe_alloc_ptr
+use MOM_diag_mediator, only : diag_ctrl, register_diag_field, post_data, post_data_tend, safe_alloc_ptr
+use MOM_diag_mediator, only : diag_tend_store_content, DIAG_TEND_PROC_ADVECTION
 use MOM_diag_mediator, only : diag_grid_storage
 use MOM_diag_mediator, only : diag_copy_storage_to_diag, diag_save_grids, diag_restore_grids
 use MOM_error_handler, only : MOM_error, FATAL, WARNING, MOM_mesg, is_root_pe
@@ -36,6 +37,7 @@ public register_tracer
 public MOM_tracer_chksum, MOM_tracer_chkinv
 public register_tracer_diagnostics
 public post_tracer_diagnostics_at_sync, post_tracer_transport_diagnostics
+public store_tracer_content_before_advection, post_tracer_advection_tendencies
 public post_tracer_integral_diagnostics
 public preALE_tracer_diagnostics, postALE_tracer_diagnostics
 public tracer_registry_init, lock_tracer_registry, tracer_registry_end
@@ -859,7 +861,9 @@ subroutine post_tracer_transport_diagnostics(G, GV, Reg, h_diag, diag)
     if (Tr%id_ady_2d > 0) call post_data(Tr%id_ady_2d, Tr%ad2d_y, diag)
     if (Tr%id_dfx_2d > 0) call post_data(Tr%id_dfx_2d, Tr%df2d_x, diag)
     if (Tr%id_dfy_2d > 0) call post_data(Tr%id_dfy_2d, Tr%df2d_y, diag)
-    if (Tr%id_adv_xy > 0) call post_data(Tr%id_adv_xy, Tr%advection_xy, diag, alt_h=h_diag)
+    ! With DIAG_TENDENCY_NEW, this tendency is posted right after advection by post_tracer_advection_tendencies.
+    if ((Tr%id_adv_xy > 0) .and. (.not.diag%diag_tendency_new)) &
+      call post_data(Tr%id_adv_xy, Tr%advection_xy, diag, alt_h=h_diag)
     if (Tr%id_adv_xy_2d > 0) then
       work2d(:,:) = 0.0
       do k=1,nz ; do j=js,je ; do i=is,ie
@@ -870,6 +874,63 @@ subroutine post_tracer_transport_diagnostics(G, GV, Reg, h_diag, diag)
   endif ; enddo
 
 end subroutine post_tracer_transport_diagnostics
+
+!> Store the vertically extensive content (thickness times concentration) of each tracer whose advective
+!! tendency is posted, as it is before lateral advection changes it, for use by
+!! post_tracer_advection_tendencies.  This must be called just before the tracers are advected.
+!! It does nothing unless DIAG_TENDENCY_NEW is true.
+subroutine store_tracer_content_before_advection(G, GV, Reg, h_pre, diag)
+  type(ocean_grid_type),      intent(in)    :: G    !< The ocean's grid structure
+  type(verticalGrid_type),    intent(in)    :: GV   !< The ocean's vertical grid structure
+  type(tracer_registry_type), pointer       :: Reg  !< pointer to the tracer registry
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                              intent(in)    :: h_pre !< The layer thicknesses that the tracer concentrations
+                                                     !! are defined on before advection [H ~> m or kg m-2]
+  type(diag_ctrl),            intent(inout) :: diag !< structure to regulate diagnostic output
+
+  real :: content(SZI_(G),SZJ_(G),SZK_(GV)) ! The tracer content before advection [CU H ~> conc m or conc kg m-2]
+  integer :: i, j, k, m
+
+  if (.not.diag%diag_tendency_new) return
+
+  do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then ; if (Reg%Tr(m)%id_adv_xy > 0) then
+    do k=1,GV%ke ; do j=G%jsd,G%jed ; do i=G%isd,G%ied
+      content(i,j,k) = h_pre(i,j,k) * Reg%Tr(m)%t(i,j,k)
+    enddo ; enddo ; enddo
+    call diag_tend_store_content(diag, Reg%Tr(m)%id_adv_xy, content)
+  endif ; endif ; enddo
+
+end subroutine store_tracer_content_before_advection
+
+!> Post the advective tendencies of the tracers on the diagnostic grids, using the corrected remapping.
+!! This must be called right after the tracers have been advected, and before any other process changes
+!! them, with the grids of the advection process saved for both stages and the content stored by
+!! store_tracer_content_before_advection.  It does nothing unless DIAG_TENDENCY_NEW is true, in which case
+!! post_tracer_transport_diagnostics leaves these diagnostics to this routine.
+subroutine post_tracer_advection_tendencies(G, GV, Reg, h, dt, diag)
+  type(ocean_grid_type),      intent(in)    :: G    !< The ocean's grid structure
+  type(verticalGrid_type),    intent(in)    :: GV   !< The ocean's vertical grid structure
+  type(tracer_registry_type), pointer       :: Reg  !< pointer to the tracer registry
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                              intent(in)    :: h    !< The layer thicknesses after advection [H ~> m or kg m-2]
+  real,                       intent(in)    :: dt   !< The time interval over which the tracers were advected [T ~> s]
+  type(diag_ctrl),            intent(inout) :: diag !< structure to regulate diagnostic output
+
+  real :: content(SZI_(G),SZJ_(G),SZK_(GV)) ! The tracer content after advection [CU H ~> conc m or conc kg m-2]
+  integer :: i, j, k, m
+
+  if (.not.diag%diag_tendency_new) return
+
+  do m=1,Reg%ntr ; if (Reg%Tr(m)%registry_diags) then ; if (Reg%Tr(m)%id_adv_xy > 0) then
+    do k=1,GV%ke ; do j=G%jsd,G%jed ; do i=G%isd,G%ied
+      content(i,j,k) = h(i,j,k) * Reg%Tr(m)%t(i,j,k)
+    enddo ; enddo ; enddo
+    ! The convergence of the advective fluxes is the native-grid tendency, so it is used for the native grid.
+    call post_data_tend(Reg%Tr(m)%id_adv_xy, content, diag, DIAG_TEND_PROC_ADVECTION, dt=dt, &
+                        dFdt=Reg%Tr(m)%advection_xy)
+  endif ; endif ; enddo
+
+end subroutine post_tracer_advection_tendencies
 
 !> Post diagnostics of vertically integrated tracer amouints
 subroutine post_tracer_integral_diagnostics(G, GV, US, Reg, h_diag, tv, diag)
