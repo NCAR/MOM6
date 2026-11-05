@@ -325,6 +325,8 @@ type, public :: MOM_control_struct ; private
                                      !! calls to interface_filter and thickness_diffuse.
   logical :: mixedlayer_restrat      !< If true, use submesoscale mixed layer restratifying scheme.
   logical :: useMEKE                 !< If true, call the MEKE parameterization.
+  logical :: meke_advection_dt_bug   !< If true, incorrectly uses transport accumulated across thermodynamic
+                                     !! timesteps to advect MEKE.
   logical :: use_stochastic_EOS      !< If true, use the stochastic EOS parameterizations.
   logical :: useWaves                !< If true, update Stokes drift
   logical :: StokesMOST              !< If true, use Stokes Similarity package. Needed to decide if Lam2 should
@@ -1477,6 +1479,10 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_tr_adv, &
 
   if (CS%useMEKE .and. CS%MEKE_in_dynamics) then
     call step_forward_MEKE(CS%MEKE, h, CS%VarMix%SN_u, CS%VarMix%SN_v, &
+                           CS%visc, dt, G, GV, US, CS%MEKE_CSp, CS%uh, CS%vh, &
+                           CS%u, CS%v, CS%tv, Time_local)
+  elseif (CS%useMEKE .and. CS%MEKE_in_dynamics .and. CS%meke_advection_dt_bug) then
+    call step_forward_MEKE(CS%MEKE, h, CS%VarMix%SN_u, CS%VarMix%SN_v, &
                            CS%visc, dt, G, GV, US, CS%MEKE_CSp, CS%uhtr, CS%vhtr, &
                            CS%u, CS%v, CS%tv, Time_local)
   endif
@@ -1650,6 +1656,10 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
   call cpu_clock_end(id_clock_tracer) ; call cpu_clock_end(id_clock_thermo)
 
   if (CS%useMEKE .and. (.not. CS%MEKE_in_dynamics)) then
+    call step_forward_MEKE(CS%MEKE, h, CS%VarMix%SN_u, CS%VarMix%SN_v, &
+                           CS%visc, CS%t_dyn_rel_adv, G, GV, US, CS%MEKE_CSp, CS%uh, CS%vh, &
+                           CS%u, CS%v, CS%tv, Time_local)
+  elseif (CS%useMEKE .and. (.not. CS%MEKE_in_dynamics) .and. CS%meke_advection_dt_bug) then
     call step_forward_MEKE(CS%MEKE, h, CS%VarMix%SN_u, CS%VarMix%SN_v, &
                            CS%visc, CS%t_dyn_rel_adv, G, GV, US, CS%MEKE_CSp, CS%uhtr, CS%vhtr, &
                            CS%u, CS%v, CS%tv, Time_local)
@@ -3624,7 +3634,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
 
   if (CS%use_dbclient) call database_comms_init(param_file, CS%dbcomms_CS)
   CS%useMEKE = MEKE_init(Time, G, GV, US, param_file, diag, CS%dbcomms_CS, CS%MEKE_CSp, CS%MEKE, &
-                         restart_CSp, CS%MEKE_in_dynamics)
+                         restart_CSp, CS%MEKE_in_dynamics, CS%meke_advection_dt_bug)
 
   call VarMix_init(Time, G, GV, US, param_file, diag, CS%VarMix)
   call set_visc_init(Time, G, GV, US, param_file, diag, CS%visc, CS%set_visc_CSp, restart_CSp, CS%OBC)

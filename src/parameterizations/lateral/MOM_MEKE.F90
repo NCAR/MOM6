@@ -117,6 +117,9 @@ type, public :: MEKE_CS ; private
   logical :: MEKE_advection_bug !< If true, recover a bug in the calculation of the barotropic
                         !! transport for the advection of MEKE, wherein only the transports in the
                         !! deepest layer are used.
+  logical :: MEKE_advection_dt_bug !< If true, recover a bug in the calculation of the barotropic
+                        !! transport for the advection of MEKE, wherein the transport accumulated
+                        !! across substeps of a thermodynamic timestep is incorrectly used.
   logical :: fixed_total_depth  !< If true, use the nominal bathymetric depth as the estimate of
                         !! the time-varying ocean depth.  Otherwise base the depth on the total
                         !! ocean mass per unit area.
@@ -185,8 +188,8 @@ subroutine step_forward_MEKE(MEKE, h, SN_u, SN_v, visc, dt, G, GV, US, CS, hu, h
   type(vertvisc_type),                      intent(in)    :: visc !< The vertical viscosity type.
   real,                                     intent(in)    :: dt   !< Model(baroclinic) time-step [T ~> s].
   type(MEKE_CS),                            intent(inout) :: CS   !< MEKE control structure.
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in)  :: hu   !< Accumulated zonal mass flux [H L2 ~> m3 or kg].
-  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in)  :: hv   !< Accumulated meridional mass flux [H L2 ~> m3 or kg]
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in)  :: hu   !< hu = u * h * dy at u grid points [H L2 T-1 ~> m3 s-1 or kg s-1]
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in)  :: hv   !< hv = v * h * dx at v grid points [H L2 T-1 ~> m3 s-1 or kg s-1]
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(inout) :: u  !< Zonal velocity [L T-1 ~> m s-1]
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(inout) :: v  !< Meridional velocity [L T-1 ~> m s-1]
   type(thermo_var_ptrs),                    intent(in)    :: tv   !< Type containing thermodynamic variables
@@ -304,19 +307,43 @@ subroutine step_forward_MEKE(MEKE, h, SN_u, SN_v, visc, dt, G, GV, US, CS, hu, h
       do j=js,je ; do I=is-1,ie
         baroHu(I,j) = 0.
       enddo ; enddo
-      do k=1,nz
+      if (CS%MEKE_advection_dt_bug) then
+        ! This code uses uhtr, which incorrectly accumulates across thermodynamic timesteps
+        do k=1,nz
+          do j=js,je ; do I=is-1,ie
+            baroHu(I,j) = baroHu(I,j) + hu(I,j,k) * GV%H_to_RZ
+          enddo ; enddo
+        enddo
+      else
+        do k=1,nz
+          do j=js,je ; do I=is-1,ie
+            baroHu(I,j) = baroHu(I,j) + hu(I,j,k)
+          enddo ; enddo
+        enddo
         do j=js,je ; do I=is-1,ie
-          baroHu(I,j) = baroHu(I,j) + hu(I,j,k) * GV%H_to_RZ
+          baroHu(I,j) = baroHu(I,j) * GV%H_to_RZ * sdt
         enddo ; enddo
-      enddo
+      endif
       do J=js-1,je ; do i=is,ie
         baroHv(i,J) = 0.
       enddo ; enddo
-      do k=1,nz
+      if (CS%MEKE_advection_dt_bug) then
+        ! This code uses vhtr, which incorrectly accumulates across thermodynamic timesteps
+        do k=1,nz
+          do J=js-1,je ; do i=is,ie
+            baroHv(i,J) = baroHv(i,J) + hv(i,J,k) * GV%H_to_RZ
+          enddo ; enddo
+        enddo
+      else
+        do k=1,nz
+          do J=js-1,je ; do i=is,ie
+            baroHv(i,J) = baroHv(i,J) + hv(i,J,k)
+          enddo ; enddo
+        enddo
         do J=js-1,je ; do i=is,ie
-          baroHv(i,J) = baroHv(i,J) + hv(i,J,k) * GV%H_to_RZ
+            baroHv(i,J) = baroHv(i,J) * GV%H_to_RZ * sdt
         enddo ; enddo
-      enddo
+      endif
       if (CS%MEKE_advection_bug) then
         ! This obviously incorrect code reproduces a bug in the original implementation of
         ! the MEKE advection.
@@ -1329,7 +1356,8 @@ end subroutine MEKE_lengthScales_0d
 
 !> Initializes the MOM_MEKE module and reads parameters.
 !! Returns True if module is to be used, otherwise returns False.
-logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, MEKE, restart_CS, meke_in_dynamics)
+logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, MEKE, restart_CS, &
+                           meke_in_dynamics, meke_advection_dt_bug)
   type(time_type),         intent(in)    :: Time       !< The current model time.
   type(ocean_grid_type),   intent(inout) :: G          !< The ocean's grid structure.
   type(verticalGrid_type), intent(in)    :: GV         !< Ocean vertical grid structure.
@@ -1341,7 +1369,9 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
   type(MEKE_type),         intent(inout) :: MEKE       !< MEKE fields
   type(MOM_restart_CS),    intent(in)    :: restart_CS !< MOM restart control structure
   logical,                 intent(  out) :: meke_in_dynamics !< If true, MEKE is stepped forward in dynamics
-                                                             !! otherwise in tracer dynamics
+                                                       !! otherwise in tracer dynamics
+  logical,                 intent(  out) :: meke_advection_dt_bug !< If true, MEKE is advected using
+                                                        !! accumulated tracer transport velocity
 
   ! Local variables
   real :: MEKE_restoring_timescale ! The timescale used to nudge MEKE toward its equilibrium value [T ~> s]
@@ -1589,6 +1619,12 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
                  "If true, recover a bug in the calculation of the barotropic transport for "//&
                  "the advection of MEKE.  With the bug, only the transports in the deepest "//&
                  "layer are used.", default=.false., do_not_log=(CS%MEKE_advection_factor<=0.))
+  call get_param(param_file, mdl, "MEKE_ADVECTION_DT_BUG", CS%MEKE_advection_dt_bug, &
+                 "If true, recover a bug in the calculation of the barotropic transport for "//&
+                 "the advection of MEKE.  With the bug, transport accumulated across substeps "//&
+                 "of a thermodynamic timestep is used.", default=.false., &
+                 do_not_log=(CS%MEKE_advection_factor<=0.))
+  meke_advection_dt_bug = CS%MEKE_advection_dt_bug
   call get_param(param_file, mdl, "MEKE_TOPOGRAPHIC_BETA", CS%MEKE_topographic_beta, &
                  "A scale factor to determine how much topographic beta is weighed in " //&
                  "computing beta in the expression of Rhines scale. Use 1 if full "//&

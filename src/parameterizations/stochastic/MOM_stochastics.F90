@@ -390,10 +390,10 @@ subroutine apply_skeb(grid, GV, US, CS, uc, vc, thickness, tv, dt, Time_end)
         ! This spatial filter preserves rotational symmeetry (including with FMAs), but is
         ! mathematically equivalent to the older sum-based form above
         do j=grid%jsc-1,grid%jec+1 ; do i=grid%isc-1,grid%iec+1
-          sum_wtd_skeb_diss =  CS%skeb_diss(i,j,k) * CS%area_wt(i+1,j) + &
+          sum_wtd_skeb_diss =  CS%skeb_diss(i,j,k) * CS%area_wt(i,j) + &
              ((( (CS%skeb_diss(i-1,j,k) * CS%area_wt(i-1,j)) + (CS%skeb_diss(i+1,j,k) * CS%area_wt(i+1,j)) ) + &
                ( (CS%skeb_diss(i,j-1,k) * CS%area_wt(i,j-1)) + (CS%skeb_diss(i,j+1,k) * CS%area_wt(i,j+1)) )) + &
-              (( (CS%skeb_diss(i-1,j-1,k) * CS%area_wt(i-1,j-1)) + (CS%skeb_diss(i-1,j-1,k) * CS%area_wt(i+1,j+1)) ) + &
+              (( (CS%skeb_diss(i-1,j-1,k) * CS%area_wt(i-1,j-1)) + (CS%skeb_diss(i+1,j+1,k) * CS%area_wt(i+1,j+1)) ) + &
                ( (CS%skeb_diss(i-1,j+1,k) * CS%area_wt(i-1,j+1)) + (CS%skeb_diss(i+1,j-1,k) * CS%area_wt(i+1,j-1)) )))
           diss_tmp(i,j) = sum_wtd_skeb_diss * CS%Isum_area_wts(i,j)
         enddo ; enddo
@@ -495,7 +495,7 @@ subroutine smooth_x9_uv(G, field_u, field_v, zero_land)
                             + (2.0*((G%mask2dCu(I-1,j) * fu_prev(I-1,j) + G%mask2dCu(I+1,j) * fu_prev(I+1,j)) + &
                                     (G%mask2dCu(I,j-1) * fu_prev(I,j-1) + G%mask2dCu(I,j+1) * fu_prev(I,j+1))) &
                               + ((G%mask2dCu(I-1,j-1) * fu_prev(I-1,j-1) + G%mask2dCu(I+1,j+1) * fu_prev(I+1,j+1)) + &
-                                 (G%mask2dCu(I-1,j+1) * fu_prev(I-1,j+1) + G%mask2dCu(I+1,j-1) * fu_prev(I-1,j-1))) ))
+                                 (G%mask2dCu(I-1,j+1) * fu_prev(I-1,j+1) + G%mask2dCu(I+1,j-1) * fu_prev(I+1,j-1))) ))
     endif ; enddo ; enddo
 
     fv_prev(:,:) = field_v(:,:)
@@ -512,7 +512,7 @@ subroutine smooth_x9_uv(G, field_u, field_v, zero_land)
                             + (2.0*((G%mask2dCv(i-1,J) * fv_prev(i-1,J) + G%mask2dCv(i+1,J) * fv_prev(i+1,J)) + &
                                     (G%mask2dCv(i,J-1) * fv_prev(i,J-1) + G%mask2dCv(i,J+1) * fv_prev(i,J+1))) &
                               + ((G%mask2dCv(i-1,J-1) * fv_prev(i-1,J-1) + G%mask2dCv(i+1,J+1) * fv_prev(i+1,J+1)) + &
-                                 (G%mask2dCv(i-1,J+1) * fv_prev(i-1,J+1) + G%mask2dCv(i+1,J-1) * fv_prev(i-1,J-1))) ))
+                                 (G%mask2dCv(i-1,J+1) * fv_prev(i-1,J+1) + G%mask2dCv(i+1,J-1) * fv_prev(i+1,J-1))) ))
     endif ; enddo ; enddo
   enddo
 
