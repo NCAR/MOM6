@@ -26,6 +26,7 @@ use MOM_interpolate,       only : init_external_field, time_interp_external
 use MOM_interpolate,       only : time_interp_external_init
 use MOM_interpolate,       only : external_field
 use MOM_io,                only : vardesc, var_desc, slasher
+use MOM_io,                only : MOM_read_data, MOM_infra_file, READONLY_FILE
 use MOM_isopycnal_slopes,  only : calc_isoneutral_slopes
 use MOM_restart,           only : MOM_restart_CS, register_restart_field, query_initialized
 use MOM_string_functions,  only : lowercase
@@ -34,6 +35,7 @@ use MOM_unit_scaling,      only : unit_scale_type
 use MOM_variables,         only : vertvisc_type, thermo_var_ptrs
 use MOM_verticalGrid,      only : verticalGrid_type
 use MOM_MEKE_types,        only : MEKE_type
+use MOM_tracer_share,      only : MOM_tracer_read_lines, MOM_IO_handles_find_name
 
 
 implicit none ; private
@@ -1347,6 +1349,13 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
   real :: MEKE_restoring_timescale ! The timescale used to nudge MEKE toward its equilibrium value [T ~> s]
   real :: cdrag            ! The default bottom drag coefficient [nondim].
   character(len=200) :: eke_filename, eke_varname, inputdir
+  type(MOM_infra_file), allocatable :: IO_handles(:)  ! Handle for opening file containing MEKE
+  character(len=200) :: MEKE_IC_override_pointer      ! File containing IC filenames
+  character(len=:), allocatable :: IC_files(:)        ! Array of file names from override_pointer
+  logical :: MEKE_IC_override_must_have_MEKE          ! If True, abort if no file in MEKE_IC_override_pointer
+                                                      ! has a field named MEKE
+  integer :: file_ind
+  logical :: MEKE_Le_initialize
   character(len=16) :: eke_source_str
   integer :: i, j, is, ie, js, je, isd, ied, jsd, jed
   logical :: laplacian, biharmonic, coldStart
@@ -1370,6 +1379,13 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
                  "If true, step MEKE forward with the dynamics "// &
                  "otherwise with the tracer timestep.", &
                  default=.true.)
+
+  call get_param(param_file, mdl, "MEKE_IC_override_pointer", MEKE_IC_override_pointer, &
+                 "File containing filenames (e.g. restart files), one of which should contain MEKE\n" // &
+                 "Empty string means do not override IC files; will not apply in restart runs", default="")
+
+  call get_param(param_file, mdl, "MEKE_IC_override_must_have_MEKE", MEKE_IC_override_must_have_MEKE, &
+                 "If True, abort if no file in MEKE_IC_override_pointer contains MEKE", default=.true.)
 
   call get_param(param_file, mdl, "EKE_SOURCE", eke_source_str, &
                  "Determine the where EKE comes from:\n" // &
@@ -1721,11 +1737,89 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
   ! or after a restart. If at the beginning, we will initialize MEKE to a local
   ! equilibrium.
   CS%initialize = .not.query_initialized(MEKE%MEKE, "MEKE", restart_CS)
+  MEKE_Le_initialize = .true.
+  if (CS%initialize .and. (len_trim(MEKE_IC_override_pointer) > 0) .and. (.not. coldStart)) then
+    ! Set up IO_handles to read all IC_files
+    call MOM_error(NOTE, "Reading MEKE from pointer file")
+    call MOM_tracer_read_lines(MEKE_IC_override_pointer, IC_files)
+    allocate(IO_handles(size(IC_files)))
+    do file_ind = 1, size(IC_files)
+      call IO_handles(file_ind)%open(trim(IC_files(file_ind)), READONLY_FILE, MOM_domain=G%Domain)
+    enddo
+
+    ! Read MEKE if it is available
+    file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE")
+    if (file_ind > 0) then
+      call MOM_read_data(IC_files(file_ind), "MEKE", MEKE%MEKE, G%Domain)
+      CS%initialize = .false.
+    else
+      call MOM_error(WARNING, "MEKE not found in pointer file!")
+    endif
+
+    ! Read MEKE_Kh if it is available
+    if (allocated(MEKE%Kh)) then
+      file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE_Kh")
+      if (file_ind > 0) then
+        call MOM_read_data(IC_files(file_ind), "MEKE_Kh", MEKE%Kh, G%Domain)
+      else
+        call MOM_error(WARNING, "MEKE_Kh not found in pointer file!")
+      endif
+    endif
+
+    ! Read MEKE_Ku if it is available
+    if (allocated(MEKE%Ku)) then
+      file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE_Ku")
+      if (file_ind > 0) then
+        call MOM_read_data(IC_files(file_ind), "MEKE_Ku", MEKE%Ku, G%Domain)
+      else
+        call MOM_error(WARNING, "MEKE_Kh not found in pointer file!")
+      endif
+    endif
+
+    ! Read MEKE_Le if it is available
+    if (allocated(MEKE%Le)) then
+      file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE_Le")
+      if (file_ind > 0) then
+        call MOM_read_data(IC_files(file_ind), "MEKE_Le", MEKE%Le, G%Domain)
+        MEKE_Le_initialize = .false.
+      else
+        call MOM_error(WARNING, "MEKE_Le not found in pointer file!")
+      endif
+    endif
+
+    ! Read MEKE_Kh_diff if it is available
+    if (allocated(MEKE%Kh_diff)) then
+    file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE_Kh_diff")
+      if (file_ind > 0) then
+        call MOM_read_data(IC_files(file_ind), "MEKE_Kh_diff", MEKE%Kh_diff, G%Domain)
+      else
+        call MOM_error(WARNING, "MEKE_Kh_diff not found in pointer file!")
+      endif
+    endif
+
+    ! Read MEKE_Au if it is available
+    if (allocated(MEKE%Au)) then
+      file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE_Au")
+      if (file_ind > 0) then
+        call MOM_read_data(IC_files(file_ind), "MEKE_Au", MEKE%Au, G%Domain)
+      else
+        call MOM_error(WARNING, "MEKE_Au not found in pointer file!")
+      endif
+    endif
+
+    ! Close all IC_files
+    do file_ind = 1, size(IC_files)
+      call IO_handles(file_ind)%close()
+    enddo
+    deallocate(IO_handles)
+    if (MEKE_IC_override_must_have_MEKE .and. CS%initialize) &
+     call MOM_error(FATAL, "MEKE not found in IC_files")
+  endif
   if (coldStart) CS%initialize = .false.
   if (CS%initialize) call MOM_error(WARNING, &
                        "MEKE_init: Initializing MEKE with a local equilibrium balance.")
   if (allocated(MEKE%Le)) then
-    if (.not.query_initialized(MEKE%Le, "MEKE_Le", restart_CS)) then
+    if ((MEKE_Le_initialize) .and. (.not. query_initialized(MEKE%Le, "MEKE_Le", restart_CS))) then
       !$OMP parallel do default(shared)
       do j=js,je ; do i=is,ie
         MEKE%Le(i,j) = sqrt(G%areaT(i,j))
