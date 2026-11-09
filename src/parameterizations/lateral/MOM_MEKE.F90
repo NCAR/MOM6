@@ -1750,7 +1750,7 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
     ! Read MEKE if it is available
     file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE")
     if (file_ind > 0) then
-      call MOM_read_data(IC_files(file_ind), "MEKE", MEKE%MEKE, G%Domain)
+      call MOM_read_data(IC_files(file_ind), "MEKE", MEKE%MEKE, G%Domain, scale=US%m_s_to_L_T**2)
       CS%initialize = .false.
     else
       call MOM_error(WARNING, "MEKE not found in pointer file!")
@@ -1760,7 +1760,7 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
     if (allocated(MEKE%Kh)) then
       file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE_Kh")
       if (file_ind > 0) then
-        call MOM_read_data(IC_files(file_ind), "MEKE_Kh", MEKE%Kh, G%Domain)
+        call MOM_read_data(IC_files(file_ind), "MEKE_Kh", MEKE%Kh, G%Domain, scale=US%m_to_L**2**US%T_to_s)
       else
         call MOM_error(WARNING, "MEKE_Kh not found in pointer file!")
       endif
@@ -1770,9 +1770,9 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
     if (allocated(MEKE%Ku)) then
       file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE_Ku")
       if (file_ind > 0) then
-        call MOM_read_data(IC_files(file_ind), "MEKE_Ku", MEKE%Ku, G%Domain)
+        call MOM_read_data(IC_files(file_ind), "MEKE_Ku", MEKE%Ku, G%Domain, scale=US%m_to_L**2**US%T_to_s)
       else
-        call MOM_error(WARNING, "MEKE_Kh not found in pointer file!")
+        call MOM_error(WARNING, "MEKE_Ku not found in pointer file!")
       endif
     endif
 
@@ -1780,7 +1780,7 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
     if (allocated(MEKE%Le)) then
       file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE_Le")
       if (file_ind > 0) then
-        call MOM_read_data(IC_files(file_ind), "MEKE_Le", MEKE%Le, G%Domain)
+        call MOM_read_data(IC_files(file_ind), "MEKE_Le", MEKE%Le, G%Domain, scale=US%m_to_L)
         MEKE_Le_initialize = .false.
       else
         call MOM_error(WARNING, "MEKE_Le not found in pointer file!")
@@ -1791,7 +1791,7 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
     if (allocated(MEKE%Kh_diff)) then
     file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE_Kh_diff")
       if (file_ind > 0) then
-        call MOM_read_data(IC_files(file_ind), "MEKE_Kh_diff", MEKE%Kh_diff, G%Domain)
+        call MOM_read_data(IC_files(file_ind), "MEKE_Kh_diff", MEKE%Kh_diff, G%Domain, scale=US%m_to_L**2**US%T_to_s)
       else
         call MOM_error(WARNING, "MEKE_Kh_diff not found in pointer file!")
       endif
@@ -1801,7 +1801,7 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
     if (allocated(MEKE%Au)) then
       file_ind = MOM_IO_handles_find_name(IO_handles, "MEKE_Au")
       if (file_ind > 0) then
-        call MOM_read_data(IC_files(file_ind), "MEKE_Au", MEKE%Au, G%Domain)
+        call MOM_read_data(IC_files(file_ind), "MEKE_Au", MEKE%Au, G%Domain, scale=US%m_to_L**4**US%T_to_s)
       else
         call MOM_error(WARNING, "MEKE_Au not found in pointer file!")
       endif
