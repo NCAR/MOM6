@@ -311,18 +311,44 @@ subroutine interpolate_grid( n0, h0, x0, ppoly0_E, ppoly0_coefs, &
 
   ! Local variables
   integer        :: k ! loop index
+  integer        :: k_start ! lower-bound source cell index for bounded search
   real           :: t ! current interface target density [A]
+  real, dimension(n0)   :: max_edge     ! largest edge value in cells 1 to k [A]
+  real, dimension(2:n0) :: min_bot_edge ! smallest bottom edge value in cells k-1 to n0-1 [A]
 
   ! Make sure boundary coordinates of new grid coincide with boundary
   ! coordinates of previous grid
   x1(1) = x0(1)
   x1(n1+1) = x0(n0+1)
 
+  ! Cells 1..k_start-1 have both edge values strictly below t, so neither an
+  ! interior gap nor a cell there can match; min_bot_edge(k) bounds all deeper
+  ! lower gap edges. Reset k_start if target_values decreases.
+  max_edge(1) = max(ppoly0_E(1,1), ppoly0_E(1,2))
+  do k = 2,n0
+    max_edge(k) = max(max_edge(k-1), ppoly0_E(k,1), ppoly0_E(k,2))
+  enddo
+  if (n0 >= 2) then
+    min_bot_edge(n0) = ppoly0_E(n0-1,2)
+    do k = n0-1,2,-1
+      min_bot_edge(k) = min(ppoly0_E(k-1,2), min_bot_edge(k+1))
+    enddo
+  endif
+
   ! Find coordinates for interior target values
+  k_start = 1
   do k = 2,n1
     t = target_values(k)
-    x1(k) = get_polynomial_coordinate ( n0, h0, x0, ppoly0_E, ppoly0_coefs, t, degree, &
-                                        answer_date=answer_date )
+    if (k > 2) then
+      if (t < target_values(k-1)) k_start = 1
+    endif
+    do while (k_start <= n0)
+      if (max_edge(k_start) >= t) exit
+      k_start = k_start + 1
+    enddo
+    x1(k) = get_polynomial_coordinate(n0, h0, x0, ppoly0_E, ppoly0_coefs, t, degree, &
+                                      answer_date=answer_date, k_start=k_start, &
+                                      min_bot_edge=min_bot_edge)
     h1(k-1) = x1(k) - x1(k-1)
   enddo
   h1(n1) = x1(n1+1) - x1(n1)
@@ -376,7 +402,8 @@ end subroutine build_and_interpolate_grid
 !! It is assumed that the number of cells defining 'grid' and 'ppoly' are the
 !! same.
 function get_polynomial_coordinate( N, h, x_g, edge_values, ppoly_coefs, &
-                                    target_value, degree, answer_date ) result ( x_tgt )
+                                    target_value, degree, answer_date, &
+                                    k_start, min_bot_edge ) result ( x_tgt )
   ! Arguments
   integer,              intent(in) :: N            !< Number of grid cells
   real, dimension(N),   intent(in) :: h            !< Grid cell thicknesses [H]
@@ -386,6 +413,8 @@ function get_polynomial_coordinate( N, h, x_g, edge_values, ppoly_coefs, &
   real,                 intent(in) :: target_value !< Target value to find position for [A]
   integer,              intent(in) :: degree       !< Degree of the interpolating polynomials
   integer,              intent(in) :: answer_date  !< The vintage of the expressions to use
+  integer,              intent(in) :: k_start      !< All edge values in cells 1 to k_start-1 are below target_value
+  real, dimension(2:N), intent(in) :: min_bot_edge !< Smallest bottom edge value in cells k-1..N-1 [A]
   real                             :: x_tgt        !< The position of x_g at which target_value is found [H]
 
   ! Local variables
@@ -416,7 +445,8 @@ function get_polynomial_coordinate( N, h, x_g, edge_values, ppoly_coefs, &
 
   ! Since discontinuous edge values are allowed, we check whether the target
   ! value lies between two discontinuous edge values at interior interfaces
-  do k = 2,N
+  do k = max(2, k_start),N
+    if ( target_value < min_bot_edge(k) ) exit
     if ( ( target_value >= edge_values(k-1,2) ) .AND. ( target_value <= edge_values(k,1) ) ) then
       x_tgt = x_g(k)
       return   ! return because there is no need to look further
@@ -436,7 +466,7 @@ function get_polynomial_coordinate( N, h, x_g, edge_values, ppoly_coefs, &
   ! there is a unique solution. We loop on all cells and find which one
   ! contains the target value. The variable k_found holds the index value
   ! of the cell where the taregt value lies.
-  do k = 1,N
+  do k = k_start,N
     if ( ( target_value > edge_values(k,1) ) .AND. ( target_value < edge_values(k,2) ) ) then
       k_found = k
       exit
