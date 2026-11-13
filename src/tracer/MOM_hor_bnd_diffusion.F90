@@ -13,7 +13,7 @@ use MOM_checksums,             only : hchksum
 use MOM_domains,               only : pass_var
 use MOM_diag_mediator,         only : diag_ctrl, time_type
 use MOM_diag_mediator,         only : post_data, register_diag_field
-use MOM_error_handler,         only : MOM_error, MOM_mesg, FATAL, is_root_pe
+use MOM_error_handler,         only : MOM_error, MOM_mesg, FATAL
 use MOM_file_parser,           only : get_param, log_version, param_file_type
 use MOM_grid,                  only : ocean_grid_type
 use MOM_remapping,             only : remapping_CS, initialize_remapping, reintegrate_column
@@ -431,101 +431,11 @@ real function harmonic_mean(h1,h2)
   endif
 end function harmonic_mean
 
-!> Returns the location of the minimum value in a 1D array
-!! between indices s and e.
-integer function  find_minimum(x, s, e)
-  integer, intent(in) :: s              !< start index
-  integer, intent(in) :: e              !< end index
-  real, dimension(e), intent(in) :: x   !< 1D array to be checked [arbitrary]
-
-  ! local variables
-  real :: minimum ! Minimum value in the same units as x [arbitrary]
-  integer :: location
-  integer :: i
-
-  minimum  = x(s)   ! assume the first is the min
-  location = s      ! record its position
-  do i = s+1, e     ! start with next elements
-    if (x(i) < minimum) then !   if x(i) less than the min?
-      minimum  = x(i)   !      Yes, a new minimum found
-      location = i                !      record its position
-    endif
-  enddo
-  find_minimum = location          ! return the position
-end function  find_minimum
-
-!> Swaps the values of its two formal arguments.
-subroutine swap(a, b)
-  real, intent(inout) :: a  !< First value to be swapped [arbitrary]
-  real, intent(inout) :: b  !< Second value to be swapped [arbitrary]
-
-  ! local variables
-  real :: tmp ! A temporary copy of a [arbitrary]
-
-  tmp = a
-  a = b
-  b = tmp
-end subroutine swap
-
-!> Receives a 1D array x and sorts it into ascending order.
-subroutine sort(x, n)
-  integer,             intent(in   ) :: n        !< Number of points in the array
-  real, dimension(n),  intent(inout) :: x        !< 1D array to be sorted [arbitrary]
-
-  ! local variables
-  integer :: i, location
-
-  do i = 1, n-1
-    location = find_minimum(x, i, n) ! find min from this to last
-    call swap(x(i), x(location))     ! swap this and the minimum
-  enddo
-end subroutine sort
-
-!> Returns the unique values in a 1D array.
-subroutine unique(val, n, val_unique, val_max)
-  integer,                         intent(in   ) :: n          !< Number of points in the array.
-  real, dimension(n),              intent(in   ) :: val        !< 1D array to be checked [arbitrary]
-  real, dimension(:), allocatable, intent(inout) :: val_unique !< Returned 1D array with unique values [arbitrary]
-  real,                  optional, intent(in   ) :: val_max    !< sets the maximum value in val_unique to
-                                                               !! this value [arbitrary]
-  ! local variables
-  real, dimension(n) :: tmp ! The list of unique values [arbitrary]
-  integer :: i, j, ii
-  real :: min_val, max_val ! The minimum and maximum values in the list [arbitrary]
-  logical :: limit
-
-  limit = .false.
-  if (present(val_max)) then
-    limit = .true.
-    if (val_max > MAXVAL(val)) then
-      if (is_root_pe()) write(*,*)'val_max, MAXVAL(val)',val_max, MAXVAL(val)
-      call MOM_error(FATAL,"Houston, we've had a problem in unique (val_max cannot be > MAXVAL(val))")
-    endif
-  endif
-
-  tmp(:) = 0.
-  min_val = MINVAL(val)-1
-  max_val = MAXVAL(val)
-  i = 0
-  do while (min_val<max_val)
-    i = i+1
-    min_val = MINVAL(val, mask=val>min_val)
-    tmp(i) = min_val
-  enddo
-  ii = i
-  if (limit) then
-    do j=1,ii
-      if (tmp(j) <= val_max) i = j
-    enddo
-  endif
-  allocate(val_unique(i), source=tmp(1:i))
-end subroutine unique
-
-
 !> Given layer thicknesses (and corresponding interfaces) and BLDs in two adjacent columns,
 !! return a set of 1-d layer thicknesses whose interfaces cover all interfaces in the left
 !! and right columns plus the two BLDs. This can be used to accurately remap tracer tendencies
 !! in both columns.
+!! Assumes layer thicknesses and boundary-layer depths are non-negative.
 subroutine merge_interfaces(nk, h_L, h_R, hbl_L, hbl_R, H_subroundoff, h)
   integer,                         intent(in   ) :: nk     !< Number of layers                        [nondim]
   real, dimension(nk),             intent(in   ) :: h_L    !< Layer thicknesses in the left column    [H ~> m or kg m-2]
@@ -538,49 +448,42 @@ subroutine merge_interfaces(nk, h_L, h_R, hbl_L, hbl_R, H_subroundoff, h)
   real, dimension(:), allocatable, intent(inout) :: h     !< Combined thicknesses                     [H ~> m or kg m-2]
 
   ! Local variables
-  integer                         :: n           !< Number of layers in eta_all
-  real, dimension(nk+1)           :: eta_L, eta_R!< Interfaces in the left and right columns [H ~> m or kg m-2]
-  real, dimension(:), allocatable :: eta_all     !< Combined list of interfaces in the left and right columns
-                                                 !! plus hbl_L and hbl_R [H ~> m or kg m-2]
-  real, dimension(:), allocatable :: eta_unique  !< Combined list of unique interfaces (eta_L, eta_R), possibly
-                                                 !! hbl_L and hbl_R [H ~> m or kg m-2]
-  real                            :: min_depth   !< Minimum depth [H ~> m or kg m-2]
-  real                            :: max_depth   !< Maximum depth [H ~> m or kg m-2]
-  real                            :: max_bld     !< Deepest BLD [H ~> m or kg m-2]
-  integer :: k, kk, nk1                          !< loop indices (k and kk) and array size (nk1)
+  real, dimension(2*nk+2) :: dz ! Merged layer thicknesses before sizing h [H ~> m or kg m-2]
+  real :: pos_L, pos_R, prev, v_next ! Running left/right, previous, and next interface depths [H ~> m or kg m-2]
+  real :: bld(2) ! Sorted boundary layer depths [H ~> m or kg m-2]
+  integer :: k_L, k_R, k_B, nk1 ! Stream indices (left, right, BLD) and merged layer count
 
-  n = (2*nk)+3
-  allocate(eta_all(n))
-  ! compute and merge interfaces
-  eta_L(:) = 0.0 ; eta_R(:) = 0.0 ; eta_all(:) = 0.0
-  kk = 0
-  do k=2,nk+1
-    eta_L(k) = eta_L(k-1) + h_L(k-1)
-    eta_R(k) = eta_R(k-1) + h_R(k-1)
-    kk = kk + 2
-    eta_all(kk)   = eta_L(k)
-    eta_all(kk+1) = eta_R(k)
+  bld(1) = min(hbl_L, hbl_R) ; bld(2) = max(hbl_L, hbl_R)
+  pos_L = h_L(1) ; pos_R = h_R(1)
+  prev = 0.0 ; nk1 = 0
+  k_L = 1 ; k_R = 1 ; k_B = 1
+  ! Each pass skips interfaces <= prev in all 3 sorted lists (removing duplicates
+  ! and zero-thickness layers), then emits the shallowest remaining interface;
+  ! stopping when any list is exhausted matches min(total_L, total_R, max(hbl_L, hbl_R)).
+  do
+    do while (k_L <= nk)
+      if (pos_L > prev) exit
+      k_L = k_L + 1
+      if (k_L <= nk) pos_L = pos_L + h_L(k_L)
+    enddo
+    do while (k_R <= nk)
+      if (pos_R > prev) exit
+      k_R = k_R + 1
+      if (k_R <= nk) pos_R = pos_R + h_R(k_R)
+    enddo
+    do while (k_B <= 2)
+      if (bld(k_B) > prev) exit
+      k_B = k_B + 1
+    enddo
+    if ((k_L > nk) .or. (k_R > nk) .or. (k_B > 2)) exit
+
+    v_next = min(pos_L, pos_R, bld(k_B))
+    nk1 = nk1 + 1
+    dz(nk1) = (v_next - prev) + H_subroundoff
+    prev = v_next
   enddo
 
-  ! add hbl_L and hbl_R into eta_all
-  eta_all(kk+2) = hbl_L
-  eta_all(kk+3) = hbl_R
-
-  ! find maximum depth
-  min_depth = MIN(MAXVAL(eta_L), MAXVAL(eta_R))
-  max_bld = MAX(hbl_L, hbl_R)
-  max_depth = MIN(min_depth, max_bld)
-
-  ! sort eta_all
-  call sort(eta_all, n)
-  ! remove duplicates from eta_all and sets maximum depth
-  call unique(eta_all, n, eta_unique, max_depth)
-
-  nk1 = SIZE(eta_unique)
-  allocate(h(nk1-1))
-  do k=1,nk1-1
-    h(k) = (eta_unique(k+1) - eta_unique(k)) + H_subroundoff
-  enddo
+  allocate(h(nk1), source=dz(1:nk1))
 end subroutine merge_interfaces
 
 !> Calculates the maximum flux that can leave a cell and uses that to apply a
@@ -842,7 +745,6 @@ logical function near_boundary_unit_tests( verbose )
 
   ! Local variables
   integer, parameter    :: nk = 2               ! Number of layers
-  real, dimension(nk+1) :: eta1                 ! Updated interfaces with one extra value           [m]
   real, dimension(:), allocatable :: h1         ! Updated list of layer thicknesses or other field  [m] or [arbitrary]
   real, dimension(nk)   :: phi_L, phi_R         ! Tracer values (left and right column)             [conc]
   real, dimension(nk)   :: h_L, h_R             ! Layer thickness (left and right)                  [m]
@@ -931,27 +833,6 @@ logical function near_boundary_unit_tests( verbose )
 
   if (.not. near_boundary_unit_tests) write(stdout,*) 'Passed boundary_k_range'
 
-  ! unit tests for sorting array and finding unique values
-  test_name = 'Sorting array'
-  eta1 = (/1., 0., 0.1/)
-  call sort(eta1, nk+1)
-  near_boundary_unit_tests = near_boundary_unit_tests .or. &
-                             test_layer_fluxes( verbose, nk+1, test_name, eta1, (/0., 0.1, 1./) )
-
-  test_name = 'Unique values'
-  call unique((/0., 1., 1., 2./), nk+2, h1)
-  near_boundary_unit_tests = near_boundary_unit_tests .or. &
-                             test_layer_fluxes( verbose, nk+1, test_name, h1, (/0., 1., 2./) )
-  deallocate(h1)
-
-  test_name = 'Unique values with maximum depth'
-  call unique((/0., 1., 1., 2., 3./), nk+3, h1, 2.)
-  near_boundary_unit_tests = near_boundary_unit_tests .or. &
-                             test_layer_fluxes( verbose, nk+1, test_name, h1, (/0., 1., 2./) )
-  deallocate(h1)
-
-  if (.not. near_boundary_unit_tests) write(stdout,*) 'Passed sort and unique'
-
   ! unit tests for merge_interfaces
   test_name = 'h_L = h_R and BLD_L = BLD_R'
   call merge_interfaces(nk, (/1., 2./), (/1., 2./), 1.5, 1.5, CS%H_subroundoff, h1)
@@ -1017,6 +898,12 @@ logical function near_boundary_unit_tests( verbose )
   call merge_interfaces(nk+2, (/2., 2., 1., 1./), (/1., 1., .5, .5/), 3., 3., CS%H_subroundoff, h1)
   near_boundary_unit_tests = near_boundary_unit_tests .or. &
                              test_layer_fluxes( verbose, nk+2, test_name, h1, (/1., 1., .5, .5/) )
+  deallocate(h1)
+
+  test_name = 'BLD deeper than shallower column and zero BLD on right'
+  call merge_interfaces(nk, (/1., 2./), (/1., 1./), 5., 0., CS%H_subroundoff, h1)
+  near_boundary_unit_tests = near_boundary_unit_tests .or. &
+                             test_layer_fluxes( verbose, nk, test_name, h1, (/1., 1./) )
   deallocate(h1)
 
   if (.not. near_boundary_unit_tests) write(stdout,*) 'Passed merge interfaces'
