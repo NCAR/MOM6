@@ -60,6 +60,8 @@ contains
   procedure :: calculate_specvol_derivs_array => a_calculate_specvol_derivs_array
   !> Calculates the compressibility for array inputs
   procedure :: calculate_compress_array => a_calculate_compress_array
+  !> Calculates the Stanley second-order density or density anomaly for array inputs
+  procedure :: calculate_stanley_density_array => a_calculate_stanley_density_array
 
 end type EOS_base
 
@@ -457,6 +459,36 @@ contains
                                       rho(js:je), drho_dp(js:je))
 
   end subroutine a_calculate_compress_array
+
+  !> Calculate the in-situ density or density anomaly with second-order Stanley SGS variance
+  !! corrections for 1D array inputs and outputs.
+  subroutine a_calculate_stanley_density_array(this, T, S, pressure, Tvar, TScov, Svar, rho, start, npts, rho_ref)
+    class(EOS_base),    intent(in)    :: this     !< This EOS
+    real, dimension(:), intent(in)    :: T        !< Potential temperature relative to the surface [degC]
+    real, dimension(:), intent(in)    :: S        !< Salinity [ppt]
+    real, dimension(:), intent(in)    :: pressure !< Pressure [Pa]
+    real, dimension(:), intent(in)    :: Tvar     !< Variance of potential temperature [degC2]
+    real, dimension(:), intent(in)    :: TScov    !< Covariance of temperature and salinity [degC ppt]
+    real, dimension(:), intent(in)    :: Svar     !< Variance of salinity [ppt2]
+    real, dimension(:), intent(inout) :: rho      !< In situ density [kg m-3]
+    integer,            intent(in)    :: start    !< The starting index for calculations
+    integer,            intent(in)    :: npts     !< The number of values to calculate
+    real,     optional, intent(in)    :: rho_ref  !< A reference density [kg m-3]
+    ! Local variables
+    real :: d2RdSS ! Second derivative of density with salinity [kg m-3 ppt-2]
+    real :: d2RdST ! Second derivative of density with temperature and salinity [kg m-3 ppt-1 degC-1]
+    real :: d2RdTT ! Second derivative of density with temperature [kg m-3 degC-2]
+    real :: d2RdSp ! Second derivative of density with salinity and pressure [kg m-3 ppt-1 Pa-1]
+    real :: d2RdTp ! Second derivative of density with temperature and pressure [kg m-3 degC-1 Pa-1]
+    integer :: j
+
+    call this%calculate_density_array(T, S, pressure, rho, start, npts, rho_ref=rho_ref)
+    d2RdSS = 0.0 ; d2RdST = 0.0 ; d2RdTT = 0.0 ; d2RdSp = 0.0 ; d2RdTp = 0.0
+    do j = start, start+npts-1
+      call this%calculate_density_second_derivs_elem(T(j), S(j), pressure(j), d2RdSS, d2RdST, d2RdTT, d2RdSp, d2RdTp)
+      rho(j) = rho(j) + ( 0.5 * d2RdTT * Tvar(j) + ( d2RdST * TScov(j) + 0.5 * d2RdSS * Svar(j) ) )
+    enddo
+  end subroutine a_calculate_stanley_density_array
 
 !> \namespace mom_eos_base_type
 !!
