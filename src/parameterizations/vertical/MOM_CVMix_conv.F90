@@ -35,6 +35,8 @@ type, public :: CVMix_conv_cs ; private
   real    :: bv_sqr_conv   !< Threshold for squared buoyancy frequency
                            !! needed to trigger Brunt-Vaisala parameterization [T-2 ~> s-2]
   real    :: min_thickness !< Minimum thickness allowed [Z ~> m]
+  real    :: vanished_h    !< N2 is set to zero at interfaces where both adjacent layers are thinner
+                           !! than this [H ~> m or kg m-2]
   logical :: debug         !< If true, turn on debugging
 
   ! Diagnostic handles and pointers
@@ -112,6 +114,19 @@ logical function CVMix_conv_init(Time, G, GV, US, param_file, diag, CS)
                  "Threshold for squared buoyancy frequency needed to trigger "//&
                  "Brunt-Vaisala parameterization.", &
                  units='1/s^2', default=0.0, scale=US%T_to_s**2)
+
+  call get_param(param_file, mdl, 'CONV_VANISHED_THICKNESS', CS%vanished_h, &
+                 "If positive, the squared buoyancy frequency used to trigger convection is set "//&
+                 "to zero at interfaces where both adjacent layers are thinner than this, so "//&
+                 "no convective mixing is applied there. Density differences between nearly "//&
+                 "vanished layers are dominated by numerical noise. Regridding keeps vanished "//&
+                 "layers at or slightly above MIN_THICKNESS, so to have any effect this must be "//&
+                 "several times larger than MIN_THICKNESS (e.g., 10 times). The default of 0 "//&
+                 "recovers the previous answers.", &
+                 units="m", default=0.0, scale=GV%m_to_H)
+  if ((CS%vanished_h > 0.0) .and. (GV%H_to_m*CS%vanished_h <= US%Z_to_m*CS%min_thickness)) &
+    call MOM_error(WARNING, "MOM_CVMix_conv_init: CONV_VANISHED_THICKNESS is not larger than "//&
+                   "MIN_THICKNESS, so it will have little or no effect.")
 
   call closeParameterBlock(param_file)
 
@@ -219,6 +234,9 @@ subroutine calculate_CVMix_conv(h, tv, G, GV, US, CS, hbl, Kd, Kv, Kd_aux)
 
         dh_int = 0.5*(h(i,j,k-1) + h(i,j,k)) + GV%H_subroundoff
         N2(K) = g_o_rho0 * (rhok - rhokm1) / dh_int ! Can be negative
+
+        ! Do not trigger convection between two nearly vanished layers.
+        if ((h(i,j,k-1) < CS%vanished_h) .and. (h(i,j,k) < CS%vanished_h)) N2(K) = 0.0
 
       enddo
 
