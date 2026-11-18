@@ -992,6 +992,12 @@ subroutine remap_src_to_sub_grid(n0, h0, u0, ppoly0_E, ppoly0_coefs, n1, h_sub, 
   real :: duh ! The total amount of accumulated stuff (u*h) [A H]
   real :: dh0_eff ! Running sum of source cell thickness [H]
   real :: u0_min(n0), u0_max(n0) ! Min/max of u0 for each source cell [A]
+  integer :: i0_prev ! Source cell index of previous sub-cell for cached reconstruction terms
+  real :: a_L, a_R ! Left and right edge values of the polynomial reconstruction [A]
+  real :: d_LR, d_RL ! Differences between source cell edge values (a_R - a_L and a_L - a_R) [A]
+  real :: du_c, a_c, a_c3 ! Parabolic curvature terms: (u_c-a_L)+(u_c-a_R), a_6/6, and a_6 [A]
+  real :: mx, Ya, Yb, my ! Various fractional positions [nondim]
+  real :: xa2b2ab, Ya2b2ab ! Sums of squared fractional positions [nondim]
   ! For error checking/debugging
   logical, parameter :: adjust_thickest_subcell = .true. ! To fix round-off conservation issues
   integer :: i0_last_thick_cell
@@ -1010,6 +1016,8 @@ subroutine remap_src_to_sub_grid(n0, h0, u0, ppoly0_E, ppoly0_coefs, n1, h_sub, 
   xa = 0.
   dh0_eff = 0.
   u02_err = 0.
+  ! Avoids warnings about potentially unset values; cached terms are set on first sub-cell.
+  i0_prev = -1 ; a_L = 0. ; a_R = 0. ; d_LR = 0. ; d_RL = 0. ; du_c = 0. ; a_c = 0. ; a_c3 = 0.
   do i_sub = 1, n0+n1
 
     ! Sub-cell thickness from loop above
@@ -1025,7 +1033,60 @@ subroutine remap_src_to_sub_grid(n0, h0, u0, ppoly0_E, ppoly0_coefs, n1, h_sub, 
     if (h0(i0)>0.) then
       xb = dh0_eff / h0(i0) ! This expression yields xa <= xb <= 1.0
       xb = min(1., xb) ! This is only needed when the total target column is wider than the source column
-      u_sub(i_sub) = average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefs, method, i0, xa, xb)
+      if (i0 /= i0_prev) then
+        i0_prev = i0
+        if ((method == INTEGRATION_PPM) .or. (method == INTEGRATION_PLM)) then
+          a_L = ppoly0_E(i0, 1)
+          a_R = ppoly0_E(i0, 2)
+          d_LR = a_R - a_L
+          d_RL = a_L - a_R
+          if (method == INTEGRATION_PPM) then
+            du_c = ( u0(i0) - a_L ) + ( u0(i0) - a_R )
+            a_c = 0.5 * du_c ! a_6 / 6
+            a_c3 = 3. * du_c ! a_6
+          endif
+        endif
+      endif
+      ! Inline PLM and PPM sub-cell averages; keep in sync with average_value_ppoly().
+      if (method == INTEGRATION_PPM) then
+        if (xb > xa) then
+          mx = 0.5 * ( xa + xb )
+          if (mx < 0.5) then
+            ! This integration of the PPM reconstruction is expressed in distances from the left edge
+            xa2b2ab = (xa*xa+xb*xb)+xa*xb
+            u_sub(i_sub) = a_L + ( d_LR * mx &
+                                 + a_c * ( 3. * ( xb + xa ) - 2.*xa2b2ab ) )
+          else
+            ! This integration of the PPM reconstruction is expressed in distances from the right edge
+            Ya = 1. - xa
+            Yb = 1. - xb
+            my = 0.5 * ( Ya + Yb )
+            Ya2b2ab = (Ya*Ya+Yb*Yb)+Ya*Yb
+            u_sub(i_sub) = a_R + ( d_RL * my &
+                                 + a_c * ( 3. * ( Yb + Ya ) - 2.*Ya2b2ab ) )
+          endif
+        else ! dh == 0.
+          Ya = 1. - xa
+          if (xa < 0.5) then
+            u_sub(i_sub) = a_L + xa * ( d_LR + a_c3 * Ya )
+          else
+            u_sub(i_sub) = a_R + Ya * ( d_RL + a_c3 * xa )
+          endif
+        endif
+      elseif (method == INTEGRATION_PLM) then
+        if (xb > xa) then
+          u_sub(i_sub) = ( ppoly0_coefs(i0,1) + ppoly0_coefs(i0,2) * 0.5 * ( xb + xa ) )
+        else ! dh == 0.
+          Ya = 1. - xa
+          if (xa < 0.5) then
+            u_sub(i_sub) = a_L + xa * d_LR
+          else
+            u_sub(i_sub) = a_R + Ya * d_RL
+          endif
+        endif
+      else
+        u_sub(i_sub) = average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefs, method, i0, xa, xb)
+      endif
     else ! Vanished cell
       xb = 1.
       u_sub(i_sub) = u0(i0)
@@ -1416,10 +1477,12 @@ real function average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefs, method, i0, x
       case ( INTEGRATION_PCM )
         u_ave = u0(i0)
       case ( INTEGRATION_PLM )
+        ! PLM (including dh == 0. below) is duplicated in remap_src_to_sub_grid(); keep in sync.
         u_ave = (                                           &
             ppoly0_coefs(i0,1)                       &
           + ppoly0_coefs(i0,2) * 0.5 * ( xb + xa ) )
       case ( INTEGRATION_PPM )
+        ! PPM (including dh == 0. below) is duplicated in remap_src_to_sub_grid(); keep in sync.
         mx = 0.5 * ( xa + xb )
         a_L = ppoly0_E(i0, 1)
         a_R = ppoly0_E(i0, 2)
