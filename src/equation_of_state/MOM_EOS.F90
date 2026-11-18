@@ -392,13 +392,21 @@ subroutine calculate_stanley_density_1d(T, S, pressure, Tvar, TScov, Svar, rho, 
     is = 1 ; ie = size(rho) ; npts = 1 + ie - is
   endif
 
-  call calculate_density_1d(T, S, pressure, rho, EOS, dom, rho_ref)
-  call calculate_density_second_derivs_1d(T, S, pressure, d2RdSS, d2RdST, d2RdTT, d2RdSp, d2RdTP, EOS, dom)
+  if (.not. allocated(EOS%type)) call MOM_error(FATAL, &
+    "calculate_stanley_density_1d: EOS%form_of_EOS is not valid.")
 
-  ! Equation 25 of Stanley et al., 2020.
-  do i=is,ie
-    rho(i) = rho(i) + ( 0.5 * d2RdTT(i) * Tvar(i) + ( d2RdST(i) * TScov(i) + 0.5 * d2RdSS(i) * Svar(i) ) )
-  enddo
+  if ((EOS%RL2_T2_to_Pa == 1.0) .and. (EOS%R_to_kg_m3 == 1.0) .and. (EOS%kg_m3_to_R == 1.0) .and. &
+      (EOS%C_to_degC == 1.0) .and. (EOS%S_to_ppt == 1.0)) then
+    call EOS%type%calculate_stanley_density_array(T, S, pressure, Tvar, TScov, Svar, rho, is, npts, rho_ref)
+  else
+    call calculate_density_1d(T, S, pressure, rho, EOS, dom, rho_ref)
+    call calculate_density_second_derivs_1d(T, S, pressure, d2RdSS, d2RdST, d2RdTT, d2RdSp, d2RdTP, EOS, dom)
+
+    ! Equation 25 of Stanley et al., 2020.
+    do i=is,ie
+      rho(i) = rho(i) + ( 0.5 * d2RdTT(i) * Tvar(i) + ( d2RdST(i) * TScov(i) + 0.5 * d2RdSS(i) * Svar(i) ) )
+    enddo
+  endif
 
   if (present(scale)) then ; if (scale /= 1.0) then ; do i=is,ie
     rho(i) = scale * rho(i)
@@ -2365,6 +2373,7 @@ logical function test_EOS_consistency(T_test, S_test, p_test, EOS, verbose, &
   real :: drho_dT_dP_fd(2)  ! Two 6th order finite difference estimates of the second derivative of density
                             ! with respect to temperature and pressure [T2 C-1 L-2 ~> kg m-3 degC-1 Pa-1]
   real :: rho_tmp    ! A temporary copy of the situ density [R ~> kg m-3]
+  real :: rho_st(3), rho_chk(3) ! Unscaled and rescaled Stanley density anomalies [R ~> kg m-3]
   real :: tol        ! The nondimensional tolerance from roundoff [nondim]
   real :: r_tol      ! Roundoff error on a typical value of density anomaly [R ~> kg m-3]
   real :: sv_tol     ! Roundoff error on a typical value of specific volume anomaly [R-1 ~> m3 kg-1]
@@ -2549,6 +2558,29 @@ logical function test_EOS_consistency(T_test, S_test, p_test, EOS, verbose, &
     OK = OK .and. check_FD(drho_dT_dP, drho_dT_dP_fd, tol_here, verbose, trim(EOS_name)//" drho_dT_dP", order)
     tol_here = tol*abs(drho_dS_dP) + count_fac**2*r_tol/(dS*dp)
     OK = OK .and. check_FD(drho_dS_dP, drho_dS_dP_fd, tol_here, verbose, trim(EOS_name)//" drho_dS_dP", order)
+    EOS_tmp = EOS ; EOS_tmp%R_to_kg_m3 = 2.0*EOS%R_to_kg_m3 ; EOS_tmp%kg_m3_to_R = 0.5*EOS%kg_m3_to_R
+    EOS_tmp%RL2_T2_to_Pa = 2.0*EOS%RL2_T2_to_Pa
+    call calculate_density(T(-1:1,0,0), S(0,-1:1,0), p(0,0,-1:1), (/0.0, dT**2, 0.5*dT**2/), &
+      (/0.0, 0.0, -0.5*dT*dS/), (/0.0, 0.0, dS**2/), rho_st, EOS, rho_ref=rho_ref)
+    call calculate_density(T(-1:1,0,0), S(0,-1:1,0), 0.5*p(0,0,-1:1), (/0.0, dT**2, 0.5*dT**2/), &
+      (/0.0, 0.0, -0.5*dT*dS/), (/0.0, 0.0, dS**2/), rho_chk, EOS_tmp, rho_ref=0.5*rho_ref, scale=2.0)
+    test_OK = all(rho_st == rho_chk)
+    if (verbose .and. .not.test_OK) write(stderr,*) "The rescaled values of "//trim(EOS_name)//" Stanley rho disagree."
+    OK = OK .and. test_OK
+    call calculate_density(T(-1:1,0,0), S(0,-1:1,0), p(0,0,-1:1), (/dT**2, 0.0, 0.5*dT**2/), &
+      (/0.0, 0.0, 0.0/), (/0.0, 0.0, 0.0/), rho_st, EOS, rho_ref=rho_ref)
+    call calculate_density(T(-1:1,0,0), S(0,-1:1,0), 0.5*p(0,0,-1:1), (/dT**2, 0.0, 0.5*dT**2/), &
+      (/0.0, 0.0, 0.0/), (/0.0, 0.0, 0.0/), rho_chk, EOS_tmp, rho_ref=0.5*rho_ref, scale=2.0)
+    test_OK = all(rho_st == rho_chk)
+    if (verbose .and. .not.test_OK) write(stderr,*) "The Tvar-only values of "//trim(EOS_name)//" Stanley rho disagree."
+    OK = OK .and. test_OK
+    call calculate_density(T(-1:1,0,0), S(0,-1:1,0), p(0,0,-1:1), (/0.0, 0.0, 0.0/), &
+      (/0.0, 0.0, 0.0/), (/0.0, 0.0, 0.0/), rho_st, EOS, rho_ref=rho_ref)
+    call calculate_density(T(-1:1,0,0), S(0,-1:1,0), p(0,0,-1:1), rho_chk, EOS, rho_ref=rho_ref)
+    test_OK = all(rho_st == rho_chk)
+    if (verbose .and. .not.test_OK) &
+      write(stderr,*) "The zero-variance values of "//trim(EOS_name)//" Stanley rho disagree."
+    OK = OK .and. test_OK
   endif
 
   if (test_avg_Sv) then

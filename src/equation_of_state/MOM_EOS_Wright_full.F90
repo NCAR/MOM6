@@ -64,6 +64,8 @@ contains
   procedure :: calculate_density_array => calculate_density_array_Wright_full
   !> Local implementation of generic calculate_spec_vol_array for efficiency
   procedure :: calculate_spec_vol_array => calculate_spec_vol_array_Wright_full
+  !> Local implementation of generic calculate_stanley_density_array for efficiency
+  procedure :: calculate_stanley_density_array => calculate_stanley_density_array_Wright_full
 
 end type Wright_full_EOS
 
@@ -262,6 +264,7 @@ elemental subroutine calculate_density_second_derivs_elem_Wright_full(this, T, S
   drho_ds_ds = -2.*(p_p0*(a2*dp0_dS)) * I_denom2 - 2.*(dRdS_num*ddenom_dS) * I_denom3
   drho_ds_dt = ((b5*lambda - p_p0*(c5 + 2.*a2*dp0_dT)) + (dp0_dS*dlam_dT - dp0_dT*dlam_dS))*I_denom2 - &
                   2.*(ddenom_dT*dRdS_num) * I_denom3
+  ! Any change to drho_dt_dt here must be mirrored in calculate_stanley_density_array_Wright_full().
   drho_dt_dt = 2.*((b2 + 3.*b3*T)*lambda - p_p0*((c2 + 3.*c3*T) + a1*dp0_dT))*I_denom2 - &
                   2.*(dRdT_num * ddenom_dT) * I_denom3
 
@@ -967,6 +970,83 @@ subroutine calculate_spec_vol_array_Wright_full(this, T, S, pressure, specvol, s
   endif
 
 end subroutine calculate_spec_vol_array_Wright_full
+
+!> Calculate the in-situ density or density anomaly with second-order Stanley SGS variance
+!! corrections for 1D array inputs and outputs.
+subroutine calculate_stanley_density_array_Wright_full(this, T, S, pressure, Tvar, TScov, Svar, &
+                                                       rho, start, npts, rho_ref)
+  class(Wright_full_EOS), intent(in)    :: this     !< This EOS
+  real, dimension(:),     intent(in)    :: T        !< Potential temperature relative to the surface [degC]
+  real, dimension(:),     intent(in)    :: S        !< Salinity [ppt]
+  real, dimension(:),     intent(in)    :: pressure !< Pressure [Pa]
+  real, dimension(:),     intent(in)    :: Tvar     !< Variance of potential temperature [degC2]
+  real, dimension(:),     intent(in)    :: TScov    !< Covariance of temperature and salinity [degC ppt]
+  real, dimension(:),     intent(in)    :: Svar     !< Variance of salinity [ppt2]
+  real, dimension(:),     intent(inout) :: rho      !< In situ density [kg m-3]
+  integer,                intent(in)    :: start    !< The starting index for calculations
+  integer,                intent(in)    :: npts     !< The number of values to calculate
+  real,     optional,     intent(in)    :: rho_ref  !< A reference density [kg m-3]
+  ! Local variables
+  real :: al0               ! The specific volume at 0 lambda in the Wright EOS [m3 kg-1]
+  real :: lambda            ! The sound speed squared at 0 alpha in the Wright EOS [m2 s-2]
+  real :: p_p0              ! Pressure plus pressure offset p0 in the Wright EOS [Pa]
+  real :: dp0_dT            ! The partial derivative of p0 with temperature [Pa degC-1]
+  real :: dlam_dT, ddenom_dT ! Partial derivatives of lambda and Wright denominator with T [m2 s-2 degC-1]
+  real :: dRdT_num          ! The numerator in the expression for drho_dT [Pa m2 s-2 degC-1]
+  real :: I_denom           ! The inverse of the denominator of density in the Wright EOS [s2 m-2]
+  real :: I_denom2          ! The inverse of the square of the Wright EOS denominator [s4 m-4]
+  real :: I_denom3          ! The inverse of the cube of the Wright EOS denominator [s6 m-6]
+  real :: d2RdSS            ! Second derivative of density with salinity [kg m-3 ppt-2]
+  real :: d2RdST            ! Second derivative of density with temperature and salinity [kg m-3 ppt-1 degC-1]
+  real :: d2RdTT            ! Second derivative of density with temperature [kg m-3 degC-2]
+  real :: d2RdSp            ! Second derivative of density with salinity and pressure [kg m-3 ppt-1 Pa-1]
+  real :: d2RdTp            ! Second derivative of density with temperature and pressure [kg m-3 degC-1 Pa-1]
+  integer :: j, j_end, j_first, j_last ! Loop and active-span indices
+  logical :: has_cov_s                 ! True if any point has nonzero TScov or Svar
+
+  call calculate_density_array_Wright_full(this, T, S, pressure, rho, start, npts, rho_ref=rho_ref)
+  j_end = start + npts - 1
+  j_first = j_end + 1 ; j_last = start - 1 ; has_cov_s = .false.
+  do j = start, j_end
+    if ((Tvar(j) /= 0.0) .or. (TScov(j) /= 0.0) .or. (Svar(j) /= 0.0)) then
+      if (j < j_first) j_first = j
+      j_last = j
+      if ((TScov(j) /= 0.0) .or. (Svar(j) /= 0.0)) has_cov_s = .true.
+    endif
+  enddo
+  if (j_first > j_last) return
+
+  if (.not. has_cov_s) then
+    ! Evaluate only drho_dt_dt; mirror any change in calculate_density_second_derivs_elem_Wright_full().
+    do j = j_first, j_last
+      if (Tvar(j) /= 0.0) then
+        al0 = a0 + (a1*T(j) + a2*S(j))
+        p_p0 = pressure(j) + ( b0 + (b4*S(j) + T(j)*(b1 + (b5*S(j) + T(j)*(b2 + b3*T(j))))) )
+        lambda = c0 + ( c4*S(j) + T(j) * (c1 + (T(j)*(c2 + c3*T(j)) + c5*S(j))) )
+        dp0_dT = b1 + (b5*S(j) + T(j)*(2.*b2 + 3.*b3*T(j)))
+        dlam_dT = c1 + (c5*S(j) + T(j)*(2.*c2 + 3.*c3*T(j)))
+        I_denom = 1.0 / (lambda + al0*p_p0)
+        I_denom2 = I_denom*I_denom ; I_denom3 = I_denom*I_denom2
+        ddenom_dT = (dlam_dT + a1*p_p0) + al0*dp0_dT
+        dRdT_num = dp0_dT*lambda - p_p0*(dlam_dT + a1*p_p0)
+        d2RdTT = 2.*((b2 + 3.*b3*T(j))*lambda - p_p0*((c2 + 3.*c3*T(j)) + a1*dp0_dT))*I_denom2 - &
+                 2.*(dRdT_num * ddenom_dT) * I_denom3
+        ! Keep "+ 0.0" so FMA-enabled compilers honoring signed zeros round (0.5 * d2RdTT * Tvar)
+        ! before adding to rho(j), matching Equation 25 when TScov and Svar are zero.
+        rho(j) = rho(j) + ( 0.5 * d2RdTT * Tvar(j) + 0.0 )
+      endif
+    enddo
+  else
+    d2RdSS = 0.0 ; d2RdST = 0.0 ; d2RdTT = 0.0 ; d2RdSp = 0.0 ; d2RdTp = 0.0
+    do j = j_first, j_last
+      if ((Tvar(j) /= 0.0) .or. (TScov(j) /= 0.0) .or. (Svar(j) /= 0.0)) then
+        call calculate_density_second_derivs_elem_Wright_full(this, T(j), S(j), pressure(j), &
+                                                              d2RdSS, d2RdST, d2RdTT, d2RdSp, d2RdTp)
+        rho(j) = rho(j) + ( 0.5 * d2RdTT * Tvar(j) + ( d2RdST * TScov(j) + 0.5 * d2RdSS * Svar(j) ) )
+      endif
+    enddo
+  endif
+end subroutine calculate_stanley_density_array_Wright_full
 
 
 !> \namespace mom_eos_wright_full
